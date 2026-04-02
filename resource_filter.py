@@ -180,13 +180,16 @@ def detect_malicious_file(file_path: str) -> bool:
     # Example: Check for suspicious patterns or scan with antivirus
     return False
 
-def filter_resources(directory: str, config_path: str) -> List[str]:
+
+def filter_resources(directory: str, config_path: str, max_file_size: int = None, max_file_count: int = None) -> List[str]:
     """
-    Filter resources in the given directory based on the supported types.
+    Filter resources in the given directory based on the supported types, file size and count limits.
 
     Args:
         directory (str): Path to the directory containing resources.
         config_path (str): Path to the JSON configuration file with supported types.
+        max_file_size (int, optional): 单个文件最大字节数，超出则跳过。
+        max_file_count (int, optional): 最多返回的文件数量。
 
     Returns:
         List[str]: List of valid resource file paths.
@@ -203,18 +206,25 @@ def filter_resources(directory: str, config_path: str) -> List[str]:
         for file in files:
             file_path = os.path.join(root, file)
             if is_supported_file(file_path, supported_types):
+                if max_file_size is not None and os.path.getsize(file_path) > max_file_size:
+                    continue
                 if check_file_integrity(file_path) and validate_file_integrity(file_path) and detect_file_disguise(file_path):
                     valid_files.append(file_path)
+                    if max_file_count is not None and len(valid_files) >= max_file_count:
+                        return valid_files
 
     return valid_files
 
-def filter_resources_with_handlers(directory: str, config_path: str) -> List[str]:
+
+def filter_resources_with_handlers(directory: str, config_path: str, max_file_size: int = None, max_file_count: int = None) -> List[str]:
     """
-    Filter resources and process them using dynamically registered handlers.
+    Filter resources and process them using dynamically registered handlers, with file size/count limits.
 
     Args:
         directory (str): Path to the directory containing resources.
         config_path (str): Path to the JSON configuration file with supported types.
+        max_file_size (int, optional): 单个文件最大字节数，超出则跳过。
+        max_file_count (int, optional): 最多返回的文件数量。
 
     Returns:
         List[str]: List of valid resource file paths.
@@ -241,6 +251,8 @@ def filter_resources_with_handlers(directory: str, config_path: str) -> List[str
                     break
 
             if resource_type:
+                if max_file_size is not None and os.path.getsize(file_path) > max_file_size:
+                    continue
                 handler_class = ResourceHandlerFactory.get_handler(resource_type)
                 if handler_class:
                     handler = handler_class()
@@ -248,6 +260,8 @@ def filter_resources_with_handlers(directory: str, config_path: str) -> List[str
 
                 if check_file_integrity(file_path) and validate_file_integrity(file_path) and detect_file_disguise(file_path):
                     valid_files.append(file_path)
+                    if max_file_count is not None and len(valid_files) >= max_file_count:
+                        return valid_files
 
     return valid_files
 

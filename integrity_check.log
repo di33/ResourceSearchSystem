@@ -45,3 +45,9 @@
 2026-04-02 14:12:30,987 - ERROR - 输入文件不存在: input.mp4
 2026-04-02 14:12:30,991 - ERROR - 输入文件不存在: non_existent_file.mp4
 2026-04-02 14:12:30,991 - ERROR - 保存预览文件失败: 预览文件生成失败: test_output\preview.mp4
+2026-04-02 14:18:27,625 - ERROR - 文件完整性校验失败: test_integrity\invalid_file.txt, 错误: 文件头信息不完整
+2026-04-02 14:18:27,626 - ERROR - 文件完整性校验失败: test_integrity\nonexistent.txt, 错误: 文件未找到: test_integrity\nonexistent.txt
+2026-04-02 14:18:27,628 - ERROR - 不支持的格式: xyz
+2026-04-02 14:18:27,666 - ERROR - 预览生成失败: Command '['ffmpeg', '-i', 'test_input.txt', 'test_output.jpeg']' returned non-zero exit status 3199971767.
+2026-04-02 14:18:27,702 - ERROR - 预览生成失败: Command '['ffmpeg', '-i', 'test_input.txt', 'test_output.mp4']' returned non-zero exit status 3199971767.
+2026-04-02 14:18:27,736 - ERROR - 预览生成失败: Command '['ffmpeg', '-i', 'test_input.txt', 'test_output.webp']' returned non-zero exit status 3199971767.

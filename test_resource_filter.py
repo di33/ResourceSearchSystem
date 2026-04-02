@@ -6,6 +6,64 @@ import json
 from resource_filter import filter_resources, copy_and_categorize_resources, detect_malicious_file, generate_resource_index, filter_resources_with_handlers, ResourceHandlerFactory, check_file_integrity, PreviewGenerator
 
 class TestResourceFilter(unittest.TestCase):
+    def test_filter_resources_max_file_size(self):
+        """
+        测试文件大小限制功能。
+        """
+        # 创建一个超大文件
+        large_file = os.path.join(self.test_dir, "large.txt")
+        with open(large_file, "wb") as f:
+            f.write(b"0" * 1024 * 1024)  # 1MB
+        # 设置最大文件大小为100字节
+        result = filter_resources(self.test_dir, self.config_path, max_file_size=100)
+        self.assertIn(self.valid_file, result)
+        self.assertNotIn(large_file, result)
+
+    def test_filter_resources_max_file_count(self):
+        """
+        测试文件数量限制功能。
+        """
+        # 再创建多个小文件
+        files = []
+        for i in range(5):
+            fpath = os.path.join(self.test_dir, f"file_{i}.txt")
+            with open(fpath, "w") as f:
+                f.write("content")
+            files.append(fpath)
+        # 限制最多返回3个
+        result = filter_resources(self.test_dir, self.config_path, max_file_count=3)
+        self.assertEqual(len(result), 3)
+    def test_filter_resources_with_handlers_max_file_size_and_count(self):
+        """
+        测试带handler的文件大小和数量限制。
+        """
+        extended_config = {
+            "supported_extensions": {
+                "documents": [".txt"]
+            }
+        }
+        with open(self.config_path, "w") as f:
+            json.dump(extended_config, f)
+        # 创建多个文件
+        files = []
+        for i in range(10):
+            fpath = os.path.join(self.test_dir, f"doc_{i}.txt")
+            with open(fpath, "w") as f:
+                f.write("content")
+            files.append(fpath)
+        # 创建超大文件
+        large_file = os.path.join(self.test_dir, "doc_large.txt")
+        with open(large_file, "wb") as f:
+            f.write(b"0" * 1024 * 1024)
+        # 注册handler
+        class DummyHandler:
+            def process(self, file_path):
+                pass
+        ResourceHandlerFactory.register_handler("documents", DummyHandler)
+        # 限制最大文件数为5，最大单文件100字节
+        result = filter_resources_with_handlers(self.test_dir, self.config_path, max_file_size=100, max_file_count=5)
+        self.assertEqual(len(result), 5)
+        self.assertNotIn(large_file, result)
 
     def setUp(self):
         """
