@@ -118,3 +118,30 @@ def copy_and_categorize_resources(resource_paths: List[str], work_dir: str) -> N
             shutil.copy2(file_path, target_file_path)
         except Exception as e:
             print(f"Failed to copy {file_path} to {target_file_path}: {e}")
+
+def generate_resource_index(resource_paths: List[str], output_path: str, dependencies: dict, statuses: dict) -> None:
+    """
+    Generate a JSON resource index file.
+
+    Args:
+        resource_paths (List[str]): List of resource file paths.
+        output_path (str): Path to the output JSON file.
+        dependencies (dict): A dictionary mapping resources to their dependencies.
+        statuses (dict): A dictionary mapping resources to their statuses.
+
+    Returns:
+        None
+    """
+    resource_index = {}
+
+    for resource in resource_paths:
+        resource_index[resource] = {
+            "dependencies": dependencies.get(resource, []),
+            "status": statuses.get(resource, "unknown")
+        }
+
+    try:
+        with open(output_path, 'w', encoding='utf-8') as json_file:
+            json.dump(resource_index, json_file, indent=4, ensure_ascii=False)
+    except Exception as e:
+        print(f"Failed to write resource index to {output_path}: {e}")

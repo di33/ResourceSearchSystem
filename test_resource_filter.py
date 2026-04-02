@@ -2,7 +2,8 @@ import unittest
 import os
 import shutil
 from pathlib import Path
-from resource_filter import filter_resources, copy_and_categorize_resources, detect_malicious_file
+import json
+from resource_filter import filter_resources, copy_and_categorize_resources, detect_malicious_file, generate_resource_index
 
 class TestResourceFilter(unittest.TestCase):
 
@@ -62,6 +63,34 @@ class TestResourceFilter(unittest.TestCase):
         # Placeholder test, assuming all files are non-malicious
         self.assertFalse(detect_malicious_file(self.valid_file))
         self.assertFalse(detect_malicious_file(self.invalid_file))
+
+    def test_generate_resource_index(self):
+        """
+        Test the resource index generation functionality.
+        """
+        resource_paths = [self.valid_file, self.invalid_file]
+        output_path = os.path.join(self.test_dir, "resources.json")
+        dependencies = {
+            self.valid_file: ["dependency1", "dependency2"],
+            self.invalid_file: []
+        }
+        statuses = {
+            self.valid_file: "completed",
+            self.invalid_file: "failed"
+        }
+
+        from resource_filter import generate_resource_index
+        generate_resource_index(resource_paths, output_path, dependencies, statuses)
+
+        # Verify the output JSON file
+        with open(output_path, "r", encoding="utf-8") as json_file:
+            data = json.load(json_file)
+
+        self.assertIn(self.valid_file, data)
+        self.assertIn(self.invalid_file, data)
+        self.assertEqual(data[self.valid_file]["dependencies"], ["dependency1", "dependency2"])
+        self.assertEqual(data[self.valid_file]["status"], "completed")
+        self.assertEqual(data[self.invalid_file]["status"], "failed")
 
 if __name__ == "__main__":
     unittest.main()
