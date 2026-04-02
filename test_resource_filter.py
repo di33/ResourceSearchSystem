@@ -3,7 +3,7 @@ import os
 import shutil
 from pathlib import Path
 import json
-from resource_filter import filter_resources, copy_and_categorize_resources, detect_malicious_file, generate_resource_index, filter_resources_with_handlers, ResourceHandlerFactory
+from resource_filter import filter_resources, copy_and_categorize_resources, detect_malicious_file, generate_resource_index, filter_resources_with_handlers, ResourceHandlerFactory, check_file_integrity
 
 class TestResourceFilter(unittest.TestCase):
 
@@ -130,6 +130,35 @@ class TestResourceFilter(unittest.TestCase):
         # Validate results
         self.assertIn(image_file, result)
         self.assertIn(document_file, result)
+
+class TestFileIntegrity(unittest.TestCase):
+
+    def setUp(self):
+        self.test_dir = "test_integrity"
+        os.makedirs(self.test_dir, exist_ok=True)
+
+        self.valid_file = os.path.join(self.test_dir, "valid_file.txt")
+        with open(self.valid_file, "wb") as f:
+            f.write(b"HEAD")  # 模拟完整的文件头
+
+        self.invalid_file = os.path.join(self.test_dir, "invalid_file.txt")
+        with open(self.invalid_file, "wb") as f:
+            f.write(b"H")  # 模拟不完整的文件头
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def test_check_file_integrity_valid(self):
+        result = check_file_integrity(self.valid_file)
+        self.assertTrue(result, "完整文件校验应通过")
+
+    def test_check_file_integrity_invalid(self):
+        result = check_file_integrity(self.invalid_file)
+        self.assertFalse(result, "不完整文件校验应失败")
+
+    def test_check_file_integrity_nonexistent(self):
+        result = check_file_integrity(os.path.join(self.test_dir, "nonexistent.txt"))
+        self.assertFalse(result, "不存在的文件校验应失败")
 
 if __name__ == "__main__":
     unittest.main()

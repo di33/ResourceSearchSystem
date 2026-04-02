@@ -1,8 +1,13 @@
 import os
 import json
 import shutil
+import logging
 from typing import List
 from pathlib import Path
+
+# 设置日志记录
+logging.basicConfig(level=logging.ERROR, filename='integrity_check.log',
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
 class ResourceHandlerFactory:
     """
@@ -47,6 +52,31 @@ def is_supported_file(file_path: str, supported_extensions: List[str]) -> bool:
     Check if the file has a supported extension.
     """
     return any(file_path.endswith(ext) for ext in supported_extensions)
+
+def check_file_integrity(file_path: str) -> bool:
+    """
+    检查文件头信息是否完整。
+
+    Args:
+        file_path (str): 文件路径。
+
+    Returns:
+        bool: 校验结果，True 表示通过，False 表示失败。
+    """
+    try:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"文件未找到: {file_path}")
+
+        with open(file_path, 'rb') as file:
+            header = file.read(4)  # 假设文件头信息为前 4 个字节
+            if len(header) < 4:
+                raise ValueError("文件头信息不完整")
+
+        return True
+
+    except Exception as e:
+        logging.error(f"文件完整性校验失败: {file_path}, 错误: {e}")
+        return False
 
 def validate_file_integrity(file_path: str) -> bool:
     """
@@ -104,7 +134,7 @@ def filter_resources(directory: str, config_path: str) -> List[str]:
         for file in files:
             file_path = os.path.join(root, file)
             if is_supported_file(file_path, supported_types):
-                if validate_file_integrity(file_path) and detect_file_disguise(file_path):
+                if check_file_integrity(file_path) and validate_file_integrity(file_path) and detect_file_disguise(file_path):
                     valid_files.append(file_path)
 
     return valid_files
@@ -147,7 +177,7 @@ def filter_resources_with_handlers(directory: str, config_path: str) -> List[str
                     handler = handler_class()
                     handler.process(file_path)
 
-                if validate_file_integrity(file_path) and detect_file_disguise(file_path):
+                if check_file_integrity(file_path) and validate_file_integrity(file_path) and detect_file_disguise(file_path):
                     valid_files.append(file_path)
 
     return valid_files

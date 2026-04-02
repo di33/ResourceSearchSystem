@@ -1,0 +1,2 @@
+2026-04-02 11:16:15,450 - ERROR - 文件完整性校验失败: test_integrity\invalid_file.txt, 错误: 文件头信息不完整
+2026-04-02 11:16:15,452 - ERROR - 文件完整性校验失败: test_integrity\nonexistent.txt, 错误: 文件未找到: test_integrity\nonexistent.txt
