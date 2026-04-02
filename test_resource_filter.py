@@ -3,7 +3,7 @@ import os
 import shutil
 from pathlib import Path
 import json
-from resource_filter import filter_resources, copy_and_categorize_resources, detect_malicious_file, generate_resource_index, filter_resources_with_handlers, ResourceHandlerFactory, check_file_integrity
+from resource_filter import filter_resources, copy_and_categorize_resources, detect_malicious_file, generate_resource_index, filter_resources_with_handlers, ResourceHandlerFactory, check_file_integrity, PreviewGenerator
 
 class TestResourceFilter(unittest.TestCase):
 
@@ -159,6 +159,43 @@ class TestFileIntegrity(unittest.TestCase):
     def test_check_file_integrity_nonexistent(self):
         result = check_file_integrity(os.path.join(self.test_dir, "nonexistent.txt"))
         self.assertFalse(result, "不存在的文件校验应失败")
+
+class TestPreviewGenerator(unittest.TestCase):
+
+    def setUp(self):
+        self.test_input = "test_input.txt"
+        self.test_output_webp = "test_output.webp"
+        self.test_output_mp4 = "test_output.mp4"
+        self.test_output_jpeg = "test_output.jpeg"
+
+        # 创建测试输入文件
+        with open(self.test_input, "w") as f:
+            f.write("Test content")
+
+    def tearDown(self):
+        # 删除测试文件
+        for file in [self.test_input, self.test_output_webp, self.test_output_mp4, self.test_output_jpeg]:
+            if os.path.exists(file):
+                os.remove(file)
+
+    def test_generate_preview_webp(self):
+        result = PreviewGenerator.generate_preview(self.test_input, self.test_output_webp, "webp")
+        self.assertTrue(result)
+        self.assertTrue(os.path.exists(self.test_output_webp))
+
+    def test_generate_preview_mp4(self):
+        result = PreviewGenerator.generate_preview(self.test_input, self.test_output_mp4, "mp4")
+        self.assertTrue(result)
+        self.assertTrue(os.path.exists(self.test_output_mp4))
+
+    def test_generate_preview_jpeg(self):
+        result = PreviewGenerator.generate_preview(self.test_input, self.test_output_jpeg, "jpeg")
+        self.assertTrue(result)
+        self.assertTrue(os.path.exists(self.test_output_jpeg))
+
+    def test_generate_preview_invalid_format(self):
+        result = PreviewGenerator.generate_preview(self.test_input, "invalid_output.xyz", "xyz")
+        self.assertFalse(result)
 
 if __name__ == "__main__":
     unittest.main()

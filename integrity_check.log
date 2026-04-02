@@ -1,2 +1,47 @@
 2026-04-02 11:16:15,450 - ERROR - 文件完整性校验失败: test_integrity\invalid_file.txt, 错误: 文件头信息不完整
 2026-04-02 11:16:15,452 - ERROR - 文件完整性校验失败: test_integrity\nonexistent.txt, 错误: 文件未找到: test_integrity\nonexistent.txt
+2026-04-02 11:19:25,585 - ERROR - 文件完整性校验失败: test_integrity\invalid_file.txt, 错误: 文件头信息不完整
+2026-04-02 11:19:25,586 - ERROR - 文件完整性校验失败: test_integrity\nonexistent.txt, 错误: 文件未找到: test_integrity\nonexistent.txt
+2026-04-02 11:19:25,588 - ERROR - 不支持的格式: xyz
+2026-04-02 11:19:25,592 - ERROR - 未知错误: [WinError 2] 系统找不到指定的文件。
+2026-04-02 11:19:25,596 - ERROR - 未知错误: [WinError 2] 系统找不到指定的文件。
+2026-04-02 11:19:25,599 - ERROR - 未知错误: [WinError 2] 系统找不到指定的文件。
+2026-04-02 11:19:25,612 - ERROR - Task failed after maximum retries.
+2026-04-02 11:19:31,621 - ERROR - Task failed after maximum retries.
+2026-04-02 11:37:13,908 - ERROR - 文件完整性校验失败: test_integrity\invalid_file.txt, 错误: 文件头信息不完整
+2026-04-02 11:37:13,909 - ERROR - 文件完整性校验失败: test_integrity\nonexistent.txt, 错误: 文件未找到: test_integrity\nonexistent.txt
+2026-04-02 11:37:13,910 - ERROR - 不支持的格式: xyz
+2026-04-02 11:37:13,913 - ERROR - 未知错误: [WinError 2] 系统找不到指定的文件。
+2026-04-02 11:37:13,916 - ERROR - 未知错误: [WinError 2] 系统找不到指定的文件。
+2026-04-02 11:37:13,919 - ERROR - 未知错误: [WinError 2] 系统找不到指定的文件。
+2026-04-02 11:37:13,936 - ERROR - Task failed after maximum retries.
+2026-04-02 11:37:19,970 - ERROR - Task failed after maximum retries.
+2026-04-02 11:37:35,631 - ERROR - 预览生成失败: Command 'ffmpeg' returned non-zero exit status 1.
+2026-04-02 11:37:35,633 - ERROR - 文件完整性校验失败: test_integrity\invalid_file.txt, 错误: 文件头信息不完整
+2026-04-02 11:37:35,634 - ERROR - 文件完整性校验失败: test_integrity\nonexistent.txt, 错误: 文件未找到: test_integrity\nonexistent.txt
+2026-04-02 11:37:35,637 - ERROR - 不支持的格式: xyz
+2026-04-02 11:37:35,641 - ERROR - 未知错误: [WinError 2] 系统找不到指定的文件。
+2026-04-02 11:37:35,644 - ERROR - 未知错误: [WinError 2] 系统找不到指定的文件。
+2026-04-02 11:37:35,648 - ERROR - 未知错误: [WinError 2] 系统找不到指定的文件。
+2026-04-02 11:37:35,661 - ERROR - Task failed after maximum retries.
+2026-04-02 11:37:41,700 - ERROR - Task failed after maximum retries.
+2026-04-02 11:57:31,661 - ERROR - 输入文件不存在: input.mp4
+2026-04-02 11:57:31,662 - ERROR - 输入文件不存在: input.mp4
+2026-04-02 11:57:31,666 - ERROR - 未知错误: [WinError 2] 系统找不到指定的文件。
+2026-04-02 11:57:31,666 - ERROR - 不支持的格式: txt
+2026-04-02 11:57:31,671 - ERROR - 未知错误: [WinError 2] 系统找不到指定的文件。
+2026-04-02 11:57:31,671 - ERROR - 保存预览文件失败: 预览文件生成失败: test_output\preview.webp
+2026-04-02 11:57:31,672 - ERROR - 输入文件不存在: non_existent_file.mp4
+2026-04-02 11:57:31,672 - ERROR - 保存预览文件失败: 预览文件生成失败: test_output\preview.mp4
+2026-04-02 14:11:52,944 - ERROR - 输入文件不存在: input.mp4
+2026-04-02 14:11:52,946 - ERROR - 输入文件不存在: input.mp4
+2026-04-02 14:11:52,982 - ERROR - 预览生成失败: Command '['ffmpeg', '-i', 'test_input.mp4', 'test_output\\preview.webp']' returned non-zero exit status 3199971767.
+2026-04-02 14:11:52,983 - ERROR - 不支持的格式: txt
+2026-04-02 14:11:53,018 - ERROR - 预览生成失败: Command '['ffmpeg', '-i', 'test_input.mp4', 'test_output\\preview.webp']' returned non-zero exit status 3199971767.
+2026-04-02 14:11:53,018 - ERROR - 保存预览文件失败: 预览文件生成失败: test_output\preview.webp
+2026-04-02 14:11:53,019 - ERROR - 输入文件不存在: non_existent_file.mp4
+2026-04-02 14:11:53,019 - ERROR - 保存预览文件失败: 预览文件生成失败: test_output\preview.mp4
+2026-04-02 14:12:30,985 - ERROR - 输入文件不存在: input.mp4
+2026-04-02 14:12:30,987 - ERROR - 输入文件不存在: input.mp4
+2026-04-02 14:12:30,991 - ERROR - 输入文件不存在: non_existent_file.mp4
+2026-04-02 14:12:30,991 - ERROR - 保存预览文件失败: 预览文件生成失败: test_output\preview.mp4

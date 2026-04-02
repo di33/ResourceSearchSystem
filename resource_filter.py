@@ -4,6 +4,7 @@ import shutil
 import logging
 from typing import List
 from pathlib import Path
+import subprocess
 
 # 设置日志记录
 logging.basicConfig(level=logging.ERROR, filename='integrity_check.log',
@@ -46,6 +47,74 @@ class ImageHandler:
 
 # Register the ImageHandler dynamically
 ResourceHandlerFactory.register_handler("images", ImageHandler)
+
+class PreviewGenerator:
+    SUPPORTED_FORMATS = {"webp", "mp4", "jpeg"}
+
+    @staticmethod
+    def generate_preview(input_path: str, output_path: str, format: str) -> bool:
+        """
+        根据目标格式生成预览文件。
+
+        Args:
+            input_path (str): 输入文件路径。
+            output_path (str): 输出文件路径。
+            format (str): 目标格式（webp, mp4, jpeg）。
+
+        Returns:
+            bool: True 表示生成成功，False 表示失败。
+        """
+        if not os.path.exists(input_path):
+            logging.error(f"输入文件不存在: {input_path}")
+            return False
+
+        if format.lower() not in PreviewGenerator.SUPPORTED_FORMATS:
+            logging.error(f"不支持的格式: {format}")
+            return False
+
+        try:
+            # 使用 ffmpeg 生成预览文件
+            command = [
+                "ffmpeg", "-i", input_path, output_path
+            ]
+            subprocess.run(command, check=True)
+            logging.info(f"预览文件已生成: {output_path}")
+            return True
+        except subprocess.CalledProcessError as e:
+            logging.error(f"预览生成失败: {e}")
+            return False
+        except Exception as e:
+            logging.error(f"未知错误: {e}")
+            return False
+
+    @staticmethod
+    def save_preview(input_path: str, output_dir: str, format: str) -> str:
+        """
+        保存预览文件到指定路径。
+
+        Args:
+            input_path (str): 输入文件路径。
+            output_dir (str): 输出目录。
+            format (str): 目标格式。
+
+        Returns:
+            str: 生成的预览文件路径。
+        """
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        file_name = f"preview.{format}"
+        output_path = os.path.join(output_dir, file_name)
+
+        try:
+            success = PreviewGenerator.generate_preview(input_path, output_path, format)
+            if not success:
+                raise RuntimeError(f"预览文件生成失败: {output_path}")
+
+            return output_path
+        except Exception as e:
+            logging.error(f"保存预览文件失败: {e}")
+            raise
 
 def is_supported_file(file_path: str, supported_extensions: List[str]) -> bool:
     """
