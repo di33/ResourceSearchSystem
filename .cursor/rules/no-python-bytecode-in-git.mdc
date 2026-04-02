@@ -1,0 +1,9 @@
+---
+description: 勿将 Python 字节码（pyc 等）纳入版本控制
+alwaysApply: true
+---
+
+# Python 字节码与缓存
+
+- 不要提交 `*.pyc`、`*.pyo`、`__pycache__/` 以及 Python 生成的同类产物；仓库根目录 `.gitignore` 已包含对应规则。
+- 若新增其它生成目录或缓存（如 `.mypy_cache/`、`.pytest_cache/`），除非项目约定需要共享，否则应加入 `.gitignore`，不要纳入提交。

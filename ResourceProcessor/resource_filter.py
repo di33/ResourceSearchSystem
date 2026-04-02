@@ -5,7 +5,6 @@ import logging
 from typing import List
 from pathlib import Path
 import subprocess
-
 # 设置日志记录
 logging.basicConfig(level=logging.ERROR, filename='integrity_check.log',
                     format='%(asctime)s - %(levelname)s - %(message)s')

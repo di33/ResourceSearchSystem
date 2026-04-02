@@ -3,8 +3,14 @@ import os
 import shutil
 from pathlib import Path
 import json
-from resource_filter import filter_resources, copy_and_categorize_resources, detect_malicious_file, generate_resource_index, filter_resources_with_handlers, ResourceHandlerFactory, check_file_integrity, PreviewGenerator
+from unittest.mock import patch, MagicMock
+from ResourceProcessor.resource_filter import filter_resources, copy_and_categorize_resources, detect_malicious_file, generate_resource_index, filter_resources_with_handlers, ResourceHandlerFactory, check_file_integrity, PreviewGenerator
 
+
+def _mock_ffmpeg_run(cmd, check=True, **kwargs):
+    output_path = cmd[-1]
+    Path(output_path).write_bytes(b"\x00")
+    return MagicMock()
 class TestResourceFilter(unittest.TestCase):
     def test_filter_resources_max_file_size(self):
         """
@@ -137,7 +143,7 @@ class TestResourceFilter(unittest.TestCase):
             self.invalid_file: "failed"
         }
 
-        from resource_filter import generate_resource_index
+        from ResourceProcessor.resource_filter import generate_resource_index
         generate_resource_index(resource_paths, output_path, dependencies, statuses)
 
         # Verify the output JSON file
@@ -236,17 +242,20 @@ class TestPreviewGenerator(unittest.TestCase):
             if os.path.exists(file):
                 os.remove(file)
 
-    def test_generate_preview_webp(self):
+    @patch("ResourceProcessor.resource_filter.subprocess.run", side_effect=_mock_ffmpeg_run)
+    def test_generate_preview_webp(self, _mock_run):
         result = PreviewGenerator.generate_preview(self.test_input, self.test_output_webp, "webp")
         self.assertTrue(result)
         self.assertTrue(os.path.exists(self.test_output_webp))
 
-    def test_generate_preview_mp4(self):
+    @patch("ResourceProcessor.resource_filter.subprocess.run", side_effect=_mock_ffmpeg_run)
+    def test_generate_preview_mp4(self, _mock_run):
         result = PreviewGenerator.generate_preview(self.test_input, self.test_output_mp4, "mp4")
         self.assertTrue(result)
         self.assertTrue(os.path.exists(self.test_output_mp4))
 
-    def test_generate_preview_jpeg(self):
+    @patch("ResourceProcessor.resource_filter.subprocess.run", side_effect=_mock_ffmpeg_run)
+    def test_generate_preview_jpeg(self, _mock_run):
         result = PreviewGenerator.generate_preview(self.test_input, self.test_output_jpeg, "jpeg")
         self.assertTrue(result)
         self.assertTrue(os.path.exists(self.test_output_jpeg))

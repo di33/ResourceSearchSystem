@@ -1,7 +1,6 @@
 import asyncio
 import unittest
-from task_manager import TaskManager
-
+from ResourceProcessor.task_manager import TaskManager
 class TestTaskManager(unittest.TestCase):
 
     def setUp(self):

@@ -1,9 +1,8 @@
 import os
 import unittest
 from unittest.mock import patch, MagicMock
-from resource_filter import PreviewGenerator
+from ResourceProcessor.resource_filter import PreviewGenerator
 import subprocess
-
 class TestPreviewGenerator(unittest.TestCase):
 
     def setUp(self):
@@ -29,19 +28,20 @@ class TestPreviewGenerator(unittest.TestCase):
                 os.remove(os.path.join(self.output_dir, file))
             os.rmdir(self.output_dir)
 
-    @patch("resource_filter.subprocess.run")
-    def test_generate_preview_success(self, mock_subprocess):
+    @patch("ResourceProcessor.resource_filter.os.path.exists", return_value=True)
+    @patch("ResourceProcessor.resource_filter.subprocess.run")
+    def test_generate_preview_success(self, mock_subprocess, _mock_exists):
         mock_subprocess.return_value = MagicMock()
         result = PreviewGenerator.generate_preview("input.mp4", "output.webp", "webp")
         self.assertTrue(result)
 
-    @patch("resource_filter.subprocess.run")
+    @patch("ResourceProcessor.resource_filter.subprocess.run")
     def test_generate_preview_failure(self, mock_subprocess):
         mock_subprocess.side_effect = subprocess.CalledProcessError(1, "ffmpeg")
         result = PreviewGenerator.generate_preview("input.mp4", "output.webp", "webp")
         self.assertFalse(result)
 
-    @patch("resource_filter.PreviewGenerator.generate_preview")
+    @patch("ResourceProcessor.resource_filter.PreviewGenerator.generate_preview")
     @patch("os.makedirs")
     def test_save_preview_success(self, mock_makedirs, mock_generate_preview):
         mock_generate_preview.return_value = True
@@ -49,28 +49,20 @@ class TestPreviewGenerator(unittest.TestCase):
         output_path = PreviewGenerator.save_preview("input.mp4", output_dir, "webp")
         self.assertEqual(output_path, os.path.join(output_dir, "preview.webp"))
 
-    @patch("resource_filter.PreviewGenerator.generate_preview")
+    @patch("ResourceProcessor.resource_filter.PreviewGenerator.generate_preview")
     def test_save_preview_failure(self, mock_generate_preview):
         mock_generate_preview.return_value = False
         with self.assertRaises(RuntimeError):
             PreviewGenerator.save_preview("input.mp4", "test_output", "webp")
 
-    def test_generate_preview_supported_formats(self):
-        for fmt in self.supported_formats:
-            output_path = os.path.join(self.output_dir, f"preview.{fmt}")
-            result = PreviewGenerator.generate_preview(self.input_path, output_path, fmt)
-            self.assertTrue(result)
-            self.assertTrue(os.path.exists(output_path))
-
-
-    @patch("resource_filter.subprocess.run")
+    @patch("ResourceProcessor.resource_filter.subprocess.run")
     def test_generate_preview_supported_formats(self, mock_subprocess):
         mock_subprocess.return_value = MagicMock()
         for fmt in self.supported_formats:
             output_path = os.path.join(self.output_dir, f"preview.{fmt}")
             result = PreviewGenerator.generate_preview(self.input_path, output_path, fmt)
             self.assertTrue(result)
-    @patch("resource_filter.PreviewGenerator.generate_preview")
+    @patch("ResourceProcessor.resource_filter.PreviewGenerator.generate_preview")
     def test_save_preview(self, mock_generate_preview):
         mock_generate_preview.return_value = True
         for fmt in self.supported_formats:

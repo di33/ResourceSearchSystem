@@ -1,10 +1,9 @@
 import pytest
 import os
 from pathlib import Path
-from thumbnail_generator import ThumbnailGenerator
+from ResourceProcessor.thumbnail_generator import ThumbnailGenerator
 import pytest_asyncio
 from PIL import Image
-
 @pytest_asyncio.fixture
 async def setup_generator(tmp_path):
     generator = ThumbnailGenerator(output_dir=tmp_path)

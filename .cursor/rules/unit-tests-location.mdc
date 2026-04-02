@@ -1,0 +1,10 @@
+---
+description: 单元测试必须放在 Test 目录下
+alwaysApply: true
+---
+
+# 单元测试位置
+
+- 所有单元测试文件、测试包与测试辅件应放在仓库根目录的 `Test/` 下（例如 `Test/ResourceProcessor/test_*.py`）。
+- 不要在 `ResourceProcessor/` 或其他源码目录中新增 `test_*.py`、`*_test.py` 或 `tests/` 等与 unittest/pytest  discover 混排的测试入口；新增用例时扩充 `Test/` 下的结构即可。
+- 运行测试时从项目根执行，并对 `unittest discover` 使用 `-t <项目根>`，避免 `Test` 子目录名与源码包名冲突导致错误解析（参见现有用法）。
