@@ -1,6 +1,8 @@
 import os
 import json
+import shutil
 from typing import List
+from pathlib import Path
 
 def is_supported_file(file_path: str, supported_extensions: List[str]) -> bool:
     """
@@ -26,6 +28,20 @@ def detect_file_disguise(file_path: str) -> bool:
     """
     # Placeholder for file disguise detection logic
     return True
+
+def detect_malicious_file(file_path: str) -> bool:
+    """
+    Detect if a file is malicious.
+
+    Args:
+        file_path (str): Path to the file to check.
+
+    Returns:
+        bool: True if the file is malicious, False otherwise.
+    """
+    # Placeholder for actual malicious file detection logic
+    # Example: Check for suspicious patterns or scan with antivirus
+    return False
 
 def filter_resources(directory: str, config_path: str) -> List[str]:
     """
@@ -54,3 +70,51 @@ def filter_resources(directory: str, config_path: str) -> List[str]:
                     valid_files.append(file_path)
 
     return valid_files
+
+def copy_and_categorize_resources(resource_paths: List[str], work_dir: str) -> None:
+    """
+    Copy and categorize resources into the specified work directory.
+
+    Args:
+        resource_paths (List[str]): List of resource file paths to copy.
+        work_dir (str): Path to the working directory.
+
+    Returns:
+        None
+    """
+    # Define categories based on file extensions
+    categories = {
+        'images': ['.jpg', '.jpeg', '.png', '.gif'],
+        'models': ['.obj', '.fbx', '.stl'],
+        'others': []
+    }
+
+    # Create category directories
+    for category in categories:
+        category_path = Path(work_dir) / category
+        category_path.mkdir(parents=True, exist_ok=True)
+
+    for file_path in resource_paths:
+        file_ext = Path(file_path).suffix.lower()
+        target_category = 'others'
+
+        # Determine the category based on file extension
+        for category, extensions in categories.items():
+            if file_ext in extensions:
+                target_category = category
+                break
+
+        target_dir = Path(work_dir) / target_category
+        target_file_path = target_dir / Path(file_path).name
+
+        # Handle file name conflicts
+        counter = 1
+        while target_file_path.exists():
+            target_file_path = target_dir / f"{Path(file_path).stem}_{counter}{file_ext}"
+            counter += 1
+
+        # Copy the file
+        try:
+            shutil.copy2(file_path, target_file_path)
+        except Exception as e:
+            print(f"Failed to copy {file_path} to {target_file_path}: {e}")

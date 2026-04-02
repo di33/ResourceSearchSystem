@@ -1,6 +1,8 @@
 import unittest
 import os
-from resource_filter import filter_resources
+import shutil
+from pathlib import Path
+from resource_filter import filter_resources, copy_and_categorize_resources, detect_malicious_file
 
 class TestResourceFilter(unittest.TestCase):
 
@@ -27,10 +29,9 @@ class TestResourceFilter(unittest.TestCase):
         """
         Clean up temporary files and directories.
         """
-        os.remove(self.valid_file)
-        os.remove(self.invalid_file)
-        os.rmdir(self.test_dir)
-        os.remove(self.config_path)
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+        if os.path.exists(self.config_path):
+            os.remove(self.config_path)
 
     def test_filter_resources(self):
         """
@@ -39,6 +40,28 @@ class TestResourceFilter(unittest.TestCase):
         result = filter_resources(self.test_dir, self.config_path)
         self.assertIn(self.valid_file, result)
         self.assertNotIn(self.invalid_file, result)
+
+    def test_copy_and_categorize_resources(self):
+        """
+        Test the copy and categorize functionality.
+        """
+        work_dir = Path(self.test_dir) / "output"
+        work_dir.mkdir(exist_ok=True)
+
+        resource_paths = [self.valid_file, self.invalid_file]
+        copy_and_categorize_resources(resource_paths, str(work_dir))
+
+        # Check if files are categorized correctly
+        self.assertTrue((work_dir / "others" / "valid.txt").exists())
+        self.assertTrue((work_dir / "others" / "invalid.exe").exists())
+
+    def test_detect_malicious_file(self):
+        """
+        Test the malicious file detection functionality.
+        """
+        # Placeholder test, assuming all files are non-malicious
+        self.assertFalse(detect_malicious_file(self.valid_file))
+        self.assertFalse(detect_malicious_file(self.invalid_file))
 
 if __name__ == "__main__":
     unittest.main()
