@@ -4,6 +4,44 @@ import shutil
 from typing import List
 from pathlib import Path
 
+class ResourceHandlerFactory:
+    """
+    Factory class to register and retrieve resource handlers dynamically.
+    """
+    _handlers = {}
+
+    @classmethod
+    def register_handler(cls, resource_type: str, handler_class):
+        """
+        Register a handler for a specific resource type.
+
+        Args:
+            resource_type (str): The resource type (e.g., 'images').
+            handler_class (type): The handler class to register.
+        """
+        cls._handlers[resource_type] = handler_class
+
+    @classmethod
+    def get_handler(cls, resource_type: str):
+        """
+        Retrieve the handler for a specific resource type.
+
+        Args:
+            resource_type (str): The resource type.
+
+        Returns:
+            type: The handler class for the resource type.
+        """
+        return cls._handlers.get(resource_type)
+
+# Example handler class for demonstration
+class ImageHandler:
+    def process(self, file_path: str):
+        print(f"Processing image: {file_path}")
+
+# Register the ImageHandler dynamically
+ResourceHandlerFactory.register_handler("images", ImageHandler)
+
 def is_supported_file(file_path: str, supported_extensions: List[str]) -> bool:
     """
     Check if the file has a supported extension.
@@ -66,6 +104,49 @@ def filter_resources(directory: str, config_path: str) -> List[str]:
         for file in files:
             file_path = os.path.join(root, file)
             if is_supported_file(file_path, supported_types):
+                if validate_file_integrity(file_path) and detect_file_disguise(file_path):
+                    valid_files.append(file_path)
+
+    return valid_files
+
+def filter_resources_with_handlers(directory: str, config_path: str) -> List[str]:
+    """
+    Filter resources and process them using dynamically registered handlers.
+
+    Args:
+        directory (str): Path to the directory containing resources.
+        config_path (str): Path to the JSON configuration file with supported types.
+
+    Returns:
+        List[str]: List of valid resource file paths.
+    """
+    try:
+        with open(config_path, 'r') as config_file:
+            config = json.load(config_file)
+            supported_types = config.get("supported_extensions", {})
+    except Exception as e:
+        raise ValueError(f"Failed to load configuration: {e}")
+
+    valid_files = []
+
+    for root, _, files in os.walk(directory):
+        for file in files:
+            file_path = os.path.join(root, file)
+            file_ext = Path(file_path).suffix.lower()
+
+            # Determine the resource type based on the extension
+            resource_type = None
+            for r_type, extensions in supported_types.items():
+                if file_ext in extensions:
+                    resource_type = r_type
+                    break
+
+            if resource_type:
+                handler_class = ResourceHandlerFactory.get_handler(resource_type)
+                if handler_class:
+                    handler = handler_class()
+                    handler.process(file_path)
+
                 if validate_file_integrity(file_path) and detect_file_disguise(file_path):
                     valid_files.append(file_path)
 

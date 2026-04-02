@@ -3,7 +3,7 @@ import os
 import shutil
 from pathlib import Path
 import json
-from resource_filter import filter_resources, copy_and_categorize_resources, detect_malicious_file, generate_resource_index
+from resource_filter import filter_resources, copy_and_categorize_resources, detect_malicious_file, generate_resource_index, filter_resources_with_handlers, ResourceHandlerFactory
 
 class TestResourceFilter(unittest.TestCase):
 
@@ -91,6 +91,45 @@ class TestResourceFilter(unittest.TestCase):
         self.assertEqual(data[self.valid_file]["dependencies"], ["dependency1", "dependency2"])
         self.assertEqual(data[self.valid_file]["status"], "completed")
         self.assertEqual(data[self.invalid_file]["status"], "failed")
+
+    def test_filter_resources_with_handlers(self):
+        """
+        Test the resource filtering with dynamic handlers.
+        """
+        # Extend the configuration to include a new resource type
+        extended_config = {
+            "supported_extensions": {
+                "images": [".jpg", ".png"],
+                "documents": [".txt", ".docx"]
+            }
+        }
+
+        with open(self.config_path, "w") as f:
+            json.dump(extended_config, f)
+
+        # Create additional test files
+        image_file = os.path.join(self.test_dir, "image.jpg")
+        with open(image_file, "w") as f:
+            f.write("Image content")
+
+        document_file = os.path.join(self.test_dir, "document.txt")
+        with open(document_file, "w") as f:
+            f.write("Document content")
+
+        # Register a mock handler for testing
+        class MockHandler:
+            def process(self, file_path: str):
+                print(f"Mock processing: {file_path}")
+
+        ResourceHandlerFactory.register_handler("images", MockHandler)
+        ResourceHandlerFactory.register_handler("documents", MockHandler)
+
+        # Run the filter_resources_with_handlers function
+        result = filter_resources_with_handlers(self.test_dir, self.config_path)
+
+        # Validate results
+        self.assertIn(image_file, result)
+        self.assertIn(document_file, result)
 
 if __name__ == "__main__":
     unittest.main()
