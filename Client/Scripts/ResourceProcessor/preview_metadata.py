@@ -73,6 +73,11 @@ class ResourceProcessingEntity:
     prompt_version: str = ""
     description_quality_score: Optional[float] = None
 
+    embedding_dimension: int = 0
+    embedding_checksum: str = ""
+    embedding_generate_time: float = 0.0
+    embedding_model_version: str = ""
+
     retry_count: int = 0
     last_error_code: str = ""
     last_error_message: str = ""
