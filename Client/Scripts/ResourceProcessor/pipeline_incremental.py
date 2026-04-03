@@ -12,6 +12,9 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List
 
+from PIL import Image
+
+from ResourceProcessor.preview_metadata import PreviewInfo, PreviewStrategy
 from ResourceProcessor.resource_filter import copy_single_categorized_resource
 from ResourceProcessor.thumbnail_generator import ThumbnailGenerator, validate_preview
 
@@ -154,10 +157,27 @@ async def ensure_previews(
             entry["preview_path"] = None
             entry["preview_failed"] = True
             entry["preview_fail_reason"] = reason
+            preview_info = PreviewInfo(
+                strategy=PreviewStrategy.STATIC if ext in IMAGE_EXTS else PreviewStrategy.GIF,
+                fail_reason=reason,
+            )
         else:
             entry["preview_path"] = os.path.abspath(out_path)
             entry.pop("preview_failed", None)
             entry.pop("preview_fail_reason", None)
+            with Image.open(out_path) as im:
+                w, h = im.size
+            preview_info = PreviewInfo(
+                strategy=PreviewStrategy.STATIC if ext in IMAGE_EXTS else PreviewStrategy.GIF,
+                path=os.path.abspath(out_path),
+                format=Path(out_path).suffix.lstrip('.'),
+                width=w,
+                height=h,
+                size=os.path.getsize(out_path),
+                renderer=preview_renderer,
+                used_placeholder=(preview_renderer == "placeholder"),
+            )
+        entry["preview_info"] = preview_info.to_dict()
         entry["preview_renderer"] = preview_renderer
         entry["fingerprint"] = fp
         entry["copied_path"] = os.path.abspath(copied)

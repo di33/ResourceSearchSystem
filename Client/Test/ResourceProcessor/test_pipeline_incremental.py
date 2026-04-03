@@ -168,3 +168,42 @@ def test_ensure_previews_validates_preview(tmp_path, monkeypatch):
     assert entry.get("preview_fail_reason")
     assert entry.get("preview_path") is None
 
+
+def test_ensure_previews_populates_preview_info(tmp_path, monkeypatch):
+    """After ensure_previews, state entry contains preview_info with expected fields."""
+    src = tmp_path / "color.png"
+    Image.new("RGB", (300, 200), (100, 150, 200)).save(src)
+    copied_dir = tmp_path / "Images"
+    copied_dir.mkdir()
+    copied = copied_dir / "color.png"
+    import shutil
+    shutil.copy2(src, copied)
+
+    key = norm_source(str(src))
+    state = {
+        "by_source": {
+            key: {
+                "fingerprint": fingerprint(str(src)),
+                "copied_path": str(copied),
+                "preview_path": None,
+            }
+        }
+    }
+
+    monkeypatch.setattr(
+        "ResourceProcessor.thumbnail_generator.find_blender_executable",
+        lambda: None,
+    )
+
+    asyncio.run(ensure_previews({str(src): str(copied)}, str(tmp_path), state))
+
+    entry = state["by_source"][key]
+    pi = entry.get("preview_info")
+    assert pi is not None
+    assert isinstance(pi, dict)
+    assert pi["strategy"] == "static"
+    assert pi["format"] in ("webp", "png", "jpg")
+    assert isinstance(pi["width"], int) and pi["width"] > 0
+    assert isinstance(pi["height"], int) and pi["height"] > 0
+    assert isinstance(pi["size"], int) and pi["size"] > 0
+
