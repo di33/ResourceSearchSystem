@@ -1,0 +1,13 @@
+{
+  "supported_extensions": [
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".tga",
+    ".webp",
+    ".fbx",
+    ".obj",
+    ".stl"
+  ]
+}
