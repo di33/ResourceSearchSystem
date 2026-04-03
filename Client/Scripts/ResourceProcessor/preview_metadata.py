@@ -67,6 +67,12 @@ class ResourceProcessingEntity:
     preview: Optional[PreviewInfo] = None
     resource_id: Optional[str] = None
 
+    description_main: str = ""
+    description_detail: str = ""
+    description_full: str = ""
+    prompt_version: str = ""
+    description_quality_score: Optional[float] = None
+
     retry_count: int = 0
     last_error_code: str = ""
     last_error_message: str = ""
