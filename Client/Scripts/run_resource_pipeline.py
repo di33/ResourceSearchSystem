@@ -23,20 +23,22 @@ _ROOT = os.path.dirname(_SCRIPTS_DIR)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
-from ResourceProcessor.deps import ensure_requirements  # noqa: E402
+from ResourceProcessor.core.deps import ensure_requirements  # noqa: E402
 
 ensure_requirements()
 
-from ResourceProcessor.pipeline_incremental import (  # noqa: E402
+from ResourceProcessor.preview.pipeline_incremental import (  # noqa: E402
     build_index_extra,
     load_state,
     resolve_copies,
     run_previews_sync,
     save_state,
+    get_resource_entities,
 )
-from ResourceProcessor.resource_filter import (  # noqa: E402
+from ResourceProcessor.core.resource_filter import (  # noqa: E402
     filter_resources,
     generate_resource_index,
+    group_files_by_directory,
 )
 
 
@@ -127,6 +129,17 @@ def main() -> int:
         run_previews_sync(mapping, work_dir, state)
 
     save_state(work_dir, state)
+
+    # Print resource grouping summary
+    resources = get_resource_entities(state)
+    if resources:
+        print(f"发现 {len(resources)} 个资源（按目录分组）：")
+        for r in resources:
+            file_names = [f["file_name"] for f in r.get("files", [])]
+            print(f"  - 目录: {r['source_directory']}")
+            print(f"    文件: {', '.join(file_names)}")
+            print(f"    预览: {len(r.get('previews', []))} 个")
+            print(f"    组合MD5: {r['content_md5'][:16]}...")
 
     index_path = os.path.join(work_dir, "resources.json")
     extra = build_index_extra(paths, state)
