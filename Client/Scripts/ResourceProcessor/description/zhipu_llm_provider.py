@@ -23,6 +23,7 @@ from ResourceProcessor.description.description_generator import (
     DescriptionResult,
     LLMFactory,
 )
+from ResourceProcessor.description.prompt_config import get_system_prompt, get_user_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -30,18 +31,13 @@ PROMPT_VERSION = "zhipu_v1"
 
 _VISION_MODELS = {"glm-4v-plus", "glm-4v-flash", "glm-4v"}
 
-_SYSTEM_PROMPT = (
-    "你是一个数字资源标注专家。根据提供的信息，为资源生成标准化的语义描述。"
-    "描述必须严格按以下两行格式输出，不要输出任何其他内容：\n"
-    "主体：<一句话概括资源的主要内容、类型、用途和适用场景，50-80字>\n"
-    "细节：<补充材质、配色、风格、技术细节等具体特征，50-80字>"
-)
-
 
 def _encode_image_base64(path: str) -> str | None:
     """Read a local image file and return its base64 string."""
+    if not path:
+        return None
     p = Path(path)
-    if not p.exists():
+    if not p.is_file():
         return None
     data = p.read_bytes()
     return base64.b64encode(data).decode("utf-8")
@@ -56,23 +52,14 @@ def _build_user_content_vision(input_data: DescriptionInput) -> list[dict]:
         content.append({"type": "image_url", "image_url": {"url": b64}})
 
     context = input_data.to_prompt_context()
-    content.append({
-        "type": "text",
-        "text": (
-            f"请根据上面的预览图片和以下元数据为该资源生成描述：\n{context}\n\n"
-            "严格按格式输出两行：\n主体：<概括描述>\n细节：<细节描述>"
-        ),
-    })
+    content.append({"type": "text", "text": get_user_prompt(context)})
     return content
 
 
 def _build_user_content_text(input_data: DescriptionInput) -> str:
     """Build text-only content for non-vision models like GLM-5.1."""
     context = input_data.to_prompt_context()
-    return (
-        f"请根据以下资源元数据生成标准描述：\n{context}\n\n"
-        "严格按格式输出两行：\n主体：<概括描述>\n细节：<细节描述>"
-    )
+    return get_user_prompt(context)
 
 
 def _parse_response(text: str) -> tuple[str, str]:
@@ -134,7 +121,7 @@ class ZhipuLLMProvider(BaseMultiModalLLMProvider):
         response = client.chat.completions.create(
             model=self._model,
             messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "system", "content": get_system_prompt()},
                 {"role": "user", "content": user_content},
             ],
         )

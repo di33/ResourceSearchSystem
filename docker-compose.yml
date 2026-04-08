@@ -18,6 +18,7 @@ services:
       KS3_BUCKET: resources
       JWT_SECRET: dev-secret-change-in-production
       EMBEDDING_DIMENSION: "1024"
+      DEBUG: "true"
     depends_on:
       postgres:
         condition: service_healthy

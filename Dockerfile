@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-ENV PYTHONPATH=/app/Server/Scripts:/app/Client/Scripts
+ENV PYTHONPATH=/app/Server:/app/Server/Scripts:/app/Client/Scripts
 
 # ---------- development ----------
 FROM base AS dev

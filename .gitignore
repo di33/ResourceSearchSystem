@@ -8,3 +8,7 @@ __pycache__/
 
 # Runtime logs
 integrity_check.log
+
+# Test working directory
+test_workdir/
+test_resources/

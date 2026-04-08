@@ -20,37 +20,24 @@ from ResourceProcessor.description.description_generator import (
     DescriptionResult,
     LLMFactory,
 )
+from ResourceProcessor.description.prompt_config import get_system_prompt, get_user_prompt
 
 logger = logging.getLogger(__name__)
 
 PROMPT_VERSION = "dashscope_v1"
-
-_SYSTEM_PROMPT = (
-    "你是一个数字资源标注专家。根据提供的预览图片和元数据，为资源生成标准化的语义描述。"
-    "描述必须严格按以下两行格式输出，不要输出任何其他内容：\n"
-    "主体：<一句话概括资源的主要内容、类型、用途和适用场景，50-80字>\n"
-    "细节：<补充材质、配色、风格、技术细节等具体特征，50-80字>"
-)
 
 
 def _build_user_content(input_data: DescriptionInput) -> list[dict]:
     """Construct the multimodal message content list."""
     content: list[dict] = []
 
-    preview = Path(input_data.preview_path)
-    if preview.exists():
+    preview = Path(input_data.preview_path) if input_data.preview_path else None
+    if preview is not None and preview.is_file():
         abs_path = str(preview.resolve()).replace("\\", "/")
         content.append({"image": f"file://{abs_path}"})
 
     context = input_data.to_prompt_context()
-    content.append({
-        "text": (
-            f"请根据上面的预览图片和以下元数据为该资源生成描述：\n{context}\n\n"
-            "严格按格式输出两行：\n"
-            "主体：<概括描述>\n"
-            "细节：<细节描述>"
-        ),
-    })
+    content.append({"text": get_user_prompt(context)})
     return content
 
 
@@ -104,7 +91,7 @@ class DashScopeLLMProvider(BaseMultiModalLLMProvider):
         dashscope.api_key = self._api_key
 
         messages = [
-            {"role": "system", "content": [{"text": _SYSTEM_PROMPT}]},
+            {"role": "system", "content": [{"text": get_system_prompt()}]},
             {"role": "user", "content": _build_user_content(input_data)},
         ]
 
