@@ -17,6 +17,7 @@ class EmbeddingResult:
     vector_dimension: int
     embedding_checksum: str
     embedding_generate_time: float  # seconds
+    model_version: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -151,6 +152,7 @@ async def generate_embedding_with_retry(
                 vector_dimension=len(vector),
                 embedding_checksum=checksum,
                 embedding_generate_time=round(elapsed, 4),
+                model_version=provider.model_version(),
             ), ""
         except Exception as exc:
             last_error = str(exc)

@@ -67,8 +67,6 @@ class TestCommitRequestIdempotencyKey(unittest.TestCase):
             description_main="A cube",
             description_detail="Simple cube mesh",
             description_full="A simple cube mesh for testing",
-            embedding_dimension=3,
-            embedding_vector_data=[0.1, 0.2, 0.3],
         )
         self.assertTrue(req.idempotency_key.startswith("commit-"))
         self.assertGreater(len(req.idempotency_key), len("commit-"))
@@ -107,8 +105,6 @@ class TestMockCloudClient(unittest.TestCase):
             description_main="A cube",
             description_detail="Simple cube mesh",
             description_full="A simple cube mesh for testing",
-            embedding_dimension=3,
-            embedding_vector_data=[0.1, 0.2, 0.3],
         )
 
     def test_mock_register_returns_resource_id(self):

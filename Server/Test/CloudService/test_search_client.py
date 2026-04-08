@@ -28,7 +28,9 @@ def _run_async(coro):
 
 def _make_result(resource_id="r1", resource_type="texture", score=0.9, **kw):
     defaults = dict(
-        preview_url="https://preview.example.com/r1",
+        primary_preview_url="https://preview.example.com/r1",
+        other_preview_urls=[],
+        file_download_url="https://download.example.com/r1",
         description_summary="A test resource",
         file_format="png",
         file_size=2048,

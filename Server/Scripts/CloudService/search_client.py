@@ -22,15 +22,16 @@ class SearchResultItem:
     resource_id: str
     resource_type: str
     score: float
-    preview_url: str
+    primary_preview_url: str
     description_summary: str
     file_format: str
     file_size: int
     status: str
     preview_available: bool
+    file_download_url: str = ""
     # Multi-file support
     file_count: int = 0
-    preview_urls: List[str] = field(default_factory=list)
+    other_preview_urls: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)

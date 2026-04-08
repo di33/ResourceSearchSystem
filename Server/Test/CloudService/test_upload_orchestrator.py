@@ -85,8 +85,6 @@ def _make_task(task_id: int) -> UploadTask:
         description_main="A cube",
         description_detail="Simple cube mesh",
         description_full="A simple cube mesh for testing",
-        embedding_dimension=3,
-        embedding_vector_data=[0.1, 0.2, 0.3],
     )
 
 
@@ -148,8 +146,6 @@ class TestUploadTaskFields(unittest.TestCase):
         self.assertEqual(task.description_main, "A cube")
         self.assertEqual(task.description_detail, "Simple cube mesh")
         self.assertEqual(task.description_full, "A simple cube mesh for testing")
-        self.assertEqual(task.embedding_dimension, 3)
-        self.assertEqual(task.embedding_vector_data, [0.1, 0.2, 0.3])
 
 
 class TestUploadOutcomeDefaults(unittest.TestCase):
@@ -222,8 +218,6 @@ class TestUploadOrchestratorSuccess(unittest.TestCase):
             self.assertEqual(req.description_main, self.task.description_main)
             self.assertEqual(req.description_detail, self.task.description_detail)
             self.assertEqual(req.description_full, self.task.description_full)
-            self.assertEqual(req.embedding_dimension, self.task.embedding_dimension)
-            self.assertEqual(req.embedding_vector_data, self.task.embedding_vector_data)
         _run_async(run())
 
     def test_execute_updates_cache_states(self):
@@ -438,8 +432,6 @@ class TestUploadOrchestratorMultiFile(unittest.TestCase):
             description_main="A chair",
             description_detail="Wooden chair",
             description_full="A detailed wooden chair model",
-            embedding_dimension=3,
-            embedding_vector_data=[0.1, 0.2, 0.3],
         )
 
         async def run():

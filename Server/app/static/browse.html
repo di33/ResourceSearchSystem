@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Resource Browser</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0e0e10;
+  --panel: #18181b;
+  --border: #27272a;
+  --text: #e4e4e7;
+  --text2: #a1a1aa;
+  --accent: #6366f1;
+  --accent2: #818cf8;
+  --green: #22c55e;
+  --red: #ef4444;
+  --orange: #f59e0b;
+  --radius: 8px;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* --- Top bar --- */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.topbar h1 { font-size: 16px; font-weight: 600; white-space: nowrap; }
+.topbar .stats { font-size: 13px; color: var(--text2); display: flex; gap: 16px; }
+.topbar .stats .stat-val { color: var(--accent2); font-weight: 600; }
+.topbar .search-box {
+  margin-left: auto;
+  position: relative;
+}
+.topbar .search-box input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 6px 12px 6px 32px;
+  font-size: 13px;
+  width: 240px;
+  outline: none;
+}
+.topbar .search-box input:focus { border-color: var(--accent); }
+.topbar .search-box svg {
+  position: absolute; left: 8px; top: 50%; transform: translateY(-50%);
+  width: 16px; height: 16px; color: var(--text2);
+}
+
+/* --- Main layout --- */
+.main { display: flex; flex: 1; overflow: hidden; }
+
+/* --- Sidebar --- */
+.sidebar {
+  width: 280px;
+  min-width: 200px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sidebar-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--text2);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.sidebar-header select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  font-size: 12px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.tree { flex: 1; overflow-y: auto; padding: 8px 0; }
+.tree-group { margin-bottom: 4px; }
+.tree-group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text2);
+  cursor: pointer;
+  user-select: none;
+}
+.tree-group-label:hover { color: var(--text); }
+.tree-group-label .count {
+  margin-left: auto;
+  background: var(--bg);
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 11px;
+}
+.tree-group-label .arrow { transition: transform .15s; font-size: 10px; }
+.tree-group.collapsed .arrow { transform: rotate(-90deg); }
+.tree-group.collapsed .tree-items { display: none; }
+
+.tree-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 16px 5px 28px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text2);
+  border-left: 2px solid transparent;
+  transition: background .1s;
+}
+.tree-item:hover { background: rgba(99,102,241,.08); color: var(--text); }
+.tree-item.active { background: rgba(99,102,241,.15); color: var(--text); border-left-color: var(--accent); }
+.tree-item .icon { width: 16px; text-align: center; flex-shrink: 0; }
+.tree-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-item .badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-weight: 500;
+}
+.badge-ok { background: rgba(34,197,94,.15); color: var(--green); }
+.badge-partial { background: rgba(245,158,11,.15); color: var(--orange); }
+.badge-fail { background: rgba(239,68,68,.15); color: var(--red); }
+
+/* --- Detail panel --- */
+.detail {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 32px;
+}
+.detail-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text2);
+  font-size: 14px;
+  gap: 8px;
+}
+.detail-empty svg { width: 48px; height: 48px; opacity: .3; }
+
+.detail-header { margin-bottom: 24px; }
+.detail-header h2 { font-size: 20px; font-weight: 600; margin-bottom: 4px; word-break: break-all; }
+.detail-header .meta { font-size: 13px; color: var(--text2); display: flex; flex-wrap: wrap; gap: 16px; margin-top: 8px; }
+.detail-header .meta span { display: flex; align-items: center; gap: 4px; }
+
+.section { margin-bottom: 28px; }
+.section-title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text2);
+  margin-bottom: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Preview grid */
+.preview-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.preview-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  max-width: 300px;
+}
+.preview-card img {
+  display: block;
+  max-width: 300px;
+  max-height: 240px;
+  object-fit: contain;
+  background: repeating-conic-gradient(#1a1a1d 0% 25%, #222225 0% 50%) 0 0 / 16px 16px;
+}
+.preview-card .label {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--text2);
+  border-top: 1px solid var(--border);
+}
+
+/* File table */
+.file-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.file-table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text2);
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.file-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.file-table tr:hover td { background: rgba(99,102,241,.05); }
+.file-table .dl-link {
+  color: var(--accent2);
+  text-decoration: none;
+  font-size: 12px;
+}
+.file-table .dl-link:hover { text-decoration: underline; }
+
+/* Description */
+.desc-block {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.desc-block .desc-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent2);
+  margin-bottom: 4px;
+}
+.desc-block .desc-text { color: var(--text); margin-bottom: 12px; }
+.desc-block .desc-text:last-child { margin-bottom: 0; }
+
+/* Embedding */
+.embed-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.embed-chip {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  font-size: 13px;
+}
+.embed-chip .label { font-size: 11px; color: var(--text2); margin-bottom: 2px; }
+.embed-chip .value { font-weight: 600; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+
+/* Loading */
+.spinner {
+  display: inline-block;
+  width: 16px; height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>Resource Browser</h1>
+  <div class="stats" id="stats"></div>
+  <div class="search-box">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input type="text" id="searchInput" placeholder="Filter resources...">
+  </div>
+</div>
+
+<div class="main">
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <span>Resources</span>
+      <select id="typeFilter">
+        <option value="">All Types</option>
+        <option value="model">Model</option>
+        <option value="image">Image</option>
+        <option value="other">Other</option>
+      </select>
+    </div>
+    <div class="tree" id="tree"></div>
+  </div>
+
+  <div class="detail" id="detail">
+    <div class="detail-empty">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+      <span>Select a resource to view details</span>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let allResources = [];
+let activeId = null;
+
+function humanSize(b) {
+  for (const u of ['B','KB','MB','GB']) { if (b < 1024) return b.toFixed(b < 10 ? 1 : 0) + ' ' + u; b /= 1024; }
+  return b.toFixed(1) + ' TB';
+}
+
+function typeIcon(t) {
+  if (t === 'model') return '<span style="color:#6366f1">&#9645;</span>';
+  if (t === 'image') return '<span style="color:#22c55e">&#9635;</span>';
+  return '<span style="color:#a1a1aa">&#9641;</span>';
+}
+
+function statusBadge(r) {
+  if (r.has_description && r.has_embedding) return '<span class="badge badge-ok">OK</span>';
+  if (r.has_description || r.has_embedding) return '<span class="badge badge-partial">Partial</span>';
+  return '<span class="badge badge-fail">None</span>';
+}
+
+async function loadStats() {
+  try {
+    const r = await fetch(API + '/stats');
+    const d = await r.json();
+    document.getElementById('stats').innerHTML =
+      `<span>DB: <span class="stat-val">${d.db_resource_count}</span></span>` +
+      `<span>Vectors: <span class="stat-val">${d.milvus_vector_count}</span></span>` +
+      `<span>S3: <span class="stat-val">${d.s3_object_count}</span> (${humanSize(d.s3_total_bytes)})</span>`;
+  } catch(e) {
+    document.getElementById('stats').textContent = 'Failed to load stats';
+  }
+}
+
+async function loadResources() {
+  let page = 1, all = [];
+  while (true) {
+    const r = await fetch(API + `/resources?page=${page}&page_size=200`);
+    const d = await r.json();
+    all.push(...d.resources);
+    if (all.length >= d.total || d.resources.length === 0) break;
+    page++;
+  }
+  allResources = all;
+  renderTree();
+}
+
+function renderTree() {
+  const filter = document.getElementById('searchInput').value.toLowerCase();
+  const typeF = document.getElementById('typeFilter').value;
+  const filtered = allResources.filter(r => {
+    if (typeF && r.resource_type !== typeF) return false;
+    if (filter) {
+      const hay = (r.resource_id + ' ' + (r.content_md5||'')).toLowerCase();
+      if (!hay.includes(filter)) return false;
+    }
+    return true;
+  });
+
+  const groups = {};
+  for (const r of filtered) {
+    const t = r.resource_type || 'other';
+    (groups[t] = groups[t] || []).push(r);
+  }
+
+  const order = ['model', 'image', 'other'];
+  const typeNames = { model: 'Models', image: 'Images', other: 'Others' };
+  let html = '';
+  for (const t of order) {
+    const items = groups[t];
+    if (!items || !items.length) continue;
+    html += `<div class="tree-group" data-type="${t}">`;
+    html += `<div class="tree-group-label" onclick="this.parentElement.classList.toggle('collapsed')">`;
+    html += `<span class="arrow">&#9662;</span> ${typeNames[t] || t}`;
+    html += `<span class="count">${items.length}</span></div>`;
+    html += `<div class="tree-items">`;
+    for (const r of items) {
+      const id = r.resource_id || r.content_md5;
+      const name = r.resource_id || r.content_md5.slice(0, 12);
+      html += `<div class="tree-item ${activeId === id ? 'active' : ''}" data-id="${id}" onclick="selectResource('${id}')">`;
+      html += `<span class="icon">${typeIcon(r.resource_type)}</span>`;
+      html += `<span class="name" title="${id}">${name}</span>`;
+      html += statusBadge(r);
+      html += `</div>`;
+    }
+    html += `</div></div>`;
+  }
+  document.getElementById('tree').innerHTML = html || '<div style="padding:16px;color:var(--text2);font-size:13px">No resources found</div>';
+}
+
+async function selectResource(id) {
+  activeId = id;
+  renderTree();
+  const detail = document.getElementById('detail');
+  detail.innerHTML = '<div class="detail-empty"><div class="spinner"></div><span>Loading...</span></div>';
+
+  try {
+    const r = await fetch(API + `/resources/${id}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    renderDetail(d);
+  } catch(e) {
+    detail.innerHTML = `<div class="detail-empty"><span style="color:var(--red)">Failed to load: ${e.message}</span></div>`;
+  }
+}
+
+function renderDetail(d) {
+  const panel = document.getElementById('detail');
+  let html = '<div class="detail-header">';
+  html += `<h2>${d.resource_id || d.content_md5}</h2>`;
+  html += '<div class="meta">';
+  html += `<span>Type: <b>${d.resource_type}</b></span>`;
+  html += `<span>State: <b>${d.process_state}</b></span>`;
+  html += `<span>MD5: <code style="font-size:12px">${d.content_md5}</code></span>`;
+  html += `<span>Created: ${d.created_at}</span>`;
+  html += `<span>Updated: ${d.updated_at}</span>`;
+  if (d.source_directory) html += `<span>Source: <code style="font-size:12px">${d.source_directory}</code></span>`;
+  html += '</div></div>';
+
+  // Previews
+  const rid = d.resource_id;
+  html += '<div class="section"><div class="section-title">Previews</div>';
+  if (d.previews && d.previews.length) {
+    html += '<div class="preview-grid">';
+    for (let i = 0; i < d.previews.length; i++) {
+      const p = d.previews[i];
+      html += '<div class="preview-card">';
+      html += `<img src="${API}/browse/preview/${rid}/${i}" alt="preview" loading="lazy" onerror="this.parentElement.innerHTML='<div style=\\'padding:20px;color:var(--text2);font-size:12px\\'>No preview available</div>'">`;
+      html += `<div class="label">Role: ${p.role} | Strategy: ${p.strategy}${p.format ? ' | ' + p.format : ''}${p.width ? ' | ' + p.width + 'x' + p.height : ''}</div>`;
+      html += '</div>';
+    }
+    html += '</div>';
+  } else {
+    html += '<div style="color:var(--text2);font-size:13px">No previews</div>';
+  }
+  html += '</div>';
+
+  // Files
+  html += '<div class="section"><div class="section-title">Files</div>';
+  if (d.files && d.files.length) {
+    html += '<table class="file-table"><thead><tr><th>Name</th><th>Format</th><th>Size</th><th>Role</th><th>S3 Key</th><th></th></tr></thead><tbody>';
+    for (const f of d.files) {
+      const ks3 = f.ks3_key || '-';
+      const hasKey = !!f.ks3_key;
+      html += '<tr>';
+      html += `<td><b>${f.file_name}</b></td>`;
+      html += `<td>${f.file_format}</td>`;
+      html += `<td>${humanSize(f.file_size)}</td>`;
+      html += `<td>${f.file_role}</td>`;
+      html += `<td><code style="font-size:11px;color:var(--text2)">${ks3.length > 50 ? '...' + ks3.slice(-47) : ks3}</code></td>`;
+      html += `<td>${hasKey ? '<a class="dl-link" href="' + API + '/browse/file/' + rid + '/' + encodeURIComponent(f.file_name) + '" target="_blank">Download</a>' : ''}</td>`;
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+  } else {
+    html += '<div style="color:var(--text2);font-size:13px">No files</div>';
+  }
+  html += '</div>';
+
+  // Description
+  html += '<div class="section"><div class="section-title">Description</div>';
+  if (d.description) {
+    html += '<div class="desc-block">';
+    html += `<div class="desc-label">Main</div><div class="desc-text">${d.description.main_content || '-'}</div>`;
+    html += `<div class="desc-label">Detail</div><div class="desc-text">${d.description.detail_content || '-'}</div>`;
+    html += '</div>';
+  } else {
+    html += '<div style="color:var(--red);font-size:13px">No description generated</div>';
+  }
+  html += '</div>';
+
+  // Embedding
+  html += '<div class="section"><div class="section-title">Embedding</div>';
+  if (d.embedding) {
+    html += '<div class="embed-info">';
+    html += `<div class="embed-chip"><div class="label">Dimension</div><div class="value">${d.embedding.dimension}</div></div>`;
+    html += `<div class="embed-chip"><div class="label">Checksum</div><div class="value" style="font-size:11px;font-family:monospace">${d.embedding.checksum || '-'}</div></div>`;
+    html += `<div class="embed-chip"><div class="label">Model</div><div class="value">${d.embedding.model_version || '-'}</div></div>`;
+    html += '</div>';
+  } else {
+    html += '<div style="color:var(--red);font-size:13px">No embedding</div>';
+  }
+  html += '</div>';
+
+  if (d.last_error) {
+    html += `<div class="section"><div class="section-title" style="color:var(--red)">Last Error</div>`;
+    html += `<div style="color:var(--red);font-size:13px;background:var(--bg);padding:12px;border-radius:var(--radius)">${d.last_error}</div></div>`;
+  }
+
+  panel.innerHTML = html;
+}
+
+// Events
+document.getElementById('searchInput').addEventListener('input', () => renderTree());
+document.getElementById('typeFilter').addEventListener('change', () => renderTree());
+
+// Init
+loadStats();
+loadResources();
+</script>
+</body>
+</html>

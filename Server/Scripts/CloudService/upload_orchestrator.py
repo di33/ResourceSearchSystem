@@ -129,8 +129,6 @@ class UploadOrchestrator:
                 description_main=task.description_main,
                 description_detail=task.description_detail,
                 description_full=task.description_full,
-                embedding_dimension=task.embedding_dimension,
-                embedding_vector_data=task.embedding_vector_data,
             )
             commit_resp = await self.client.commit(commit_req)
 

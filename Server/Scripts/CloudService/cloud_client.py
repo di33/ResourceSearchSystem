@@ -79,8 +79,6 @@ class CommitRequest:
     description_main: str
     description_detail: str
     description_full: str
-    embedding_dimension: int
-    embedding_vector_data: List[float]
     idempotency_key: str = ""
 
     def __post_init__(self):

@@ -1,0 +1,8 @@
+# 单元测试位置
+
+- 客户端测试放在 `Client/Test/` 下，按子模块划分：`preview/`、`description/`、`embedding/`、`cache/`、`core/`。
+- 云端/服务端测试放在 `Server/Test/CloudService/` 下。
+- 源码包 `ResourceProcessor` 在 `Client/Scripts/` 下，`CloudService` 在 `Server/Scripts/` 下。
+- `pytest.ini` 已设 `pythonpath = Client/Scripts Server/Scripts`，`testpaths = Client/Test Server/Test`。
+- 推荐在项目根执行 `python -m pytest` 或 `python run_tests.py`。
+- 不要在源码目录中新增 `test_*.py`、`*_test.py` 或 `tests/` 等测试入口。
