@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import multiprocessing
+from pathlib import Path
 from typing import Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_ENV_PATH),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -45,9 +49,12 @@ class Settings(BaseSettings):
 
     # Embedding — 用于 commit 生成向量 + search 时 query 向量化
     # .env 中以 SERVER_EMBEDDING_* 命名
-    embedding_provider: str = Field(default="dashscope", alias="SERVER_EMBEDDING_PROVIDER")
-    embedding_model: str = Field(default="text-embedding-v3", alias="SERVER_EMBEDDING_MODEL")
+    embedding_provider: str = Field(default="ksyun", alias="SERVER_EMBEDDING_PROVIDER")
+    embedding_model: str = Field(default="embedding-3", alias="SERVER_EMBEDDING_MODEL")
     embedding_dimension: int = Field(default=1024, alias="SERVER_EMBEDDING_DIMENSION")
+    embedding_base_url: str = Field(default="https://kspmas.ksyun.com/v1", alias="SERVER_EMBEDDING_BASE_URL")
+    kspmas_api_key: str = Field(default="", alias="KSPMAS_API_KEY")
+    ksc_api_key: str = Field(default="", alias="KSC_API_KEY")
 
 
 settings = Settings()

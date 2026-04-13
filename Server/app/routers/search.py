@@ -40,6 +40,14 @@ class SearchResultOut(BaseModel):
     status: str
     preview_available: bool
     file_count: int = 0
+    title: str = ""
+    source_resource_id: str = ""
+    parent_resource_id: str = ""
+    parent_title: str = ""
+    parent_preview_url: str = ""
+    parent_download_url: str = ""
+    child_resource_count: int = 0
+    contains_resource_types: List[str] = Field(default_factory=list)
 
 class SuggestionOut(BaseModel):
     rewrite_queries: List[str] = Field(default_factory=list)
@@ -118,6 +126,14 @@ async def search_resources(body: SearchBody, session: AsyncSession = Depends(get
                 status=r.status,
                 preview_available=r.preview_available,
                 file_count=r.file_count,
+                title=r.title,
+                source_resource_id=r.source_resource_id,
+                parent_resource_id=r.parent_resource_id,
+                parent_title=r.parent_title,
+                parent_preview_url=r.parent_preview_url,
+                parent_download_url=r.parent_download_url,
+                child_resource_count=r.child_resource_count,
+                contains_resource_types=r.contains_resource_types,
             )
             for r in resp.results
         ],

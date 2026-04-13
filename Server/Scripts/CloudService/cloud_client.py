@@ -41,6 +41,24 @@ class RegisterRequest:
     content_md5: str
     resource_type: str
     files: List[FileInfo]
+    source_resource_id: str = ""
+    parent_source_resource_id: str = ""
+    child_source_resource_ids: List[str] = field(default_factory=list)
+    child_resource_count: int = 0
+    contains_resource_types: List[str] = field(default_factory=list)
+    title: str = ""
+    source: str = ""
+    pack_name: str = ""
+    resource_path: str = ""
+    source_url: str = ""
+    original_download_url: str = ""
+    category: str = ""
+    license_name: str = ""
+    source_description: str = ""
+    tags: List[str] = field(default_factory=list)
+    download_file_name: str = ""
+    download_content_type: str = ""
+    download_file_size: int = 0
     idempotency_key: str = ""
 
     def __post_init__(self):

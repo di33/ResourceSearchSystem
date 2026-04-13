@@ -34,13 +34,57 @@ class DescriptionInput:
     resource_type: str
     preview_strategy: str
     auxiliary_metadata: dict
+    title: str = ""
+    pack_name: str = ""
+    resource_path: str = ""
+    source: str = ""
+    source_tags: Optional[list[str]] = None
+    source_description: str = ""
+    category: str = ""
+    member_count: int = 0
+    asset_formats: Optional[list[str]] = None
+    preview_mode: str = ""
+    preview_confidence: str = ""
+    missing_file_ratio: float = 0.0
+
+    @staticmethod
+    def _stringify(value) -> str:
+        if isinstance(value, (list, tuple, set)):
+            return ", ".join(str(v) for v in value if v not in ("", None))
+        return str(value)
 
     def to_prompt_context(self) -> str:
         """将输入转为可嵌入 Prompt 的上下文文本。"""
         parts = [f"资源类型: {self.resource_type}"]
+        if self.title:
+            parts.append(f"资源标题: {self.title}")
+        if self.pack_name:
+            parts.append(f"资源包: {self.pack_name}")
+        if self.resource_path:
+            parts.append(f"资源路径: {self.resource_path}")
+        if self.source:
+            parts.append(f"来源站点: {self.source}")
+        if self.category:
+            parts.append(f"来源分类: {self.category}")
+        if self.source_tags:
+            parts.append(f"来源标签: {self._stringify(self.source_tags)}")
+        if self.source_description:
+            parts.append(f"来源描述: {self.source_description}")
+        if self.member_count:
+            parts.append(f"成员文件数: {self.member_count}")
+        if self.asset_formats:
+            parts.append(f"文件格式分布: {self._stringify(self.asset_formats)}")
         parts.append(f"预览策略: {self.preview_strategy}")
+        if self.preview_mode:
+            parts.append(f"预览模式: {self.preview_mode}")
+        if self.preview_confidence:
+            parts.append(f"预览置信度: {self.preview_confidence}")
+        if self.missing_file_ratio:
+            parts.append(f"缺失文件比例: {self.missing_file_ratio:.2f}")
         for k, v in self.auxiliary_metadata.items():
-            parts.append(f"{k}: {v}")
+            if v in ("", None, [], {}):
+                continue
+            parts.append(f"{k}: {self._stringify(v)}")
         return "\n".join(parts)
 
 
@@ -73,8 +117,9 @@ class MockLLMProvider(BaseMultiModalLLMProvider):
     async def generate_description(
         self, input_data: DescriptionInput
     ) -> DescriptionResult:
+        label = input_data.title or input_data.resource_type
         main = (
-            f"这是一个{input_data.resource_type}类型的数字资源，"
+            f"这是一个{label}数字资源，类型为{input_data.resource_type}，"
             "适用于游戏开发和数字内容创作场景，可作为项目素材直接使用。"
         )
         detail = (

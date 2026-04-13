@@ -32,6 +32,14 @@ class SearchResultItem:
     # Multi-file support
     file_count: int = 0
     other_preview_urls: List[str] = field(default_factory=list)
+    title: str = ""
+    source_resource_id: str = ""
+    parent_resource_id: str = ""
+    parent_title: str = ""
+    parent_preview_url: str = ""
+    parent_download_url: str = ""
+    child_resource_count: int = 0
+    contains_resource_types: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)

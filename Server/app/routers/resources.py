@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, Form
@@ -41,6 +42,24 @@ class RegisterBody(BaseModel):
     content_md5: str
     resource_type: str
     files: List[FileInfoIn]
+    source_resource_id: str = ""
+    parent_source_resource_id: str = ""
+    child_source_resource_ids: List[str] = []
+    child_resource_count: int = 0
+    contains_resource_types: List[str] = []
+    title: str = ""
+    source: str = ""
+    pack_name: str = ""
+    resource_path: str = ""
+    source_url: str = ""
+    original_download_url: str = ""
+    category: str = ""
+    license_name: str = ""
+    source_description: str = ""
+    tags: List[str] = []
+    download_file_name: str = ""
+    download_content_type: str = ""
+    download_file_size: int = 0
     idempotency_key: str = ""
 
 
@@ -111,6 +130,8 @@ class ResourceEmbeddingOut(BaseModel):
 
 class ResourceSummaryOut(BaseModel):
     resource_id: Optional[str] = None
+    source_resource_id: str = ""
+    title: str = ""
     content_md5: str
     resource_type: str
     process_state: str
@@ -131,10 +152,29 @@ class ResourceListOut(BaseModel):
 
 class ResourceDetailOut(BaseModel):
     resource_id: Optional[str] = None
+    source_resource_id: str = ""
     content_md5: str
     resource_type: str
     process_state: str
     source_directory: str = ""
+    source: str = ""
+    pack_name: str = ""
+    title: str = ""
+    resource_path: str = ""
+    source_url: str = ""
+    original_download_url: str = ""
+    category: str = ""
+    license_name: str = ""
+    source_description: str = ""
+    tags: List[str] = []
+    parent_resource_id: Optional[str] = None
+    child_resource_ids: List[str] = []
+    child_resource_count: int = 0
+    contains_resource_types: List[str] = []
+    download_object_key: str = ""
+    download_file_name: str = ""
+    download_content_type: str = ""
+    download_file_size: int = 0
     created_at: str = ""
     updated_at: str = ""
     files: List[ResourceFileOut] = []
@@ -150,6 +190,16 @@ class ResourceDetailOut(BaseModel):
 
 def _build_client(session: AsyncSession) -> PgCloudClient:
     return PgCloudClient(session, KS3Storage(get_s3()), milvus_client=get_milvus())
+
+
+def _loads_json_list(raw: Optional[str]) -> list[str]:
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return [str(v) for v in value] if isinstance(value, list) else []
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +228,24 @@ async def register_resource(body: RegisterBody, session: AsyncSession = Depends(
         content_md5=body.content_md5,
         resource_type=body.resource_type,
         files=file_infos,
+        source_resource_id=body.source_resource_id,
+        parent_source_resource_id=body.parent_source_resource_id,
+        child_source_resource_ids=body.child_source_resource_ids,
+        child_resource_count=body.child_resource_count,
+        contains_resource_types=body.contains_resource_types,
+        title=body.title,
+        source=body.source,
+        pack_name=body.pack_name,
+        resource_path=body.resource_path,
+        source_url=body.source_url,
+        original_download_url=body.original_download_url,
+        category=body.category,
+        license_name=body.license_name,
+        source_description=body.source_description,
+        tags=body.tags,
+        download_file_name=body.download_file_name,
+        download_content_type=body.download_content_type,
+        download_file_size=body.download_file_size,
         idempotency_key=body.idempotency_key,
     )
     resp = await client.register(req)
@@ -195,11 +263,13 @@ async def register_resource(body: RegisterBody, session: AsyncSession = Depends(
 async def upload_files_batch(
     resource_id: str,
     files: List[UploadFile] = File(...),
+    download_file: Optional[UploadFile] = File(None),
     session: AsyncSession = Depends(get_db),
 ):
     """Upload multiple resource files at once."""
     client = _build_client(session)
     total_uploaded = 0
+    uploaded_file_count = 0
     for file in files:
         result = await client.upload_file_obj(
             resource_id,
@@ -212,16 +282,35 @@ async def upload_files_batch(
             return UploadBatchOut(
                 success=False,
                 uploaded_bytes=total_uploaded,
-                file_count=len(files),
+                file_count=uploaded_file_count,
                 error_message=f"Failed to upload {file.filename}: {result.error_message}",
             )
         total_uploaded += result.uploaded_bytes
+        uploaded_file_count += 1
+
+    if download_file is not None:
+        result = await client.upload_download_obj(
+            resource_id,
+            download_file.filename or "download.zip",
+            download_file.file,
+            download_file.content_type or "application/octet-stream",
+        )
+        if not result.success:
+            await session.commit()
+            return UploadBatchOut(
+                success=False,
+                uploaded_bytes=total_uploaded,
+                file_count=uploaded_file_count,
+                error_message=f"Failed to upload download object {download_file.filename}: {result.error_message}",
+            )
+        total_uploaded += result.uploaded_bytes
+        uploaded_file_count += 1
 
     await session.commit()
     return UploadBatchOut(
         success=True,
         uploaded_bytes=total_uploaded,
-        file_count=len(files),
+        file_count=uploaded_file_count,
     )
 
 
@@ -271,6 +360,7 @@ async def upload_previews_batch(
                 task_id=task.id,
                 strategy="static",
                 role=role,
+                path=file.filename or f"preview_{i}",
                 renderer="upload",
             )
             session.add(preview_rec)
@@ -302,7 +392,10 @@ async def commit_resource(
         idempotency_key=body.idempotency_key,
     )
     resp = await client.commit(req)
-    await session.commit()
+    if resp.state == "committed":
+        await session.commit()
+    else:
+        await session.rollback()
     return CommitOut(resource_id=resp.resource_id, state=resp.state, error_message=resp.error_message)
 
 
@@ -344,6 +437,8 @@ async def list_resources(
     for t in rows:
         items.append(ResourceSummaryOut(
             resource_id=t.resource_id,
+            source_resource_id=t.source_resource_id,
+            title=t.title,
             content_md5=t.content_md5,
             resource_type=t.resource_type,
             process_state=t.process_state,
@@ -410,10 +505,29 @@ async def get_resource_detail(resource_id: str, session: AsyncSession = Depends(
 
     return ResourceDetailOut(
         resource_id=task.resource_id,
+        source_resource_id=task.source_resource_id,
         content_md5=task.content_md5,
         resource_type=task.resource_type,
         process_state=task.process_state,
         source_directory=task.source_directory,
+        source=task.source,
+        pack_name=task.pack_name,
+        title=task.title,
+        resource_path=task.resource_path,
+        source_url=task.source_url,
+        original_download_url=task.original_download_url,
+        category=task.category,
+        license_name=task.license_name,
+        source_description=task.source_description,
+        tags=_loads_json_list(task.tags_json),
+        parent_resource_id=task.parent_resource_id,
+        child_resource_ids=_loads_json_list(task.child_resource_ids_json),
+        child_resource_count=task.child_resource_count,
+        contains_resource_types=_loads_json_list(task.contains_resource_types_json),
+        download_object_key=task.download_object_key,
+        download_file_name=task.download_file_name,
+        download_content_type=task.download_content_type,
+        download_file_size=task.download_file_size,
         created_at=_ts(task.created_at),
         updated_at=_ts(task.updated_at),
         files=files,

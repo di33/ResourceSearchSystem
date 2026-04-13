@@ -159,8 +159,24 @@ def check_detail(server: str, resource_id: str):
         print(f"  resource_type: {d.get('resource_type')}")
         print(f"  process_state: {d.get('process_state')}")
         print(f"  source_dir:    {d.get('source_directory', '')}")
+        print(f"  source_res_id: {d.get('source_resource_id', '')}")
+        print(f"  title:         {d.get('title', '')}")
+        print(f"  source:        {d.get('source', '')}")
+        print(f"  pack_name:     {d.get('pack_name', '')}")
+        print(f"  resource_path: {d.get('resource_path', '')}")
         print(f"  created_at:    {d.get('created_at')}")
         print(f"  updated_at:    {d.get('updated_at')}")
+        print(f"  download_name: {d.get('download_file_name', '')}")
+        print(f"  download_type: {d.get('download_content_type', '')}")
+        print(f"  download_size: {_human_size(d.get('download_file_size', 0))}")
+
+        parent_resource_id = d.get("parent_resource_id")
+        if parent_resource_id:
+            print(f"  parent_id:     {parent_resource_id}")
+        if d.get("child_resource_count", 0):
+            print(f"  child_count:   {d.get('child_resource_count', 0)}")
+        if d.get("contains_resource_types"):
+            print(f"  child_types:   {', '.join(d.get('contains_resource_types', []))}")
 
         files = d.get("files", [])
         if files:
@@ -251,18 +267,33 @@ def check_storage(endpoint: str = "http://localhost:9000", access_key: str = "mi
 # Semantic search
 # ---------------------------------------------------------------------------
 
-def check_search(server: str, query: str):
+def check_search(server: str, query: str, threshold: float = 0.5, top_k: int = 5):
     _hr(f"语义搜索测试: '{query}'")
     try:
-        body = {"query_text": query, "top_k": 5, "similarity_threshold": 0.0}
+        body = {
+            "query_text": query,
+            "top_k": top_k,
+            "similarity_threshold": threshold,
+        }
         r = requests.post(f"{server}/search", json=body, timeout=15)
         r.raise_for_status()
         data = r.json()
         results = data.get("results", [])
-        print(f"  匹配结果: {len(results)} 条")
+        print(f"  匹配结果: {len(results)} 条 (threshold={threshold}, top_k={top_k})")
         for i, res in enumerate(results, 1):
             print(f"  [{i}] score={res.get('score', 0):.4f}  type={res.get('resource_type', '')}  "
                   f"id={res.get('resource_id', '')[:20]}  {res.get('description_summary', '')[:40]}")
+            preview_url = res.get("primary_preview_url", "")
+            download_url = res.get("file_download_url", "")
+            parent_download_url = res.get("parent_download_url", "")
+            if preview_url:
+                print(f"      preview_url: {preview_url}")
+            if download_url:
+                print(f"      download_url: {download_url}")
+            if res.get("parent_resource_id"):
+                print(f"      parent_id: {res.get('parent_resource_id')}  parent_title: {res.get('parent_title', '')}")
+            if parent_download_url:
+                print(f"      parent_download_url: {parent_download_url}")
         if not results:
             sug = data.get("suggestion")
             if sug:
@@ -289,6 +320,8 @@ def main():
                         help="查看某个资源的完整详情")
     parser.add_argument("--storage", action="store_true", help="MinIO 存储桶")
     parser.add_argument("--search", type=str, default=None, help="语义搜索测试")
+    parser.add_argument("--search-threshold", type=float, default=0.5, help="语义搜索最低分阈值")
+    parser.add_argument("--search-top-k", type=int, default=5, help="语义搜索返回条数")
     parser.add_argument("--page", type=int, default=1)
     parser.add_argument("--page-size", type=int, default=50)
     parser.add_argument("--s3-endpoint", default="http://localhost:9000")
@@ -321,7 +354,7 @@ def main():
         check_storage(args.s3_endpoint, args.s3_access_key, args.s3_secret_key, args.s3_bucket)
 
     if args.search:
-        check_search(args.server, args.search)
+        check_search(args.server, args.search, args.search_threshold, args.search_top_k)
 
     print()
 

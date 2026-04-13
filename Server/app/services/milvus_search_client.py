@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from pymilvus import CollectionSchema, DataType, FieldSchema, MilvusClient
@@ -56,6 +57,8 @@ async def _embed_query(text: str) -> List[float]:
     which is useful for local development without API keys.
     """
     try:
+        # Ensure provider modules are imported so EmbeddingFactory is populated.
+        import ResourceProcessor.embedding  # noqa: F401
         from ResourceProcessor.embedding.embedding_generator import (
             generate_embedding_with_retry,
         )
@@ -68,10 +71,21 @@ async def _embed_query(text: str) -> List[float]:
         )
         if result:
             return result.vector_data
+        logger.warning("Embedding generation returned no vector, using zero vector: %s", error or "unknown error")
     except Exception as exc:
         logger.warning("Embedding generation failed, using zero vector: %s", exc)
 
     return [0.0] * settings.embedding_dimension
+
+
+def _loads_json_list(raw: Optional[str]) -> list[str]:
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return [str(v) for v in value] if isinstance(value, list) else []
 
 
 class MilvusSearchClient(BaseSearchClient):
@@ -118,7 +132,20 @@ class MilvusSearchClient(BaseSearchClient):
                 file_count = 0
                 file_formats = []
                 file_size_total = 0
+                title = ""
+                source_resource_id = ""
+                parent_resource_id = ""
+                parent_title = ""
+                parent_preview_url = ""
+                parent_download_url = ""
+                child_resource_count = 0
+                contains_resource_types: list[str] = []
                 if task:
+                    title = task.title
+                    source_resource_id = task.source_resource_id
+                    parent_resource_id = task.parent_resource_id or ""
+                    child_resource_count = task.child_resource_count
+                    contains_resource_types = _loads_json_list(task.contains_resource_types_json)
                     desc = (
                         await self.session.execute(
                             select(ResourceDescription)
@@ -171,19 +198,46 @@ class MilvusSearchClient(BaseSearchClient):
 
                 file_download_url = ""
                 if task:
-                    ordered_files = (
-                        await self.session.execute(
-                            select(ResourceFile)
-                            .where(ResourceFile.task_id == task.id)
-                            .order_by(ResourceFile.is_primary.desc(), ResourceFile.id)
-                        )
-                    ).scalars().all()
-                    if ordered_files:
-                        primary_file = ordered_files[0]
-                        file_key = primary_file.ks3_key or f"files/{rid}/{primary_file.file_name}"
-                        file_download_url = self.storage.generate_presigned_download_url(file_key)
+                    if task.download_object_key:
+                        file_download_url = self.storage.generate_presigned_download_url(task.download_object_key)
+                    else:
+                        ordered_files = (
+                            await self.session.execute(
+                                select(ResourceFile)
+                                .where(ResourceFile.task_id == task.id)
+                                .order_by(ResourceFile.is_primary.desc(), ResourceFile.id)
+                            )
+                        ).scalars().all()
+                        if ordered_files:
+                            primary_file = ordered_files[0]
+                            file_key = primary_file.ks3_key or f"files/{rid}/{primary_file.file_name}"
+                            file_download_url = self.storage.generate_presigned_download_url(file_key)
 
-                primary_format = file_formats[0] if file_formats else (task.source_format if task else "")
+                    if parent_resource_id:
+                        parent_task = (
+                            await self.session.execute(
+                                select(ResourceTask).where(ResourceTask.resource_id == parent_resource_id)
+                            )
+                        ).scalar_one_or_none()
+                        if parent_task is not None:
+                            parent_title = parent_task.title
+                            if parent_task.download_object_key:
+                                parent_download_url = self.storage.generate_presigned_download_url(parent_task.download_object_key)
+                            parent_previews = (
+                                await self.session.execute(
+                                    select(ResourcePreview)
+                                    .where(ResourcePreview.task_id == parent_task.id)
+                                    .order_by(ResourcePreview.id)
+                                )
+                            ).scalars().all()
+                            for parent_preview in parent_previews:
+                                if parent_preview.path:
+                                    parent_preview_url = self.storage.generate_presigned_download_url(
+                                        f"previews/{parent_resource_id}/{parent_preview.path.split('/')[-1]}"
+                                    )
+                                    break
+
+                primary_format = file_formats[0] if file_formats else ""
 
                 results.append(SearchResultItem(
                     resource_id=rid,
@@ -198,6 +252,14 @@ class MilvusSearchClient(BaseSearchClient):
                     status=task.process_state if task else "",
                     preview_available=bool(preview_urls),
                     file_count=file_count,
+                    title=title,
+                    source_resource_id=source_resource_id,
+                    parent_resource_id=parent_resource_id,
+                    parent_title=parent_title,
+                    parent_preview_url=parent_preview_url,
+                    parent_download_url=parent_download_url,
+                    child_resource_count=child_resource_count,
+                    contains_resource_types=contains_resource_types,
                 ))
 
         suggestion = None
@@ -239,25 +301,30 @@ class MilvusSearchClient(BaseSearchClient):
             )
         ).scalars().all()
 
-        if files:
+        if task.download_object_key:
+            key = task.download_object_key
+            file_name = task.download_file_name or "resource"
+            file_size = task.download_file_size
+        elif files:
             primary_file = files[0]
             key = primary_file.ks3_key or f"files/{request.resource_id}/{primary_file.file_name}"
             file_name = primary_file.file_name
             file_size = primary_file.file_size
         else:
-            # Fallback to old schema
-            key = f"files/{request.resource_id}/{task.source_name}" if hasattr(task, 'source_name') else f"files/{request.resource_id}/"
-            file_name = getattr(task, 'source_name', 'resource')
-            file_size = getattr(task, 'source_size', 0)
+            key = f"files/{request.resource_id}/"
+            file_name = task.title or "resource"
+            file_size = 0
 
         download_url = self.storage.generate_presigned_download_url(key, request.expire_seconds)
 
-        expires_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=request.expire_seconds)).isoformat(
+            timespec="seconds"
+        )
 
         return DownloadLinkResponse(
             download_url=download_url,
             expires_at=expires_at,
             file_name=file_name,
             file_size=file_size,
-            content_type="application/octet-stream",
+            content_type=task.download_content_type or "application/octet-stream",
         )

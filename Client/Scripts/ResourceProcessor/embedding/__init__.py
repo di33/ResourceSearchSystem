@@ -10,3 +10,8 @@ try:
     import ResourceProcessor.embedding.zhipu_embedding_provider  # noqa: F401
 except Exception:
     pass
+
+try:
+    import ResourceProcessor.embedding.ksyun_embedding_provider  # noqa: F401
+except Exception:
+    pass

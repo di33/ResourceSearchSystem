@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import uuid
@@ -42,6 +43,103 @@ class PgCloudClient(BaseCloudClient):
         self.storage = storage
         self.milvus = milvus_client
 
+    def _merge_task_metadata(self, task: ResourceTask, request: RegisterRequest) -> None:
+        if request.source_resource_id and not task.source_resource_id:
+            task.source_resource_id = request.source_resource_id
+        if request.source and not task.source:
+            task.source = request.source
+        if request.pack_name and not task.pack_name:
+            task.pack_name = request.pack_name
+        if request.title and not task.title:
+            task.title = request.title
+        if request.resource_path and not task.resource_path:
+            task.resource_path = request.resource_path
+        if request.source_url and not task.source_url:
+            task.source_url = request.source_url
+        if request.original_download_url and not task.original_download_url:
+            task.original_download_url = request.original_download_url
+        if request.category and not task.category:
+            task.category = request.category
+        if request.license_name and not task.license_name:
+            task.license_name = request.license_name
+        if request.source_description and not task.source_description:
+            task.source_description = request.source_description
+        if request.tags and task.tags_json in ("", "[]"):
+            task.tags_json = json.dumps(request.tags, ensure_ascii=False)
+        if request.parent_source_resource_id and not task.parent_source_resource_id:
+            task.parent_source_resource_id = request.parent_source_resource_id
+        if request.child_source_resource_ids and task.child_source_resource_ids_json in ("", "[]"):
+            task.child_source_resource_ids_json = json.dumps(request.child_source_resource_ids, ensure_ascii=False)
+        if request.child_resource_count and not task.child_resource_count:
+            task.child_resource_count = request.child_resource_count
+        if request.contains_resource_types and task.contains_resource_types_json in ("", "[]"):
+            task.contains_resource_types_json = json.dumps(request.contains_resource_types, ensure_ascii=False)
+        if request.download_file_name and not task.download_file_name:
+            task.download_file_name = request.download_file_name
+        if request.download_content_type and not task.download_content_type:
+            task.download_content_type = request.download_content_type
+        if request.download_file_size and not task.download_file_size:
+            task.download_file_size = request.download_file_size
+
+    async def _backfill_relationships(self, task: ResourceTask) -> None:
+        if task.parent_source_resource_id:
+            parent = (
+                await self.session.execute(
+                    select(ResourceTask).where(ResourceTask.source_resource_id == task.parent_source_resource_id)
+                )
+            ).scalar_one_or_none()
+            task.parent_resource_id = parent.resource_id if parent else None
+
+        child_ids: list[str] = []
+        child_source_ids = []
+        try:
+            value = json.loads(task.child_source_resource_ids_json or "[]")
+            if isinstance(value, list):
+                child_source_ids = [str(v) for v in value]
+        except json.JSONDecodeError:
+            child_source_ids = []
+        if child_source_ids:
+            rows = (
+                await self.session.execute(
+                    select(ResourceTask).where(ResourceTask.source_resource_id.in_(child_source_ids))
+                )
+            ).scalars().all()
+            mapping = {row.source_resource_id: row.resource_id for row in rows if row.resource_id}
+            child_ids = [mapping[source_id] for source_id in child_source_ids if mapping.get(source_id)]
+        task.child_resource_ids_json = json.dumps(child_ids, ensure_ascii=False)
+
+        related = (
+            await self.session.execute(
+                select(ResourceTask).where(
+                    (ResourceTask.parent_source_resource_id == task.source_resource_id)
+                    | (ResourceTask.source_resource_id == task.parent_source_resource_id)
+                )
+            )
+        ).scalars().all()
+        for related_task in related:
+            if related_task.id == task.id:
+                continue
+            if related_task.parent_source_resource_id == task.source_resource_id:
+                related_task.parent_resource_id = task.resource_id
+            related_child_source_ids = []
+            try:
+                value = json.loads(related_task.child_source_resource_ids_json or "[]")
+                if isinstance(value, list):
+                    related_child_source_ids = [str(v) for v in value]
+            except json.JSONDecodeError:
+                related_child_source_ids = []
+            if related_child_source_ids:
+                mapping_rows = (
+                    await self.session.execute(
+                        select(ResourceTask).where(ResourceTask.source_resource_id.in_(related_child_source_ids))
+                    )
+                ).scalars().all()
+                mapping = {row.source_resource_id: row.resource_id for row in mapping_rows if row.resource_id}
+                related_task.child_resource_ids_json = json.dumps(
+                    [mapping[source_id] for source_id in related_child_source_ids if mapping.get(source_id)],
+                    ensure_ascii=False,
+                )
+
     async def register(self, request: RegisterRequest) -> RegisterResponse:
         # Idempotency: check if a task with the same key already exists
         existing = (
@@ -53,6 +151,9 @@ class PgCloudClient(BaseCloudClient):
         ).scalar_one_or_none()
 
         if existing:
+            self._merge_task_metadata(existing, request)
+            await self._backfill_relationships(existing)
+            await self.session.flush()
             return RegisterResponse(
                 resource_id=existing.resource_id or "",
                 exists=True,
@@ -72,6 +173,9 @@ class PgCloudClient(BaseCloudClient):
         ).scalars().first()
 
         if dup:
+            self._merge_task_metadata(dup, request)
+            await self._backfill_relationships(dup)
+            await self.session.flush()
             return RegisterResponse(
                 resource_id=dup.resource_id or "",
                 exists=True,
@@ -89,6 +193,24 @@ class PgCloudClient(BaseCloudClient):
             content_md5=request.content_md5,
             resource_type=request.resource_type,
             source_directory=source_dir,
+            source_resource_id=request.source_resource_id,
+            source=request.source,
+            pack_name=request.pack_name,
+            title=request.title,
+            resource_path=request.resource_path,
+            source_url=request.source_url,
+            original_download_url=request.original_download_url,
+            category=request.category,
+            license_name=request.license_name,
+            source_description=request.source_description,
+            tags_json=json.dumps(request.tags, ensure_ascii=False),
+            parent_source_resource_id=request.parent_source_resource_id,
+            child_source_resource_ids_json=json.dumps(request.child_source_resource_ids, ensure_ascii=False),
+            child_resource_count=request.child_resource_count,
+            contains_resource_types_json=json.dumps(request.contains_resource_types, ensure_ascii=False),
+            download_file_name=request.download_file_name,
+            download_content_type=request.download_content_type,
+            download_file_size=request.download_file_size,
             process_state="registered",
             resource_id=resource_id,
             idempotency_key=request.idempotency_key,
@@ -115,6 +237,7 @@ class PgCloudClient(BaseCloudClient):
             ProcessLog(task=task, event="registered", detail=f"resource_id={resource_id}, files={len(request.files)}")
         )
         await self.session.flush()
+        await self._backfill_relationships(task)
 
         return RegisterResponse(
             resource_id=resource_id,
@@ -146,6 +269,26 @@ class PgCloudClient(BaseCloudClient):
         except Exception as exc:
             logger.error("upload_file_obj failed for %s: %s", resource_id, exc)
             return UploadResult(success=False, error_message=str(exc))
+
+    async def upload_download_obj(self, resource_id: str, filename: str, fileobj, content_type: str) -> UploadResult:
+        key = f"downloads/{resource_id}/{filename}"
+        try:
+            uploaded = self.storage.upload_fileobj(key, fileobj, content_type)
+        except Exception as exc:
+            logger.error("upload_download_obj failed for %s: %s", resource_id, exc)
+            return UploadResult(success=False, error_message=str(exc))
+
+        task = (
+            await self.session.execute(
+                select(ResourceTask).where(ResourceTask.resource_id == resource_id)
+            )
+        ).scalar_one_or_none()
+        if task is not None:
+            task.download_object_key = key
+            task.download_file_name = filename
+            task.download_content_type = content_type
+            task.download_file_size = uploaded
+        return UploadResult(success=True, uploaded_bytes=uploaded)
 
     async def upload_previews(self, resource_id: str, previews: List[PreviewFileInfo]) -> UploadResult:
         """Upload all preview files belonging to a resource to KS3."""
@@ -188,23 +331,22 @@ class PgCloudClient(BaseCloudClient):
         if task.process_state == "committed":
             return CommitResponse(resource_id=request.resource_id, state="committed")
 
-        # Save description
-        desc = ResourceDescription(
-            task_id=task.id,
-            main_content=request.description_main,
-            detail_content=request.description_detail,
-            full_description=request.description_full,
-            prompt_version="",
-        )
-        self.session.add(desc)
-
-        # Generate embedding vector on the server side
+        # Generate embedding vector on the server side.
+        # IMPORTANT: only use main description for vectorization.
         from app.config import settings
         from app.services.embedding_client import generate_embedding, get_model_version
 
         model_ver = get_model_version()
+        embedding_text = (request.description_main or "").strip()
+        if not embedding_text:
+            return CommitResponse(
+                resource_id=request.resource_id,
+                state="failed",
+                error_message="description_main is required for embedding generation",
+            )
+
         try:
-            vector = await generate_embedding(request.description_full)
+            vector = await generate_embedding(embedding_text)
             if len(vector) != settings.embedding_dimension:
                 logger.error(
                     "Embedding dimension mismatch: expected %d, got %d",
@@ -222,6 +364,15 @@ class PgCloudClient(BaseCloudClient):
                 state="failed",
                 error_message=f"embedding failed: {exc}",
             )
+
+        desc = ResourceDescription(
+            task_id=task.id,
+            main_content=request.description_main,
+            detail_content=request.description_detail,
+            full_description=request.description_full,
+            prompt_version="",
+        )
+        self.session.add(desc)
 
         # Save embedding metadata
         emb = ResourceEmbedding(

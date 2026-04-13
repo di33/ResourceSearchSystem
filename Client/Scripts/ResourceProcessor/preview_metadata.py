@@ -51,6 +51,8 @@ class PreviewInfo:
     strategy: PreviewStrategy
     role: str = "primary"
     path: Optional[str] = None
+    mode: str = "direct"
+    confidence: str = "high"
     format: Optional[str] = None
     width: Optional[int] = None
     height: Optional[int] = None
@@ -80,10 +82,33 @@ class ResourceProcessingEntity:
     source_directory: str
     files: List[FileInfo] = field(default_factory=list)
     content_md5: str = ""  # composite fingerprint: MD5(sorted individual file MD5s)
+    source: str = ""
+    pack_id: str = ""
+    pack_name: str = ""
+    title: str = ""
+    resource_path: str = ""
+    source_resource_id: str = ""
+    parent_resource_id: Optional[str] = None
+    child_resource_ids: List[str] = field(default_factory=list)
+    child_resource_count: int = 0
+    contains_resource_types: List[str] = field(default_factory=list)
+    source_url: str = ""
+    download_url: str = ""
+    category: str = ""
+    tags: List[str] = field(default_factory=list)
+    license_name: str = ""
+    source_description: str = ""
+    member_count: int = 0
+    missing_files: List[str] = field(default_factory=list)
+    auxiliary_metadata: dict = field(default_factory=dict)
 
     process_state: ProcessState = ProcessState.DISCOVERED
     previews: List[PreviewInfo] = field(default_factory=list)
     resource_id: Optional[str] = None
+    download_object_key: str = ""
+    download_file_name: str = ""
+    download_content_type: str = ""
+    download_file_size: int = 0
 
     description_main: str = ""
     description_detail: str = ""

@@ -82,6 +82,7 @@ from ResourceProcessor.preview.pipeline_incremental import (  # noqa: E402
 from ResourceProcessor.core.resource_filter import (  # noqa: E402
     filter_resources,
 )
+from ResourceProcessor.core.upload_pipeline import upload_enriched_resources  # noqa: E402
 from ResourceProcessor.description.description_generator import (  # noqa: E402
     DescriptionInput,
     generate_resource_description,
@@ -94,6 +95,10 @@ except Exception:
     pass
 try:
     import ResourceProcessor.description.zhipu_llm_provider  # noqa: F401
+except Exception:
+    pass
+try:
+    import ResourceProcessor.description.ksyun_llm_provider  # noqa: F401
 except Exception:
     pass
 
@@ -279,130 +284,16 @@ def step_upload(enriched: list[dict], server: str, report: Report):
     if not enriched:
         report.fail("上传", "无可上传的资源")
         return
-
-    # Health check first
-    try:
-        r = requests.get(f"{server}/health", timeout=5)
-        health = r.json()
-        if health.get("status") != "ok":
-            report.fail("服务端健康检查", f"状态: {health.get('status')}")
-            return
-        report.ok("服务端健康检查", "所有组件正常")
-    except Exception as e:
-        report.fail("服务端健康检查", f"无法连接: {e}")
-        return
-
-    success_count = 0
-    skip_count = 0
-    for item in enriched:
-        resource = item["resource"]
-        rtype = item["resource_type"]
-        desc = item["description"]
-        files_info = resource.get("files", [])
-        content_md5 = resource.get("content_md5", "")
-
-        src_dir = resource.get("source_directory", "unknown")
-        label = os.path.basename(src_dir) or content_md5[:12]
-
-        if not desc.get("full"):
-            skip_count += 1
-            continue
-
-        # 4a. Register
-        try:
-            reg_body = {
-                "content_md5": content_md5,
-                "resource_type": rtype,
-                "files": [
-                    {
-                        "file_name": f["file_name"],
-                        "file_size": f["file_size"],
-                        "file_format": f["file_format"],
-                        "content_md5": f["content_md5"],
-                        "file_role": f.get("file_role", "main"),
-                        "is_primary": f.get("is_primary", False),
-                    }
-                    for f in files_info
-                ],
-            }
-            resp = requests.post(f"{server}/resources/register", json=reg_body, timeout=30)
-            resp.raise_for_status()
-            reg = resp.json()
-            resource_id = reg["resource_id"]
-
-            if reg.get("exists"):
-                report.ok(f"上传 [{label}]", f"resource_id={resource_id} (云端已存在，跳过)")
-                success_count += 1
-                continue
-
-            report.ok(f"注册 [{label}]", f"resource_id={resource_id}")
-        except Exception as e:
-            report.fail(f"注册 [{label}]", str(e)[:120])
-            continue
-
-        # 4b. Upload files
-        try:
-            upload_files = []
-            for f in files_info:
-                fp = f.get("file_path", "")
-                if fp and os.path.isfile(fp):
-                    upload_files.append(("files", (f["file_name"], open(fp, "rb"), "application/octet-stream")))
-            if upload_files:
-                resp = requests.post(f"{server}/resources/{resource_id}/upload-batch", files=upload_files, timeout=120)
-                resp.raise_for_status()
-                ub = resp.json()
-                if not ub.get("success"):
-                    report.fail(f"上传文件 [{label}]", ub.get("error_message", "unknown"))
-                    continue
-                report.ok(f"上传文件 [{label}]", f"{ub.get('file_count', 0)} 个文件, {ub.get('uploaded_bytes', 0)} bytes")
-                for _, (_, fobj, _) in upload_files:
-                    fobj.close()
-        except Exception as e:
-            report.fail(f"上传文件 [{label}]", str(e)[:120])
-            continue
-
-        # 4c. Upload previews
-        try:
-            previews = resource.get("previews", [])
-            preview_files = []
-            for p in previews:
-                pp = p.get("path", "")
-                if pp and os.path.isfile(pp):
-                    fname = os.path.basename(pp)
-                    ct = "image/gif" if pp.endswith(".gif") else "image/webp"
-                    preview_files.append(("files", (fname, open(pp, "rb"), ct)))
-            if preview_files:
-                resp = requests.post(f"{server}/resources/{resource_id}/previews", files=preview_files, timeout=60)
-                resp.raise_for_status()
-                pu = resp.json()
-                report.ok(f"上传预览 [{label}]", f"{pu.get('preview_count', 0)} 个预览")
-                for _, (_, fobj, _) in preview_files:
-                    fobj.close()
-        except Exception as e:
-            report.fail(f"上传预览 [{label}]", str(e)[:120])
-
-        # 4d. Commit (server generates embedding automatically)
-        try:
-            commit_body = {
-                "resource_type": rtype,
-                "description_main": desc.get("main", ""),
-                "description_detail": desc.get("detail", ""),
-                "description_full": desc.get("full", ""),
-            }
-            resp = requests.post(f"{server}/resources/{resource_id}/commit", json=commit_body, timeout=30)
-            resp.raise_for_status()
-            cm = resp.json()
-            if cm.get("state") == "committed":
-                report.ok(f"提交 [{label}]", f"resource_id={resource_id}")
-                success_count += 1
-            else:
-                report.fail(f"提交 [{label}]", cm.get("error_message", f"state={cm.get('state')}"))
-        except Exception as e:
-            report.fail(f"提交 [{label}]", str(e)[:120])
-
-    detail = f"{success_count}/{len(enriched)} 个资源上传成功"
-    if skip_count:
-        detail += f", {skip_count} 个因描述失败而跳过"
+    summary = upload_enriched_resources(
+        enriched,
+        server,
+        reporter=lambda status, step, detail: report.ok(step, detail) if status == "OK" else report.fail(step, detail),
+    )
+    detail = f"{summary.success_count}/{len(enriched)} 个资源上传成功"
+    if summary.skipped_no_description:
+        detail += f", {summary.skipped_no_description} 个因描述失败而跳过"
+    if summary.skipped_no_files:
+        detail += f", {summary.skipped_no_files} 个因无原始文件而跳过"
     report.ok("上传汇总", detail)
 
 

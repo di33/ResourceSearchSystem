@@ -74,6 +74,8 @@ ResourceUpload/
 
 ## 快速开始
 
+> 常用运维命令（启动/重启、清空数据、搜索、全流程上传）请见 `OPERATIONS_GUIDE.md`。
+
 ### 1. 安装依赖
 
 ```bash
@@ -128,6 +130,57 @@ python Client/Scripts/run_resource_pipeline.py --source ... --work-dir ...
 
 未找到 Blender 时自动退化为占位 GIF（512×512 灰底 + 文件名标注）。
 
+### 5. 运行 ResourceCrawler 资源级流水线
+
+当输入不是“本地原始目录”，而是 `ResourceCrawler` 已经生成好的 `output/metadata/*.jsonl` 与 `output/assets/...` 时，使用专用入口：
+
+```bash
+python Client/Scripts/run_crawler_resource_pipeline.py \
+    --crawler-output G:/ResourceCrawler/output \
+    --work-dir G:/ResourceUpload/test_workdir_crawler
+```
+
+这条流水线会执行：
+- 读取 `resource_index.jsonl` 作为资源级入口
+- 结合 `index.jsonl` 和包级 JSON 补全 `pack_name`、`resource_path`、`tags`、`description` 等上下文
+- 按 `resource_type` 生成缩略图
+- 用缩略图和结构化元数据生成 LLM 描述
+- 复用现有上传接口完成 `register -> upload-batch -> previews -> commit`
+- 对多文件资源和 `pack` 资源在上传前预打包 ZIP，并将 ZIP 作为主下载对象
+- 保存 `source_resource_id` 与父子资源关系，搜索结果可直接返回 `parent_download_url`
+
+常用参数：
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--crawler-output` | 是 | `ResourceCrawler/output` 根目录 |
+| `--work-dir` | 否 | 工作输出目录，默认 `./test_workdir_crawler` |
+| `--resource-type` | 否 | 只处理某一类资源，如 `single_image` / `tileset` / `audio_file` |
+| `--source-filter` | 否 | 只处理某个来源，如 `kenney` |
+| `--limit` | 否 | 最多处理多少条资源 |
+| `--llm-provider` | 否 | 描述生成 provider，默认读 `.env` 的 `CLIENT_LLM_PROVIDER` |
+| `--no-previews` | 否 | 跳过预览生成 |
+| `--no-upload` | 否 | 仅本地处理，不上传 |
+| `--server` | 否 | 指定服务端地址 |
+
+产出：
+- `{work-dir}/crawler_resources.jsonl` — 资源级映射结果明细，便于断点续跑与字段核对
+- `{work-dir}/test_results.jsonl` — 逐条描述/上传结果明细
+- `{work-dir}/previews/` — 资源级缩略图
+- `{work-dir}/test_results.json` — 汇总摘要与步骤日志
+
+当前已落地的缩略图策略：
+- `single_image`：位图直接缩略，`svg` 优先栅格化，失败时退化为 metadata card
+- `tileset`：生成拼贴网格主预览，并附带单 tile gallery 预览
+- `animation_sequence`：按顺序抽样帧生成 GIF
+- `pack`：优先使用子资源图片生成整包拼贴图，缺少可视素材时退化为 metadata card
+- `audio_file` / `font_file` / `structured_resource`：优先生成说明型卡片图，降低对原始文件可视性的依赖
+
+上传策略说明：
+- 至少有 1 个可解析实体文件的资源，走完整上传链路
+- `metadata-only` 资源当前会保留本地预览和描述，但默认跳过原始文件上传与提交
+- 这类资源是否允许服务端完整入库，取决于后续是否扩展服务端 API
+
 ---
 
 ## 配置文件
@@ -155,6 +208,9 @@ python Client/Scripts/run_resource_pipeline.py --source ... --work-dir ...
 
 | 模块 | 功能 |
 |------|------|
+| `crawler/catalog_loader` | 读取 `resource_index.jsonl` / `index.jsonl` / 包级 JSON，构建资源目录 |
+| `crawler/resource_adapter` | 将 crawler 资源记录映射成统一的 `ResourceProcessingEntity` 和描述输入 |
+| `preview/crawler_thumbnail_policy` | 按 `resource_type` 生成资源级缩略图，支持 metadata fallback |
 | `preview/thumbnail_generator` | 图片缩略图（长边 512, WebP 优先）、FBX 旋转 GIF、占位降级 |
 | `preview/pipeline_incremental` | 增量流水线：指纹比对 → 跳过/拷贝 → 预览 → 质量校验 |
 | `preview_metadata` | `ProcessState` 状态机、`PreviewInfo`、`ResourceProcessingEntity` |
@@ -164,6 +220,7 @@ python Client/Scripts/run_resource_pipeline.py --source ... --work-dir ...
 | `cache/local_cache` | SQLite 持久化：6 张表、按 content_md5 查询、断点恢复 |
 | `cache/dedup_strategy` | 去重判定：全量复用 / 重跑描述 / 重跑向量 / 恢复中断 |
 | `core/resource_filter` | 文件筛选、分类拷贝、完整性校验、资源索引 |
+| `core/upload_pipeline` | 共享上传编排，复用于目录扫描流程和 crawler 资源级流程 |
 | `core/task_manager` | 并发任务管理、性能指标 |
 
 ### Server — 云端服务

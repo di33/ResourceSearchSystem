@@ -8,6 +8,8 @@ import logging
 import os
 from typing import List
 
+import requests
+
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -17,7 +19,9 @@ def _generate_embedding_sync(text: str) -> List[float]:
     """Blocking call that delegates to the configured provider."""
     provider = settings.embedding_provider
 
-    if provider == "dashscope":
+    if provider == "ksyun":
+        return _ksyun_embed(text)
+    elif provider == "dashscope":
         return _dashscope_embed(text)
     elif provider == "zhipu":
         return _zhipu_embed(text)
@@ -25,6 +29,55 @@ def _generate_embedding_sync(text: str) -> List[float]:
         # Fallback: deterministic mock vector
         h = int(hashlib.md5(text.encode("utf-8")).hexdigest()[:8], 16)
         return [(h + i) % 1000 / 1000.0 for i in range(settings.embedding_dimension)]
+
+
+def _ksyun_embed(text: str) -> List[float]:
+    api_key = (
+        settings.kspmas_api_key
+        or settings.ksc_api_key
+        or os.environ.get("KSPMAS_API_KEY", "")
+        or os.environ.get("KSC_API_KEY", "")
+    )
+    if not api_key:
+        raise RuntimeError("KSPMAS_API_KEY (or KSC_API_KEY) not set in environment")
+
+    base_url = (
+        settings.embedding_base_url
+        or os.environ.get("SERVER_EMBEDDING_BASE_URL", "")
+        or os.environ.get("KSPMAS_BASE_URL", "")
+        or "https://kspmas.ksyun.com/v1"
+    ).rstrip("/")
+
+    payload = {
+        "model": settings.embedding_model,
+        "input": text,
+    }
+    if settings.embedding_dimension > 0:
+        payload["dimensions"] = settings.embedding_dimension
+
+    resp = requests.post(
+        f"{base_url}/embeddings",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=60,
+    )
+    if not resp.ok:
+        raise RuntimeError(
+            f"Ksyun embeddings failed: code={resp.status_code}, body={resp.text[:300]}"
+        )
+
+    data = resp.json()
+    rows = data.get("data") or []
+    if not rows:
+        raise RuntimeError("Ksyun embeddings response missing data")
+
+    vector = rows[0].get("embedding")
+    if not isinstance(vector, list):
+        raise RuntimeError("Ksyun embeddings response format invalid")
+    return vector
 
 
 def _dashscope_embed(text: str) -> List[float]:

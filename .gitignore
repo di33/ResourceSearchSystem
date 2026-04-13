@@ -9,6 +9,11 @@ __pycache__/
 # Runtime logs
 integrity_check.log
 
-# Test working directory
+# Local environment and editor state
+.env
+.vscode/
+
+# Test working directories and generated resources
 test_workdir/
+test_workdir_*/
 test_resources/
