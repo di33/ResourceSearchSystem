@@ -316,9 +316,16 @@ class CrawlerCatalog:
         yielded = 0
         wanted_type = resource_type.strip().lower()
         wanted_source = source_filter.strip().lower()
+        seen_ids: set[str] = set()
 
         self._require_file(self.resource_index_path, "crawler 资源索引 resource_index.jsonl")
         for entry in _iter_jsonl(self.resource_index_path, skip_bad=True):
+            # 去重：跳过重复 ID
+            rid = str(entry.get("id", ""))
+            if rid in seen_ids:
+                continue
+            seen_ids.add(rid)
+
             source = str(entry.get("source", "")).lower()
             current_type = str(entry.get("resource_type", "")).lower()
             if wanted_type and current_type != wanted_type:

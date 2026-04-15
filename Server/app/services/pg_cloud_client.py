@@ -431,6 +431,7 @@ class PgCloudClient(BaseCloudClient):
                 )
 
         task.process_state = "committed"
+        await self._backfill_relationships(task)
         self.session.add(
             ProcessLog(task=task, event="committed", detail="description + embedding saved")
         )

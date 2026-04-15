@@ -15,7 +15,6 @@ services:
       MILVUS_HOST: milvus
       MILVUS_PORT: "19530"
       KS3_ENDPOINT: http://minio:9000
-      KS3_PUBLIC_ENDPOINT: http://localhost:9000
       KS3_ACCESS_KEY: minioadmin
       KS3_SECRET_KEY: minioadmin
       KS3_BUCKET: resources
