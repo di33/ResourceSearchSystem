@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 
 from app.config import settings
 from app.deps import close_milvus, engine, get_milvus
@@ -59,13 +60,24 @@ app = FastAPI(
     debug=settings.debug,
 )
 
+allowed_origins = ["*"] if settings.debug else []
+if not allowed_origins:
+    logger.warning("CORS is restricted — no origins allowed. Set allowed_origins for production.")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/", include_in_schema=False)
+async def root():
+    """根路径未挂业务页时浏览器会 404；重定向到 Swagger 文档。"""
+    return RedirectResponse(url="/docs")
+
 
 app.include_router(health.router)
 app.include_router(resources.router)

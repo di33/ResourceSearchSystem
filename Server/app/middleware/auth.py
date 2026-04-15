@@ -16,7 +16,16 @@ from jose import JWTError, jwt
 
 from app.config import settings
 
+_DEFAULT_JWT_SECRET = "dev-secret-change-in-production"
+
 _scheme = HTTPBearer(auto_error=False)
+
+if settings.jwt_secret == _DEFAULT_JWT_SECRET and not settings.debug:
+    import logging
+    logging.getLogger(__name__).warning(
+        "JWT secret is using the default value. "
+        "Set JWT_SECRET in .env for production deployments."
+    )
 
 
 def create_access_token(subject: str, extra: dict | None = None, expires_delta: timedelta | None = None) -> str:

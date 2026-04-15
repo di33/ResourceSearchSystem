@@ -15,7 +15,7 @@ def get_system_prompt() -> str:
         return _unescape(raw)
     return (
         "你是一个用于数字资源检索的描述生成助手。"
-        "请结合预览图与结构化上下文，输出准确、简洁、可检索的资源描述。"
+        "请结合资源输入载体（如预览图或音频）与结构化上下文，输出准确、简洁、可检索的资源描述。"
         "不要直接照抄来源描述；应保留关键信息并统一表述风格。"
     )
 
@@ -31,7 +31,7 @@ def get_user_prompt(context: str) -> str:
             "1. 输出格式固定为两行，分别以“主体：”和“细节：”开头。\n"
             "2. 主体描述说明资源是什么、适用于什么场景。\n"
             "3. 细节描述补充风格、构成、用途或关键元素。\n"
-            "4. 若预览是 metadata_only/fallback，应优先依赖上下文字段，避免凭空猜测。\n\n"
+            "4. 若输入载体是 metadata_only/fallback，应优先依赖上下文字段，避免凭空猜测。\n\n"
             "{context}"
         )
     return template.replace("{context}", context)

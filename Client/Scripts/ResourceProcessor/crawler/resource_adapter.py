@@ -46,7 +46,7 @@ def _merge_tags(record: CrawlerResourceRecord) -> list[str]:
 def _asset_counter(assets: list[CrawlerAssetRecord], key: str) -> dict[str, int]:
     counter: Counter[str] = Counter()
     for asset in assets:
-        value = asset.metadata.get(key)
+        value = getattr(asset, key, "")
         if isinstance(value, str) and value.strip():
             counter[value.strip()] += 1
     return dict(counter)
@@ -171,9 +171,15 @@ def build_processing_entity(record: CrawlerResourceRecord) -> ResourceProcessing
 
 def build_description_input(entity: ResourceProcessingEntity) -> DescriptionInput:
     preview = entity.previews[0] if entity.previews else None
+    primary_file = entity.primary_file
     asset_formats = entity.auxiliary_metadata.get("asset_formats", [])
     missing_count = len(entity.missing_files)
     denominator = entity.member_count or max(len(entity.files) + missing_count, 1)
+    llm_input_path = preview.path if preview and preview.path else ""
+    llm_input_type = "image"
+    if entity.resource_type == "audio_file" and primary_file and primary_file.file_path:
+        llm_input_path = primary_file.file_path
+        llm_input_type = "audio"
     return DescriptionInput(
         preview_path=preview.path if preview and preview.path else "",
         resource_type=entity.resource_type,
@@ -186,6 +192,8 @@ def build_description_input(entity: ResourceProcessingEntity) -> DescriptionInpu
             "styles": entity.auxiliary_metadata.get("styles", {}),
             "themes": entity.auxiliary_metadata.get("themes", {}),
         },
+        llm_input_path=llm_input_path,
+        llm_input_type=llm_input_type,
         title=entity.title,
         pack_name=entity.pack_name,
         resource_path=entity.resource_path,

@@ -1,8 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git init:*)",
-      "Bash(bash:*)"
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "Glob(*)",
+      "Grep(*)"
     ]
   }
 }

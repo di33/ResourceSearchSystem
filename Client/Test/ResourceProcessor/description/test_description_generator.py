@@ -53,6 +53,20 @@ def test_description_input_to_prompt_context():
     assert "webp" in ctx
 
 
+def test_description_input_resolves_audio_llm_fields():
+    inp = DescriptionInput(
+        preview_path="/tmp/preview.webp",
+        resource_type="audio_file",
+        preview_strategy="static",
+        auxiliary_metadata={"format": "ogg"},
+        llm_input_path="/tmp/coin.ogg",
+        llm_input_type="audio",
+    )
+    assert inp.resolved_llm_input_path == "/tmp/coin.ogg"
+    assert inp.resolved_llm_input_type == "audio"
+    assert "LLM输入模态: audio" in inp.to_prompt_context()
+
+
 # ---------------------------------------------------------------------------
 # MockLLMProvider
 # ---------------------------------------------------------------------------

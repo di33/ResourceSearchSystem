@@ -34,6 +34,8 @@ class DescriptionInput:
     resource_type: str
     preview_strategy: str
     auxiliary_metadata: dict
+    llm_input_path: str = ""
+    llm_input_type: str = "image"
     title: str = ""
     pack_name: str = ""
     resource_path: str = ""
@@ -47,6 +49,14 @@ class DescriptionInput:
     preview_confidence: str = ""
     missing_file_ratio: float = 0.0
 
+    @property
+    def resolved_llm_input_path(self) -> str:
+        return self.llm_input_path or self.preview_path
+
+    @property
+    def resolved_llm_input_type(self) -> str:
+        return (self.llm_input_type or "image").strip().lower()
+
     @staticmethod
     def _stringify(value) -> str:
         if isinstance(value, (list, tuple, set)):
@@ -56,6 +66,8 @@ class DescriptionInput:
     def to_prompt_context(self) -> str:
         """将输入转为可嵌入 Prompt 的上下文文本。"""
         parts = [f"资源类型: {self.resource_type}"]
+        if self.resolved_llm_input_type and self.resolved_llm_input_path:
+            parts.append(f"LLM输入模态: {self.resolved_llm_input_type}")
         if self.title:
             parts.append(f"资源标题: {self.title}")
         if self.pack_name:

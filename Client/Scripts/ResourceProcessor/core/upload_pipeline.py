@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import zipfile
@@ -75,6 +76,27 @@ def _resource_int(resource: ResourceProcessingEntity | dict[str, Any], attr: str
         return 0
 
 
+def _register_idempotency_key(resource: ResourceProcessingEntity | dict[str, Any]) -> str:
+    source_resource_id = _resource_text(resource, "source_resource_id").strip()
+    if source_resource_id:
+        digest = hashlib.sha256(source_resource_id.encode("utf-8")).hexdigest()[:24]
+        return f"crawler-register:src:{digest}"
+
+    content_md5 = _resource_text(resource, "content_md5").strip()
+    if content_md5:
+        return f"crawler-register:md5:{content_md5}"
+
+    resource_path = _resource_text(resource, "resource_path").strip()
+    if resource_path:
+        return f"crawler-register:path:{resource_path}"
+
+    title = _resource_text(resource, "title").strip()
+    if title:
+        return f"crawler-register:title:{title}"
+
+    return ""
+
+
 def _build_download_package(resource: ResourceProcessingEntity | dict[str, Any]) -> tuple[str, bytes, str] | None:
     files = _resource_files(resource)
     if not files:
@@ -101,6 +123,7 @@ def _build_download_package(resource: ResourceProcessingEntity | dict[str, Any])
 
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        seen_names: dict[str, int] = {}
         for file_info in files:
             file_path = str(file_info.get("file_path", ""))
             if not file_path or not os.path.isfile(file_path):
@@ -111,6 +134,13 @@ def _build_download_package(resource: ResourceProcessingEntity | dict[str, Any])
                     arcname = os.path.relpath(file_path, root_dir)
                 except ValueError:
                     arcname = str(file_info.get("file_name") or os.path.basename(file_path))
+            # Deduplicate arcnames
+            if arcname in seen_names:
+                seen_names[arcname] += 1
+                base, ext = os.path.splitext(arcname)
+                arcname = f"{base}_{seen_names[arcname]}{ext}"
+            else:
+                seen_names[arcname] = 0
             zf.write(file_path, arcname=arcname)
     payload = buffer.getvalue()
     if not payload:
@@ -193,6 +223,7 @@ def upload_enriched_resources(
                 "license_name": _resource_text(resource, "license_name"),
                 "source_description": _resource_text(resource, "source_description"),
                 "tags": _resource_list(resource, "tags"),
+                "idempotency_key": _register_idempotency_key(resource),
                 "files": [
                     {
                         "file_name": f["file_name"],
@@ -221,11 +252,14 @@ def upload_enriched_resources(
             resource_id = register_data["resource_id"]
             if isinstance(resource, ResourceProcessingEntity):
                 resource.resource_id = resource_id
-            if register_data.get("exists"):
+            if register_data.get("exists") and register_data.get("state") == "committed":
                 _report(reporter, "OK", f"上传 [{label}]", f"resource_id={resource_id} (云端已存在，跳过)")
                 summary.success_count += 1
                 continue
-            _report(reporter, "OK", f"注册 [{label}]", f"resource_id={resource_id}")
+            if register_data.get("exists"):
+                _report(reporter, "OK", f"注册 [{label}]", f"resource_id={resource_id} (复用未完成任务，继续上传)")
+            else:
+                _report(reporter, "OK", f"注册 [{label}]", f"resource_id={resource_id}")
         except Exception as exc:
             summary.failed_count += 1
             _report(reporter, "FAIL", f"注册 [{label}]", str(exc)[:120])
@@ -259,7 +293,11 @@ def upload_enriched_resources(
                 )
         except Exception as exc:
             summary.failed_count += 1
-            _report(reporter, "FAIL", f"上传文件 [{label}]", str(exc)[:120])
+            error_msg = str(exc)
+            if "MD5 mismatch" in error_msg:
+                _report(reporter, "FAIL", f"文件校验 [{label}]", error_msg[:200])
+            else:
+                _report(reporter, "FAIL", f"上传文件 [{label}]", error_msg[:120])
             continue
         finally:
             for _, (_, file_obj, _) in upload_files:

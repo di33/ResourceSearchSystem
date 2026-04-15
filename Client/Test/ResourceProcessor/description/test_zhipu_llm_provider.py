@@ -95,10 +95,28 @@ def test_build_vision_content_without_image():
     assert "text" in types
 
 
+def test_build_vision_content_with_audio_falls_back_to_text_only(tmp_path):
+    audio = tmp_path / "coin.ogg"
+    audio.write_bytes(b"OggS")
+    content = _build_user_content_vision(
+        DescriptionInput(
+            preview_path=str(tmp_path / "preview.webp"),
+            resource_type="audio_file",
+            preview_strategy="static",
+            auxiliary_metadata={"format": "ogg"},
+            llm_input_path=str(audio),
+            llm_input_type="audio",
+        )
+    )
+    types = [item.get("type") for item in content]
+    assert "image_url" not in types
+    assert "text" in types
+
+
 def test_build_text_content():
     text = _build_user_content_text(_make_input())
     assert "model" in text or "资源类型" in text
-    assert "主体" in text
+    assert "format" in text
 
 
 # ---------------------------------------------------------------------------

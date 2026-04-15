@@ -81,6 +81,42 @@ class PgCloudClient(BaseCloudClient):
         if request.download_file_size and not task.download_file_size:
             task.download_file_size = request.download_file_size
 
+    def _existing_register_response(self, task: ResourceTask, request: RegisterRequest) -> RegisterResponse:
+        return RegisterResponse(
+            resource_id=task.resource_id or "",
+            exists=True,
+            upload_mode=self.determine_upload_mode(request.total_size),
+            multipart_chunk_size=10 * 1024 * 1024,
+            state=task.process_state,
+        )
+
+    async def _find_existing_by_source_resource_id(self, request: RegisterRequest) -> ResourceTask | None:
+        source_resource_id = (request.source_resource_id or "").strip()
+        if not source_resource_id:
+            return None
+
+        if request.source:
+            scoped = (
+                await self.session.execute(
+                    select(ResourceTask)
+                    .where(
+                        ResourceTask.source_resource_id == source_resource_id,
+                        ResourceTask.source == request.source,
+                    )
+                    .order_by(ResourceTask.updated_at.desc(), ResourceTask.id.desc())
+                )
+            ).scalars().first()
+            if scoped is not None:
+                return scoped
+
+        return (
+            await self.session.execute(
+                select(ResourceTask)
+                .where(ResourceTask.source_resource_id == source_resource_id)
+                .order_by(ResourceTask.updated_at.desc(), ResourceTask.id.desc())
+            )
+        ).scalars().first()
+
     async def _backfill_relationships(self, task: ResourceTask) -> None:
         if task.parent_source_resource_id:
             parent = (
@@ -141,6 +177,13 @@ class PgCloudClient(BaseCloudClient):
                 )
 
     async def register(self, request: RegisterRequest) -> RegisterResponse:
+        existing_by_source = await self._find_existing_by_source_resource_id(request)
+        if existing_by_source:
+            self._merge_task_metadata(existing_by_source, request)
+            await self._backfill_relationships(existing_by_source)
+            await self.session.flush()
+            return self._existing_register_response(existing_by_source, request)
+
         # Idempotency: check if a task with the same key already exists
         existing = (
             await self.session.execute(
@@ -154,13 +197,7 @@ class PgCloudClient(BaseCloudClient):
             self._merge_task_metadata(existing, request)
             await self._backfill_relationships(existing)
             await self.session.flush()
-            return RegisterResponse(
-                resource_id=existing.resource_id or "",
-                exists=True,
-                upload_mode=self.determine_upload_mode(request.total_size),
-                multipart_chunk_size=10 * 1024 * 1024,
-                state=existing.process_state,
-            )
+            return self._existing_register_response(existing, request)
 
         # Check for content-level dedup using composite fingerprint
         dup = (
@@ -176,18 +213,10 @@ class PgCloudClient(BaseCloudClient):
             self._merge_task_metadata(dup, request)
             await self._backfill_relationships(dup)
             await self.session.flush()
-            return RegisterResponse(
-                resource_id=dup.resource_id or "",
-                exists=True,
-                upload_mode="direct",
-                multipart_chunk_size=10 * 1024 * 1024,
-                state="committed",
-            )
+            return self._existing_register_response(dup, request)
 
         resource_id = f"res-{uuid.uuid4().hex[:16]}"
-        source_dir = request.files[0].file_path.rsplit("/", 1)[0] if request.files else ""
-        if os.sep:
-            source_dir = request.files[0].file_path.rsplit(os.sep, 1)[0] if request.files else ""
+        source_dir = request.files[0].file_path.rsplit(os.sep, 1)[0] if request.files else ""
 
         task = ResourceTask(
             content_md5=request.content_md5,
@@ -264,8 +293,8 @@ class PgCloudClient(BaseCloudClient):
         """Upload from an in-memory file object (used by the HTTP endpoint)."""
         key = f"files/{resource_id}/{filename}"
         try:
-            uploaded = self.storage.upload_fileobj(key, fileobj, content_type)
-            return UploadResult(success=True, uploaded_bytes=uploaded)
+            uploaded, etag = self.storage.upload_fileobj(key, fileobj, content_type)
+            return UploadResult(success=True, uploaded_bytes=uploaded, s3_etag=etag)
         except Exception as exc:
             logger.error("upload_file_obj failed for %s: %s", resource_id, exc)
             return UploadResult(success=False, error_message=str(exc))
@@ -273,7 +302,7 @@ class PgCloudClient(BaseCloudClient):
     async def upload_download_obj(self, resource_id: str, filename: str, fileobj, content_type: str) -> UploadResult:
         key = f"downloads/{resource_id}/{filename}"
         try:
-            uploaded = self.storage.upload_fileobj(key, fileobj, content_type)
+            uploaded, etag = self.storage.upload_fileobj(key, fileobj, content_type)
         except Exception as exc:
             logger.error("upload_download_obj failed for %s: %s", resource_id, exc)
             return UploadResult(success=False, error_message=str(exc))
@@ -307,7 +336,7 @@ class PgCloudClient(BaseCloudClient):
         """Upload preview from an in-memory file object."""
         key = f"previews/{resource_id}/{filename}"
         try:
-            uploaded = self.storage.upload_fileobj(key, fileobj, content_type)
+            uploaded, _etag = self.storage.upload_fileobj(key, fileobj, content_type)
             return UploadResult(success=True, uploaded_bytes=uploaded)
         except Exception as exc:
             logger.error("upload_preview_obj failed for %s: %s", resource_id, exc)
@@ -388,7 +417,6 @@ class PgCloudClient(BaseCloudClient):
                 self.milvus.insert(
                     collection_name=settings.milvus_collection,
                     data=[{
-                        "id": task.id,
                         "resource_id": request.resource_id,
                         "vector": vector,
                         "resource_type": request.resource_type,

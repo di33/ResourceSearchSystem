@@ -31,10 +31,14 @@ def _build_user_content(input_data: DescriptionInput) -> list[dict]:
     """Construct the multimodal message content list."""
     content: list[dict] = []
 
-    preview = Path(input_data.preview_path) if input_data.preview_path else None
-    if preview is not None and preview.is_file():
-        abs_path = str(preview.resolve()).replace("\\", "/")
-        content.append({"image": f"file://{abs_path}"})
+    media_path = input_data.resolved_llm_input_path
+    media = Path(media_path) if media_path else None
+    if media is not None and media.is_file():
+        abs_path = str(media.resolve()).replace("\\", "/")
+        if input_data.resolved_llm_input_type == "audio":
+            content.append({"audio": f"file://{abs_path}"})
+        else:
+            content.append({"image": f"file://{abs_path}"})
 
     context = input_data.to_prompt_context()
     content.append({"text": get_user_prompt(context)})

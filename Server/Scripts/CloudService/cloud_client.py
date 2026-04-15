@@ -88,6 +88,7 @@ class RegisterResponse:
 class UploadResult:
     success: bool
     uploaded_bytes: int = 0
+    s3_etag: str = ""
     error_message: str = ""
 
 @dataclass

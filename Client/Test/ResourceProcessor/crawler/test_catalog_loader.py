@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 
 from PIL import Image
@@ -8,6 +9,12 @@ from ResourceProcessor.crawler.resource_adapter import (
     build_description_input,
     build_processing_entity,
     compute_resource_fingerprint,
+)
+from ResourceProcessor.preview_metadata import (
+    FileInfo,
+    PreviewInfo,
+    PreviewStrategy,
+    ResourceProcessingEntity,
 )
 
 
@@ -24,8 +31,45 @@ def _make_png(path: Path, color: str = "red"):
         img.save(path)
 
 
+def _create_asset_index_db(db_path: str, index_rows: list[dict]):
+    """创建 asset_index SQLite 表并插入测试数据。"""
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE asset_index (
+            asset_id   TEXT NOT NULL,
+            file_path  TEXT NOT NULL DEFAULT '',
+            source     TEXT NOT NULL DEFAULT '',
+            pack_name  TEXT NOT NULL DEFAULT '',
+            fmt        TEXT NOT NULL DEFAULT '',
+            style      TEXT NOT NULL DEFAULT '',
+            theme      TEXT NOT NULL DEFAULT ''
+        )"""
+    )
+    for row in index_rows:
+        md = row.get("metadata", {}) or {}
+        conn.execute(
+            "INSERT INTO asset_index VALUES (?,?,?,?,?,?,?)",
+            (
+                row["id"],
+                row.get("file_path", ""),
+                row.get("source", ""),
+                row.get("source_pack", ""),
+                str(md.get("format", "")).lower(),
+                str(md.get("style", "")),
+                str(md.get("theme", "")),
+            ),
+        )
+    conn.execute("CREATE INDEX idx_asset_id ON asset_index(asset_id)")
+    conn.execute(
+        "CREATE INDEX idx_asset_source_pack ON asset_index(source, pack_name, file_path)"
+    )
+    conn.commit()
+    conn.close()
+
+
 def test_catalog_loader_and_adapter(tmp_path):
     output_root = tmp_path / "output"
+    db_path = str(tmp_path / "pipeline.db")
     pack_name = "Demo Pack"
     image_rel = "sprites/hero.png"
     image_abs = output_root / "assets" / "kenney" / pack_name / image_rel
@@ -87,8 +131,8 @@ def test_catalog_loader_and_adapter(tmp_path):
             },
         ],
     )
-    _write_jsonl(
-        output_root / "metadata" / "index.jsonl",
+    _create_asset_index_db(
+        db_path,
         [
             {
                 "id": "asset-hero",
@@ -121,7 +165,7 @@ def test_catalog_loader_and_adapter(tmp_path):
         encoding="utf-8",
     )
 
-    catalog = load_crawler_catalog(str(output_root))
+    catalog = load_crawler_catalog(str(output_root), db_path=db_path)
     records = list(catalog.iter_resources())
     assert len(records) == 3
     assert records[0].resolved_files == [str(image_abs.resolve())]
@@ -153,3 +197,37 @@ def test_catalog_loader_and_adapter(tmp_path):
     assert pack_entity.child_resource_ids == ["res-hero", "res-missing"]
     assert pack_entity.child_resource_count == 2
     assert pack_entity.contains_resource_types == ["single_image", "audio_file"]
+
+
+def test_build_description_input_prefers_primary_audio_file(tmp_path):
+    audio_path = tmp_path / "coin.ogg"
+    audio_path.write_bytes(b"OggS")
+    preview_path = tmp_path / "coin.webp"
+    _make_png(preview_path, color="blue")
+
+    entity = ResourceProcessingEntity(
+        resource_type="audio_file",
+        source_directory=str(tmp_path),
+        files=[
+            FileInfo(
+                file_path=str(audio_path),
+                file_name=audio_path.name,
+                file_size=audio_path.stat().st_size,
+                file_format="ogg",
+                content_md5="dummy",
+                file_role="audio",
+                is_primary=True,
+            )
+        ],
+        previews=[
+            PreviewInfo(
+                strategy=PreviewStrategy.STATIC,
+                path=str(preview_path),
+            )
+        ],
+    )
+
+    desc_input = build_description_input(entity)
+    assert desc_input.preview_path == str(preview_path)
+    assert desc_input.resolved_llm_input_path == str(audio_path)
+    assert desc_input.resolved_llm_input_type == "audio"

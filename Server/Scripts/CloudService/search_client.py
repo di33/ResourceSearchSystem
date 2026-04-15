@@ -5,6 +5,22 @@ from dataclasses import asdict, dataclass, field
 from typing import List, Optional
 
 
+CANONICAL_RESOURCE_TYPES = (
+    "pack",
+    "atlas",
+    "tiled_map",
+    "tiled_tileset",
+    "spine_skeleton",
+    "dragonbones_skeleton",
+    "other",
+    "font_file",
+    "audio_file",
+    "tileset",
+    "animation_sequence",
+    "single_image",
+)
+
+
 # ---------------------------------------------------------------------------
 # Search data classes
 # ---------------------------------------------------------------------------
@@ -127,6 +143,17 @@ class MockSearchClient(BaseSearchClient):
         results = self._mock_results
         if request.resource_type:
             results = [r for r in results if r.resource_type == request.resource_type]
+        if request.format_filter:
+            allowed_formats = {
+                fmt.strip().lower().lstrip(".")
+                for fmt in request.format_filter
+                if isinstance(fmt, str) and fmt.strip()
+            }
+            if allowed_formats:
+                results = [
+                    r for r in results
+                    if str(r.file_format or "").strip().lower().lstrip(".") in allowed_formats
+                ]
         results = [r for r in results if r.score >= request.similarity_threshold]
         results = sorted(results, key=lambda r: r.score, reverse=True)[:request.top_k]
 

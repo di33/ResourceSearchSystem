@@ -75,6 +75,24 @@ def test_build_user_content_missing_file():
     assert any("text" in item for item in content)
 
 
+def test_build_user_content_with_audio(tmp_path):
+    audio = tmp_path / "coin.ogg"
+    audio.write_bytes(b"OggS")
+    content = _build_user_content(
+        DescriptionInput(
+            preview_path=str(tmp_path / "preview.webp"),
+            resource_type="audio_file",
+            preview_strategy="static",
+            auxiliary_metadata={"format": "ogg"},
+            llm_input_path=str(audio),
+            llm_input_type="audio",
+        )
+    )
+    assert any("audio" in item for item in content)
+    assert all("image" not in item for item in content)
+    assert any("text" in item for item in content)
+
+
 # ---------------------------------------------------------------------------
 # DashScopeLLMProvider construction
 # ---------------------------------------------------------------------------

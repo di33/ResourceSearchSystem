@@ -45,11 +45,33 @@ def _encode_image_data_uri(path: str) -> str | None:
     return f"data:{mime};base64,{encoded}"
 
 
+def _encode_audio_input(path: str) -> dict[str, str] | None:
+    if not path:
+        return None
+    p = Path(path)
+    if not p.is_file():
+        return None
+    data = p.read_bytes()
+    fmt = (p.suffix.lstrip(".").lower() or "wav")
+    if fmt == "oga":
+        fmt = "ogg"
+    return {
+        "data": base64.b64encode(data).decode("utf-8"),
+        "format": fmt,
+    }
+
+
 def _build_user_content(input_data: DescriptionInput) -> list[dict[str, Any]]:
     content: list[dict[str, Any]] = []
-    data_uri = _encode_image_data_uri(input_data.preview_path)
-    if data_uri:
-        content.append({"type": "image_url", "image_url": {"url": data_uri}})
+    media_path = input_data.resolved_llm_input_path
+    if input_data.resolved_llm_input_type == "audio":
+        audio_input = _encode_audio_input(media_path)
+        if audio_input:
+            content.append({"type": "input_audio", "input_audio": audio_input})
+    else:
+        data_uri = _encode_image_data_uri(media_path)
+        if data_uri:
+            content.append({"type": "image_url", "image_url": {"url": data_uri}})
 
     context = input_data.to_prompt_context()
     content.append({"type": "text", "text": get_user_prompt(context)})

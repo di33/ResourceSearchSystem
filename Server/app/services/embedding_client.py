@@ -127,9 +127,20 @@ def _zhipu_embed(text: str) -> List[float]:
     return response.data[0].embedding
 
 
-async def generate_embedding(text: str) -> List[float]:
-    """Async wrapper — runs blocking call in a thread pool."""
-    return await asyncio.to_thread(_generate_embedding_sync, text)
+async def generate_embedding(text: str, max_retries: int = 2) -> List[float]:
+    """Async wrapper — runs blocking call in a thread pool with retry."""
+    cleaned = " ".join(text.split()).strip()
+    if not cleaned:
+        raise ValueError("Embedding input text is empty after cleaning")
+
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            return await asyncio.to_thread(_generate_embedding_sync, cleaned)
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("Embedding generation attempt %d failed: %s", attempt + 1, exc)
+    raise RuntimeError(f"Embedding generation failed after {max_retries + 1} attempts: {last_exc}")
 
 
 def get_model_version() -> str:

@@ -5,7 +5,7 @@
 - 启动/重启服务器
 - 查看/清空服务端数据
 - 语义搜索
-- 运行 `预览 -> 描述 -> 上传` 全流程
+- 运行 `预览 -> 描述 -> 上传` 全流程（含 ResourceCrawler 断点续跑与 `--upload-only` 仅上传）
 
 默认在仓库根目录 `G:/ResourceUpload` 执行（PowerShell）。
 
@@ -353,9 +353,129 @@ python .\Client\Scripts\run_crawler_resource_pipeline.py `
 - 对有实体文件的资源，会执行完整上传
 - 对 `metadata-only` 资源，当前策略是保留本地预览和描述，但默认跳过原始文件上传与提交
 
+### 4.10 断点续跑（预览 + 描述，不上传）
+
+用于中断后继续：会读取 `{work-dir}\crawler_resources.jsonl` 与 `{work-dir}\test_results.jsonl` 中已有进度，只补未完成的预览与描述，**不向服务端上传**。
+
+```powershell
+python .\Client\Scripts\run_crawler_resource_pipeline.py `
+  --crawler-output "K:\ResourceCrawler\output" `
+  --work-dir "G:\ResourceUpload\test_workdir_all_previews_desc" `
+  --resume `
+  --no-upload
+```
+
+### 4.11 仅上传（已有预览与描述）
+
+前提：`{work-dir}` 下已有 `crawler_resources.jsonl` 与 `test_results.jsonl`，且对应资源具备**有效本地预览路径**与非空 **`description_full`**。脚本会按 `resource_index.jsonl` 扫描目录，仅对满足条件的记录调用服务端注册与上传。
+
+```powershell
+python .\Client\Scripts\run_crawler_resource_pipeline.py `
+  --crawler-output "K:\ResourceCrawler\output" `
+  --work-dir "G:\ResourceUpload\test_workdir_all_previews_desc" `
+  --upload-only
+```
+
+可选参数（与完整流水线相同）：`--server`、`--limit`、`--resource-type`、`--source-filter`。
+
+说明：
+
+- `--upload-only` 与 `--no-upload` **不能同时使用**。
+- 需要持久化控制台输出时，可自行重定向，例如：  
+  `... --upload-only 2>&1 | Tee-Object -FilePath ".\test_workdir_all_previews_desc\pipeline_upload_only.log"`  
+  脚本默认**不会**自动创建该日志文件。
+
 ---
 
-## 5. 常用组合（复制即用）
+## 5. 拆分流水线（SQLite 状态管理）
+
+新方案将 `预览 -> 描述 -> 上传` 拆为三个独立脚本，用 SQLite 管理资源状态，支持高效断点续传和去重。
+
+```
+DISCOVERED --(generate_previews)--> PREVIEW_READY --(generate_descriptions)--> DESCRIPTION_READY --(upload_resources)--> COMMITTED
+```
+
+### 5.0 迁移旧数据到 SQLite
+
+将已有的 JSONL 状态（`crawler_resources.jsonl` / `test_results.jsonl`）迁移到 SQLite。
+
+```powershell
+cd Client\Scripts
+
+python -m ResourceProcessor.tools.migrate_jsonl_to_sqlite `
+    --resources-jsonl "G:\ResourceUpload\test_workdir_all_previews_desc\crawler_resources.jsonl" `
+    --results-jsonl "G:\ResourceUpload\test_workdir_all_previews_desc\test_results.jsonl" `
+    --db-path "G:\ResourceUpload\pipeline.db" `
+    --crawler-output "K:\ResourceCrawler\output"
+```
+
+参数说明：
+- `--crawler-output`：读取 `resource_index.jsonl` 补全原始文件路径（~3秒，推荐加上）
+- `--dry-run`：只报告不写入
+- 迁移用 `content_md5` 去重，重复运行不会创建重复记录
+
+### 5.1 生成预览
+
+```powershell
+python -m ResourceProcessor.generate_previews `
+    --crawler-output "K:\ResourceCrawler\output" `
+    --db-path "G:\ResourceUpload\pipeline.db" `
+    --limit 100
+```
+
+可选参数：`--resume`（跳过已完成）、`--resource-type`、`--source-filter`、`--work-dir`
+
+### 5.2 生成描述
+
+```powershell
+python -m ResourceProcessor.generate_descriptions `
+    --crawler-output "K:\ResourceCrawler\output" `
+    --db-path "G:\ResourceUpload\pipeline.db" `
+    --llm-provider ksyun `
+    --limit 100
+```
+
+可选参数：`--resume`、`--retry-failed`（重试失败任务）、`--max-retries 3`
+
+### 5.3 上传资源
+
+```powershell
+python -m ResourceProcessor.upload_resources `
+    --crawler-output "K:\ResourceCrawler\output" `
+    --db-path "G:\ResourceUpload\pipeline.db" `
+    --limit 100
+```
+
+可选参数：`--server`、`--resume`、`--dry-run`
+
+### 5.4 断点续传
+
+每个脚本都支持 `--resume`，会跳过已达到目标状态的资源。任意一步中断后重跑即可从断点继续。
+
+```powershell
+# 中断后重跑预览，只处理未完成的
+python -m ResourceProcessor.generate_previews `
+    --crawler-output "K:\ResourceCrawler\output" `
+    --db-path "G:\ResourceUpload\pipeline.db" `
+    --resume
+```
+
+### 5.5 查看状态统计
+
+```powershell
+cd Client\Scripts
+python -c "
+from ResourceProcessor.cache.local_cache import LocalCacheStore
+cache = LocalCacheStore('G:\ResourceUpload\pipeline.db')
+for state, count in cache.count_tasks_by_state().items():
+    print(f'{state}: {count}')
+cache.close()
+"
+```
+
+---
+
+## 6. 常用组合（复制即用）
 
 ### 重置环境后跑一轮全流程
 
@@ -378,6 +498,17 @@ python .\Client\Scripts\run_crawler_resource_pipeline.py `
 python .\check_server.py --resources --page 1 --page-size 20
 ```
 
+### 预览与描述已就绪，仅批量上传
+
+```powershell
+.\start_server.ps1
+python .\Client\Scripts\run_crawler_resource_pipeline.py `
+  --crawler-output "K:\ResourceCrawler\output" `
+  --work-dir "G:\ResourceUpload\test_workdir_all_previews_desc" `
+  --upload-only
+python .\check_server.py --stats
+```
+
 ### 仅验证服务是否可用
 
 ```powershell
@@ -387,11 +518,11 @@ python .\check_server.py --health
 
 ---
 
-## 6. 全量重新生成向量（切换向量模型后）
+## 7. 全量重新生成向量（切换向量模型后）
 
 新增脚本：`rebuild_embeddings.py`。用途：对所有已提交资源重算向量，并刷新 Milvus 向量库。
 
-### 6.1 正式执行（推荐）
+### 7.1 正式执行（推荐）
 
 ```powershell
 python .\rebuild_embeddings.py
@@ -404,19 +535,19 @@ python .\rebuild_embeddings.py
 - 重新生成向量并更新 `resource_embedding` 元数据
 - 重建并写入 Milvus 集合（默认会先 drop 再 create）
 
-### 6.2 先演练（不落库）
+### 7.2 先演练（不落库）
 
 ```powershell
 python .\rebuild_embeddings.py --dry-run
 ```
 
-### 6.3 只处理前 N 条（灰度）
+### 7.3 只处理前 N 条（灰度）
 
 ```powershell
 python .\rebuild_embeddings.py --limit 100
 ```
 
-### 6.4 不重建集合，仅增量重写向量
+### 7.4 不重建集合，仅增量重写向量
 
 ```powershell
 python .\rebuild_embeddings.py --no-recreate-collection

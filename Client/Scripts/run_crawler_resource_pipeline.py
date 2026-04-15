@@ -444,6 +444,119 @@ async def _process_all_resources(
     }
 
 
+async def _upload_processed_only(
+    *,
+    catalog,
+    limit: int | None,
+    resource_type: str,
+    source_filter: str,
+    report: Report,
+    resources_jsonl_path: str,
+    results_jsonl_path: str,
+    server: str,
+) -> dict[str, Any]:
+    """仅上传：依赖 work-dir 下已有 crawler_resources.jsonl / test_results.jsonl 中的预览路径与描述。"""
+    if not os.path.isfile(resources_jsonl_path) or not os.path.isfile(results_jsonl_path):
+        report.fail("仅上传模式", "缺少 crawler_resources.jsonl 或 test_results.jsonl，请先跑过预览/描述或带 --resume")
+        return {"total": 0, "upload_summary": None, "upload_attempts": 0}
+
+    preview_state, result_state = _load_resume_state(resources_jsonl_path, results_jsonl_path)
+    try:
+        state_mtime_key: tuple[float, float] = (
+            os.path.getmtime(resources_jsonl_path),
+            os.path.getmtime(results_jsonl_path),
+        )
+    except OSError:
+        state_mtime_key = (0.0, 0.0)
+    report.ok(
+        "仅上传模式",
+        f"载入状态：有效预览键 {sum(1 for r in preview_state.values() if _has_valid_previews(r))}，"
+        f"有描述键 {sum(1 for r in result_state.values() if _has_valid_description(r))}",
+    )
+
+    upload_totals = {
+        "success_count": 0,
+        "failed_count": 0,
+        "skipped_count": 0,
+        "skipped_no_files": 0,
+        "skipped_no_description": 0,
+    }
+    processed = 0
+    upload_attempts = 0
+
+    def _maybe_reload_state() -> None:
+        """与续跑并行时 jsonl 会持续追加；按 mtime 增量重载，避免一直停留在进程启动时的快照。"""
+        nonlocal preview_state, result_state, state_mtime_key
+        try:
+            mt = (
+                os.path.getmtime(resources_jsonl_path),
+                os.path.getmtime(results_jsonl_path),
+            )
+        except OSError:
+            return
+        if mt == state_mtime_key:
+            return
+        state_mtime_key = mt
+        preview_state, result_state = _load_resume_state(resources_jsonl_path, results_jsonl_path)
+
+    for record in catalog.iter_resources(limit=limit, resource_type=resource_type, source_filter=source_filter):
+        _maybe_reload_state()
+        resource = build_processing_entity(record)
+        resource_key = _resume_key(resource)
+        existing_preview = preview_state.get(resource_key, {})
+        existing_result = result_state.get(resource_key, {})
+
+        if not _has_valid_previews(existing_preview) or not _has_valid_description(existing_result):
+            processed += 1
+            if processed % 500 == 0:
+                print(f"    扫描进度: {processed} | 已尝试上传 {upload_attempts}")
+            continue
+
+        if not resource.files:
+            processed += 1
+            continue
+
+        _restore_preview_paths(resource, existing_preview)
+        desc_payload = {
+            "main": str(existing_result.get("description_main") or ""),
+            "detail": str(existing_result.get("description_detail") or ""),
+            "full": str(existing_result.get("description_full") or ""),
+        }
+        resource.description_main = desc_payload["main"]
+        resource.description_detail = desc_payload["detail"]
+        resource.description_full = desc_payload["full"]
+
+        item = {
+            "resource": resource,
+            "resource_type": resource.resource_type,
+            "description": desc_payload,
+        }
+        summary = upload_enriched_resources(
+            [item],
+            server,
+            reporter=lambda status, step, detail: report.ok(step, detail) if status == "OK" else report.fail(step, detail),
+        )
+        upload_totals["success_count"] += summary.success_count
+        upload_totals["failed_count"] += summary.failed_count
+        upload_totals["skipped_count"] += summary.skipped_count
+        upload_totals["skipped_no_files"] += summary.skipped_no_files
+        upload_totals["skipped_no_description"] += summary.skipped_no_description
+
+        upload_attempts += 1
+        processed += 1
+        if processed % 25 == 0 or (limit is not None and upload_attempts % 25 == 0):
+            print(f"    进度: 已扫描 {processed} 条 | 已调用上传 {upload_attempts} 次")
+
+    report.ok("仅上传模式", f"扫描 {processed} 条，实际发起上传 {upload_attempts} 次")
+    return {
+        "total": processed,
+        "preview_count": 0,
+        "desc_ok": 0,
+        "upload_summary": upload_totals,
+        "upload_attempts": upload_attempts,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="基于 ResourceCrawler output 的资源级处理流水线")
     parser.add_argument("--crawler-output", required=True, help="ResourceCrawler output 根目录")
@@ -456,11 +569,20 @@ def main() -> int:
     parser.add_argument("--no-previews", action="store_true", help="跳过预览生成")
     parser.add_argument("--no-upload", action="store_true", help="仅本地生成，不上传")
     parser.add_argument("--resume", action="store_true", help="从已有 jsonl 状态断点续跑")
+    parser.add_argument(
+        "--upload-only",
+        action="store_true",
+        help="不生成预览/描述，仅根据 jsonl 中已完成的记录批量上传（需已有 crawler_resources.jsonl 与 test_results.jsonl）",
+    )
     args = parser.parse_args()
 
     crawler_output = os.path.abspath(args.crawler_output)
     if not os.path.isdir(crawler_output):
         print(f"错误：crawler output 目录不存在: {crawler_output}", file=sys.stderr)
+        return 1
+
+    if args.upload_only and args.no_upload:
+        print("错误：--upload-only 不能与 --no-upload 同时使用", file=sys.stderr)
         return 1
 
     project_root = Path(_SCRIPT_DIR).resolve().parents[1]
@@ -483,53 +605,80 @@ def main() -> int:
     catalog = load_crawler_catalog(crawler_output)
     resources_jsonl_path = os.path.join(work_dir, "crawler_resources.jsonl")
     results_jsonl_path = os.path.join(work_dir, "test_results.jsonl")
-    if not args.resume:
+    if not args.resume and not args.upload_only:
         for path in (resources_jsonl_path, results_jsonl_path):
             if os.path.exists(path):
                 os.remove(path)
     report.ok(
         "检查索引输出",
-        f"{resources_jsonl_path} + {results_jsonl_path}" + (" (resume)" if args.resume else ""),
+        f"{resources_jsonl_path} + {results_jsonl_path}"
+        + (" (resume)" if args.resume else "")
+        + (" (upload-only)" if args.upload_only else ""),
     )
 
-    processing = asyncio.run(
-        _process_all_resources(
-            catalog=catalog,
-            limit=args.limit,
-            resource_type=args.resource_type,
-            source_filter=args.source_filter,
-            previews_dir=previews_dir,
-            llm_provider=llm_provider,
-            report=report,
-            resources_jsonl_path=resources_jsonl_path,
-            results_jsonl_path=results_jsonl_path,
-            no_previews=args.no_previews,
-            no_upload=args.no_upload,
-            server=server,
-            resume=args.resume,
+    if args.upload_only:
+        processing = asyncio.run(
+            _upload_processed_only(
+                catalog=catalog,
+                limit=args.limit,
+                resource_type=args.resource_type,
+                source_filter=args.source_filter,
+                report=report,
+                resources_jsonl_path=resources_jsonl_path,
+                results_jsonl_path=results_jsonl_path,
+                server=server,
+            )
         )
-    )
+    else:
+        processing = asyncio.run(
+            _process_all_resources(
+                catalog=catalog,
+                limit=args.limit,
+                resource_type=args.resource_type,
+                source_filter=args.source_filter,
+                previews_dir=previews_dir,
+                llm_provider=llm_provider,
+                report=report,
+                resources_jsonl_path=resources_jsonl_path,
+                results_jsonl_path=results_jsonl_path,
+                no_previews=args.no_previews,
+                no_upload=args.no_upload,
+                server=server,
+                resume=args.resume,
+            )
+        )
 
     if processing["total"] <= 0:
         report.summary()
         return 1
 
-    if args.no_previews:
-        report.ok("预览生成", "已跳过 (--no-previews)")
-    else:
-        report.ok("预览生成", f"生成 {processing['preview_count']} 个预览")
-    report.ok("描述生成", f"{processing['desc_ok']}/{processing['total']} 成功")
-
-    if args.no_upload:
-        report.ok("上传", "已跳过 (--no-upload)")
-    else:
+    if args.upload_only:
+        report.ok("预览生成", "已跳过 (--upload-only)")
+        report.ok("描述生成", "已跳过 (--upload-only)")
         upload_summary = processing["upload_summary"] or {}
         report.ok(
             "上传汇总",
-            f"{upload_summary.get('success_count', 0)}/{processing['total']} 成功, "
-            f"metadata-only 跳过 {upload_summary.get('skipped_no_files', 0)}, "
-            f"描述失败跳过 {upload_summary.get('skipped_no_description', 0)}",
+            f"成功计数(含云端已存在) {upload_summary.get('success_count', 0)}, "
+            f"失败 {upload_summary.get('failed_count', 0)}, "
+            f"跳过 {upload_summary.get('skipped_count', 0)}",
         )
+    else:
+        if args.no_previews:
+            report.ok("预览生成", "已跳过 (--no-previews)")
+        else:
+            report.ok("预览生成", f"生成 {processing['preview_count']} 个预览")
+        report.ok("描述生成", f"{processing['desc_ok']}/{processing['total']} 成功")
+
+        if args.no_upload:
+            report.ok("上传", "已跳过 (--no-upload)")
+        else:
+            upload_summary = processing["upload_summary"] or {}
+            report.ok(
+                "上传汇总",
+                f"{upload_summary.get('success_count', 0)}/{processing['total']} 成功, "
+                f"metadata-only 跳过 {upload_summary.get('skipped_no_files', 0)}, "
+                f"描述失败跳过 {upload_summary.get('skipped_no_description', 0)}",
+            )
 
     results_path = os.path.join(work_dir, "test_results.json")
     with open(results_path, "w", encoding="utf-8") as f:
@@ -538,6 +687,8 @@ def main() -> int:
                 "total": processing["total"],
                 "preview_count": processing["preview_count"],
                 "description_success_count": processing["desc_ok"],
+                "upload_only": args.upload_only,
+                "upload_attempts": processing.get("upload_attempts", 0),
                 "resources_jsonl": resources_jsonl_path,
                 "results_jsonl": results_jsonl_path,
                 "steps": report.steps,

@@ -117,7 +117,6 @@ async def _main(args) -> int:
                 checksum = _compute_checksum(vector)
                 vector_rows.append(
                     {
-                        "id": task.id,
                         "resource_id": rid,
                         "vector": vector,
                         "resource_type": task.resource_type,

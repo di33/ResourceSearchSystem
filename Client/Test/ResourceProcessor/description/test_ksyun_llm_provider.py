@@ -53,6 +53,26 @@ def test_build_user_content_without_image():
     assert "text" in types
 
 
+def test_build_user_content_with_audio(tmp_path):
+    audio = tmp_path / "coin.ogg"
+    audio.write_bytes(b"OggS")
+    content = _build_user_content(
+        DescriptionInput(
+            preview_path=str(tmp_path / "preview.webp"),
+            resource_type="audio_file",
+            preview_strategy="static",
+            auxiliary_metadata={"format": "ogg"},
+            llm_input_path=str(audio),
+            llm_input_type="audio",
+        )
+    )
+    types = [c.get("type", "") for c in content]
+    assert "input_audio" in types
+    assert "image_url" not in types
+    audio_block = next(c for c in content if c.get("type") == "input_audio")
+    assert audio_block["input_audio"]["format"] == "ogg"
+
+
 def test_provider_requires_api_key():
     saved1 = os.environ.pop("KSPMAS_API_KEY", None)
     saved2 = os.environ.pop("KSC_API_KEY", None)

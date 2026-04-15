@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, Form
@@ -23,6 +25,8 @@ from app.models.tables import (
 )
 
 router = APIRouter(prefix="/resources", tags=["resources"], dependencies=[Depends(require_auth)])
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +192,34 @@ class ResourceDetailOut(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
+class _MD5Tracker:
+    """Wraps a file-like object and computes MD5 during reads."""
+
+    def __init__(self, fp):
+        self._fp = fp
+        self._hasher = hashlib.md5()
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._fp.read(size)
+        if data:
+            self._hasher.update(data)
+        return data
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return self._fp.seek(offset, whence)
+
+    def tell(self) -> int:
+        return self._fp.tell()
+
+    def close(self) -> None:
+        if hasattr(self._fp, "close"):
+            self._fp.close()
+
+    @property
+    def md5_hex(self) -> str:
+        return self._hasher.hexdigest()
+
+
 def _build_client(session: AsyncSession) -> PgCloudClient:
     return PgCloudClient(session, KS3Storage(get_s3()), milvus_client=get_milvus())
 
@@ -266,14 +298,29 @@ async def upload_files_batch(
     download_file: Optional[UploadFile] = File(None),
     session: AsyncSession = Depends(get_db),
 ):
-    """Upload multiple resource files at once."""
+    """Upload multiple resource files at once with MD5 validation."""
     client = _build_client(session)
+
+    # Fetch registered file records for MD5 lookup
+    task = (
+        await session.execute(
+            select(ResourceTask).where(ResourceTask.resource_id == resource_id)
+        )
+    ).scalar_one_or_none()
+    registered_files = {}
+    if task:
+        for f in (
+            await session.execute(select(ResourceFile).where(ResourceFile.task_id == task.id))
+        ).scalars().all():
+            registered_files[f.file_name] = f.content_md5
+
     total_uploaded = 0
     uploaded_file_count = 0
     for file in files:
+        filename = file.filename or "upload"
         result = await client.upload_file_obj(
             resource_id,
-            file.filename or "upload",
+            filename,
             file.file,
             file.content_type or "application/octet-stream",
         )
@@ -283,8 +330,22 @@ async def upload_files_batch(
                 success=False,
                 uploaded_bytes=total_uploaded,
                 file_count=uploaded_file_count,
-                error_message=f"Failed to upload {file.filename}: {result.error_message}",
+                error_message=f"Failed to upload {filename}: {result.error_message}",
             )
+
+        # MD5 validation via S3 ETag (more reliable than tracking reads)
+        expected_md5 = registered_files.get(filename)
+        if expected_md5 and result.s3_etag:
+            # S3 ETag for non-multipart uploads is the MD5 of the content
+            s3_md5 = result.s3_etag.strip('"').split("-")[0]
+            if s3_md5 and len(s3_md5) == 32 and s3_md5 != expected_md5:
+                await session.commit()
+                return UploadBatchOut(
+                    success=False,
+                    uploaded_bytes=total_uploaded,
+                    file_count=uploaded_file_count,
+                    error_message=f"MD5 mismatch for {filename}: expected={expected_md5}, actual={s3_md5}",
+                )
         total_uploaded += result.uploaded_bytes
         uploaded_file_count += 1
 

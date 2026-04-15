@@ -1,6 +1,10 @@
 from pathlib import Path
 
-from ResourceProcessor.core.upload_pipeline import infer_upload_resource_type, upload_enriched_resources
+from ResourceProcessor.core.upload_pipeline import (
+    _register_idempotency_key,
+    infer_upload_resource_type,
+    upload_enriched_resources,
+)
 from ResourceProcessor.preview_metadata import FileInfo, PreviewInfo, PreviewStrategy, ResourceProcessingEntity
 
 
@@ -133,8 +137,87 @@ def test_upload_pipeline_registers_zip_for_multifile_resource(monkeypatch, tmp_p
 
     assert summary.success_count == 1
     assert register_payloads[0]["source_resource_id"] == "src-tiles"
+    assert register_payloads[0]["idempotency_key"].startswith("crawler-register:src:")
+    assert len(register_payloads[0]["idempotency_key"]) < 128
     assert register_payloads[0]["download_file_name"].endswith(".zip")
     names = [entry[1][0] for entry in upload_files_payloads[0]]
     assert "a.png" in names
     assert "b.png" in names
     assert any(name.endswith(".zip") for name in names)
+
+
+def test_register_idempotency_key_prefers_source_resource_id():
+    resource = ResourceProcessingEntity(
+        resource_type="single_image",
+        source_directory="/tmp",
+        source_resource_id="src-001",
+        content_md5="md5-001",
+        title="Stone Floor",
+    )
+    key = _register_idempotency_key(resource)
+    assert key.startswith("crawler-register:src:")
+    assert len(key) < 128
+
+
+def test_upload_pipeline_continues_when_register_reuses_uncommitted_task(monkeypatch, tmp_path):
+    file_a = tmp_path / "a.png"
+    file_a.write_bytes(b"a")
+
+    resource = ResourceProcessingEntity(
+        resource_type="single_image",
+        source_directory=str(tmp_path),
+        title="Tiles",
+        content_md5="tiles-md5",
+        source_resource_id="src-tiles",
+        files=[
+            FileInfo(
+                file_path=str(file_a),
+                file_name="a.png",
+                file_size=file_a.stat().st_size,
+                file_format="png",
+                content_md5="md5-a",
+                is_primary=True,
+            )
+        ],
+    )
+
+    posted = []
+
+    def fake_get(url, timeout):
+        return _FakeResponse({"status": "ok"})
+
+    def fake_post(url, **kwargs):
+        posted.append(url)
+        if url.endswith("/register"):
+            return _FakeResponse(
+                {
+                    "resource_id": "res-1",
+                    "exists": True,
+                    "upload_mode": "direct",
+                    "multipart_chunk_size": 0,
+                    "state": "registered",
+                }
+            )
+        if url.endswith("/upload-batch"):
+            return _FakeResponse({"success": True, "file_count": 1, "uploaded_bytes": 1})
+        if url.endswith("/commit"):
+            return _FakeResponse({"state": "committed", "resource_id": "res-1"})
+        raise AssertionError(url)
+
+    monkeypatch.setattr("ResourceProcessor.core.upload_pipeline.requests.get", fake_get)
+    monkeypatch.setattr("ResourceProcessor.core.upload_pipeline.requests.post", fake_post)
+
+    summary = upload_enriched_resources(
+        [
+            {
+                "resource": resource,
+                "resource_type": "single_image",
+                "description": {"main": "m", "detail": "d", "full": "主体：m\n细节：d"},
+            }
+        ],
+        "http://localhost:8000",
+    )
+
+    assert summary.success_count == 1
+    assert any(url.endswith("/upload-batch") for url in posted)
+    assert any(url.endswith("/commit") for url in posted)

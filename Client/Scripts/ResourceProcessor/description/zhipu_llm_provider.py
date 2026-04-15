@@ -47,9 +47,12 @@ def _build_user_content_vision(input_data: DescriptionInput) -> list[dict]:
     """Build multimodal content (image + text) for vision models."""
     content: list[dict] = []
 
-    b64 = _encode_image_base64(input_data.preview_path)
-    if b64:
-        content.append({"type": "image_url", "image_url": {"url": b64}})
+    if input_data.resolved_llm_input_type != "audio":
+        b64 = _encode_image_base64(input_data.resolved_llm_input_path)
+        if b64:
+            content.append({"type": "image_url", "image_url": {"url": b64}})
+    else:
+        logger.warning("Zhipu vision model does not attach audio input; falling back to text context only.")
 
     context = input_data.to_prompt_context()
     content.append({"type": "text", "text": get_user_prompt(context)})

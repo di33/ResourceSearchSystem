@@ -49,8 +49,8 @@ class KS3Storage:
         logger.info("Uploaded %s (%d bytes)", key, size)
         return size
 
-    def upload_fileobj(self, key: str, fileobj, content_type: str = "application/octet-stream") -> int:
-        """Upload from a file-like object (e.g. UploadFile.file)."""
+    def upload_fileobj(self, key: str, fileobj, content_type: str = "application/octet-stream") -> tuple[int, str]:
+        """Upload from a file-like object. Returns (content_length, etag)."""
         self.s3.upload_fileobj(
             Fileobj=fileobj,
             Bucket=self.bucket,
@@ -58,7 +58,7 @@ class KS3Storage:
             ExtraArgs={"ContentType": content_type},
         )
         head = self.s3.head_object(Bucket=self.bucket, Key=key)
-        return head.get("ContentLength", 0)
+        return head.get("ContentLength", 0), head.get("ETag", "")
 
     # ---- presigned URLs ----
 
