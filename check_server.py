@@ -90,9 +90,9 @@ def check_stats(server: str):
         print(f"  Milvus 集合:     {d.get('milvus_collection', '?')}")
         print(f"  Milvus 向量数:   {d.get('milvus_vector_count', '?')}")
 
-        print(f"  S3 桶:           {d.get('s3_bucket', '?')}")
-        print(f"  S3 对象数:       {d.get('s3_object_count', '?')}")
-        print(f"  S3 总大小:       {_human_size(d.get('s3_total_bytes', 0))}")
+        bucket = d.get("s3_bucket", "")
+        if bucket:
+            print(f"  S3 桶:           {bucket}  (详情请用 --storage)")
     except Exception as e:
         print(f"  {R}获取统计失败: {e}{W}")
 

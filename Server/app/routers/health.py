@@ -61,13 +61,17 @@ class StatsOut(BaseModel):
     milvus_vector_count: int = 0
     milvus_collection: str = ""
     s3_bucket: str = ""
+
+
+class S3StatsOut(BaseModel):
+    s3_bucket: str = ""
     s3_object_count: int = 0
     s3_total_bytes: int = 0
 
 
 @router.get("/stats", response_model=StatsOut)
 async def server_stats(session: AsyncSession = Depends(get_db)):
-    """Aggregate counts across DB, Milvus, and S3 for quick diagnostics."""
+    """Aggregate counts across DB and Milvus. S3 stats are in /stats/s3 (slow)."""
     result = StatsOut(s3_bucket=settings.ks3_bucket)
 
     try:
@@ -94,6 +98,13 @@ async def server_stats(session: AsyncSession = Depends(get_db)):
     except Exception:
         pass
 
+    return result
+
+
+@router.get("/stats/s3", response_model=S3StatsOut)
+async def s3_stats():
+    """S3 object count and total size. Slow for large buckets — use separately."""
+    result = S3StatsOut(s3_bucket=settings.ks3_bucket)
     try:
         s3_client = get_s3()
         paginator = s3_client.get_paginator("list_objects_v2")
@@ -107,5 +118,4 @@ async def server_stats(session: AsyncSession = Depends(get_db)):
         result.s3_total_bytes = total_bytes
     except Exception:
         pass
-
     return result
