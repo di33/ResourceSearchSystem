@@ -37,6 +37,7 @@ class ProcessState(str, Enum):
     PREVIEW_FAILED = "preview_failed"
     DESCRIPTION_READY = "description_ready"
     DESCRIPTION_FAILED = "description_failed"
+    CLASSIFY_READY = "classify_ready"
     EMBEDDING_READY = "embedding_ready"
     EMBEDDING_FAILED = "embedding_failed"
     PACKAGE_READY = "package_ready"
@@ -115,6 +116,12 @@ class ResourceProcessingEntity:
     description_full: str = ""
     prompt_version: str = ""
     description_quality_score: Optional[float] = None
+    usage_space: str = ""
+    usage_category: str = ""
+    usage_subcategories: List[str] = field(default_factory=list)
+    usage_classification_reason: str = ""
+    usage_classification_suggestion: Optional[dict] = None
+    usage_classification_version: str = ""
 
     embedding_dimension: int = 0
     embedding_checksum: str = ""

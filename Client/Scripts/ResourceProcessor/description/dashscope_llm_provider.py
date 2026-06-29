@@ -19,8 +19,10 @@ from ResourceProcessor.description.description_generator import (
     DescriptionInput,
     DescriptionResult,
     LLMFactory,
+    build_description_result,
 )
 from ResourceProcessor.description.prompt_config import get_system_prompt, get_user_prompt
+from ResourceProcessor.description.usage_classification import parse_description_response
 
 logger = logging.getLogger(__name__)
 
@@ -31,14 +33,18 @@ def _build_user_content(input_data: DescriptionInput) -> list[dict]:
     """Construct the multimodal message content list."""
     content: list[dict] = []
 
-    media_path = input_data.resolved_llm_input_path
-    media = Path(media_path) if media_path else None
-    if media is not None and media.is_file():
-        abs_path = str(media.resolve()).replace("\\", "/")
-        if input_data.resolved_llm_input_type == "audio":
-            content.append({"audio": f"file://{abs_path}"})
-        else:
-            content.append({"image": f"file://{abs_path}"})
+    if input_data.resolved_llm_input_type == "audio":
+        for media_path in input_data.resolved_llm_input_paths:
+            media = Path(media_path) if media_path else None
+            if media is not None and media.is_file():
+                abs_path = str(media.resolve()).replace("\\", "/")
+                content.append({"audio": f"file://{abs_path}"})
+    else:
+        for media_path in input_data.resolved_llm_input_paths:
+            media = Path(media_path) if media_path else None
+            if media is not None and media.is_file():
+                abs_path = str(media.resolve()).replace("\\", "/")
+                content.append({"image": f"file://{abs_path}"})
 
     context = input_data.to_prompt_context()
     content.append({"text": get_user_prompt(context)})
@@ -47,18 +53,7 @@ def _build_user_content(input_data: DescriptionInput) -> list[dict]:
 
 def _parse_response(text: str) -> tuple[str, str]:
     """Extract main and detail from the model output."""
-    main, detail = "", ""
-    for line in text.strip().splitlines():
-        line = line.strip()
-        if line.startswith("主体：") or line.startswith("主体:"):
-            main = re.sub(r"^主体[：:]", "", line).strip()
-        elif line.startswith("细节：") or line.startswith("细节:"):
-            detail = re.sub(r"^细节[：:]", "", line).strip()
-    if not main:
-        main = text.strip().splitlines()[0] if text.strip() else ""
-    if not detail:
-        lines = text.strip().splitlines()
-        detail = lines[1] if len(lines) > 1 else main
+    main, detail, _score, _classification = parse_description_response(text)
     return main, detail
 
 
@@ -113,13 +108,14 @@ class DashScopeLLMProvider(BaseMultiModalLLMProvider):
         self, input_data: DescriptionInput
     ) -> DescriptionResult:
         raw_text = await asyncio.to_thread(self._call_sync, input_data)
-        main, detail = _parse_response(raw_text)
-        full = f"主体：{main}\n细节：{detail}"
-        return DescriptionResult(
+        main, detail, score, classification = parse_description_response(raw_text)
+        return build_description_result(
+            input_data,
             main_content=main,
             detail_content=detail,
-            full_description=full,
             prompt_version=PROMPT_VERSION,
+            description_quality_score=score,
+            classification=classification,
         )
 
 

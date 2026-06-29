@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, patch
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-_ROOT = Path(__file__).resolve().parents[3]
-_SERVER_DIR = _ROOT / "Server"
+_SERVER_DIR = Path(__file__).resolve().parents[2]
+_ROOT = _SERVER_DIR.parent
 for _p in (str(_ROOT), str(_SERVER_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)

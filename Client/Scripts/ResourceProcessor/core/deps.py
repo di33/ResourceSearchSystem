@@ -8,9 +8,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-# deps.py 位于 <repo>/Scripts/ResourceProcessor/，requirements.txt 在仓库根目录
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-_REQUIREMENTS = _REPO_ROOT / "requirements.txt"
+# deps.py 位于 <repo>/client/Scripts/ResourceProcessor/，requirements.txt 在 client 目录
+_CLIENT_ROOT = Path(__file__).resolve().parents[3]
+_REQUIREMENTS = _CLIENT_ROOT / "requirements.txt"
 
 
 def ensure_requirements() -> None:

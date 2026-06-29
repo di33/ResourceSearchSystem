@@ -4,7 +4,7 @@ import uuid
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
-from typing import List, Optional
+from typing import Any, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +89,7 @@ class UploadResult:
     success: bool
     uploaded_bytes: int = 0
     s3_etag: str = ""
+    content_md5: str = ""
     error_message: str = ""
 
 @dataclass
@@ -98,6 +99,12 @@ class CommitRequest:
     description_main: str
     description_detail: str
     description_full: str
+    usage_space: str = ""
+    usage_category: str = ""
+    usage_subcategories: List[str] = field(default_factory=list)
+    usage_classification_reason: str = ""
+    usage_classification_suggestion: dict[str, Any] = field(default_factory=dict)
+    usage_classification_version: str = ""
     idempotency_key: str = ""
 
     def __post_init__(self):

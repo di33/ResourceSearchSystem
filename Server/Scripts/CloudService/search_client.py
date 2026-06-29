@@ -32,6 +32,11 @@ class SearchRequest:
     format_filter: Optional[List[str]] = None
     top_k: int = 10
     similarity_threshold: float = 0.5
+    # --- BM25 / Hybrid ---
+    search_mode: str = "hybrid"  # "vector" | "bm25" | "hybrid"
+    bm25_weight: float = 0.5     # RRF weight for BM25 (0-1)
+    # --- Reranker ---
+    enable_reranker: Optional[bool] = None  # None = use server default
 
 @dataclass
 class SearchResultItem:
@@ -56,6 +61,11 @@ class SearchResultItem:
     parent_download_url: str = ""
     child_resource_count: int = 0
     contains_resource_types: List[str] = field(default_factory=list)
+    # --- BM25 / Hybrid scores ---
+    vector_score: float = 0.0
+    bm25_score: float = 0.0
+    rrf_score: float = 0.0
+    reranker_score: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -10,6 +10,8 @@
 JWT_SECRET=<随机生成的64字符字符串>
 ```
 
+本地开发时把真实值写入 `.env.local`，`.env` 只保留可提交的默认值或空值。
+
 生成方式（PowerShell）：
 
 ```powershell
@@ -54,12 +56,28 @@ allowed_origins = [
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `KS3_ENDPOINT` | `http://localhost:9000` | S3 兼容服务地址 |
-| `KS3_PUBLIC_ENDPOINT` | `None` | 浏览器可访问的 S3 地址（内网部署时需设置） |
+| `KS3_PUBLIC_ENDPOINT` | `None` | 可选；浏览器可访问的 S3 地址。不填则使用 `KS3_ENDPOINT` |
+| `KS3_CDN_ENDPOINT` | `None` | CDN 公开访问根地址；设置后下载/预览 URL 直接拼接对象 key，不再生成 S3 预签名下载 URL |
 | `KS3_ACCESS_KEY` | `minioadmin` | 访问密钥 |
 | `KS3_SECRET_KEY` | `minioadmin` | 秘密密钥 |
 | `KS3_BUCKET` | `resources` | 存储桶名称 |
 | `KS3_REGION` | `cn-beijing-6` | 区域 |
 | `KS3_PRESIGN_EXPIRES` | `3600` | 预签名 URL 有效期（秒） |
+| `KS3_SIGNATURE_VERSION` | `s3v4` | S3 请求签名版本 |
+| `KS3_ADDRESSING_STYLE` | `auto` | S3 地址风格：`auto` / `virtual` / `path`；腾讯 COS 建议设为 `virtual` |
+
+腾讯 COS（广州地域）示例：
+
+```env
+KS3_ENDPOINT=https://cos.ap-guangzhou.myqcloud.com
+KS3_BUCKET=game-ai-studio-resource-1252100362
+KS3_REGION=ap-guangzhou
+KS3_SIGNATURE_VERSION=s3v4
+KS3_ADDRESSING_STYLE=virtual
+KS3_CDN_ENDPOINT=https://gameai-studio.seasungame.com
+```
+
+`SecretId` 对应 `KS3_ACCESS_KEY`，`SecretKey` 对应 `KS3_SECRET_KEY`。这两个密钥应放在 `server/.env.local`，不要提交到 Git。
 
 ### 2.4 向量生成
 
@@ -94,7 +112,7 @@ allowed_origins = [
 - [ ] 确认 Milvus 服务可达
 - [ ] 确认 S3/MinIO 服务可达且 bucket 已创建
 - [ ] 设置至少一个 embedding provider 的 API Key
-- [ ] 如用 KS3 且客户端通过公网访问，设置 `KS3_PUBLIC_ENDPOINT`
+- [ ] 如服务端内网地址和浏览器可访问地址不同，设置 `KS3_PUBLIC_ENDPOINT`
 
 ---
 

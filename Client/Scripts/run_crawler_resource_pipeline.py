@@ -30,9 +30,16 @@ def _load_dotenv(path: str) -> dict[str, str]:
     return env
 
 
+def _load_dotenv_files(*paths: Path) -> dict[str, str]:
+    env: dict[str, str] = {}
+    for path in paths:
+        env.update(_load_dotenv(str(path)))
+    return env
+
+
 def _init_env() -> dict[str, str]:
-    project_root = Path(_SCRIPT_DIR).resolve().parents[1]
-    dotenv = _load_dotenv(str(project_root / ".env"))
+    client_root = Path(_SCRIPT_DIR).resolve().parents[0]
+    dotenv = _load_dotenv_files(client_root / ".env", client_root / ".env.local")
     for key, value in dotenv.items():
         if value and key not in os.environ:
             os.environ[key] = value
@@ -46,7 +53,7 @@ def _env(key: str, fallback: str = "") -> str:
     return os.environ.get(key, _DOTENV.get(key, fallback))
 
 
-from ResourceProcessor.crawler.catalog_loader import load_crawler_catalog  # noqa: E402
+from ResourceProcessor.crawler.catalog_loader import DEFAULT_CRAWLER_STATE_DB, load_crawler_catalog  # noqa: E402
 from ResourceProcessor.crawler.resource_adapter import build_description_input, build_processing_entity  # noqa: E402
 from ResourceProcessor.core.upload_pipeline import upload_enriched_resources  # noqa: E402
 from ResourceProcessor.description.description_generator import generate_resource_description  # noqa: E402
@@ -123,6 +130,12 @@ async def _generate_descriptions(resources, provider_name: str, report: Report) 
             resource.description_detail = result.detail_content
             resource.description_full = result.full_description
             resource.prompt_version = result.prompt_version
+            resource.usage_space = result.usage_space
+            resource.usage_category = result.usage_category
+            resource.usage_subcategories = result.usage_subcategories
+            resource.usage_classification_reason = result.usage_classification_reason
+            resource.usage_classification_suggestion = result.usage_classification_suggestion
+            resource.usage_classification_version = result.usage_classification_version
             enriched.append(
                 {
                     "resource": resource,
@@ -131,6 +144,12 @@ async def _generate_descriptions(resources, provider_name: str, report: Report) 
                         "main": result.main_content,
                         "detail": result.detail_content,
                         "full": result.full_description,
+                        "usage_space": result.usage_space,
+                        "usage_category": result.usage_category,
+                        "usage_subcategories": result.usage_subcategories,
+                        "usage_classification_reason": result.usage_classification_reason,
+                        "usage_classification_suggestion": result.usage_classification_suggestion,
+                        "usage_classification_version": result.usage_classification_version,
                     },
                 }
             )
@@ -258,12 +277,24 @@ async def _generate_description_with_retry(
             resource.description_detail = result.detail_content
             resource.description_full = result.full_description
             resource.prompt_version = result.prompt_version
+            resource.usage_space = result.usage_space
+            resource.usage_category = result.usage_category
+            resource.usage_subcategories = result.usage_subcategories
+            resource.usage_classification_reason = result.usage_classification_reason
+            resource.usage_classification_suggestion = result.usage_classification_suggestion
+            resource.usage_classification_version = result.usage_classification_version
             if success_delay_seconds > 0:
                 await asyncio.sleep(success_delay_seconds)
             return {
                 "main": result.main_content,
                 "detail": result.detail_content,
                 "full": result.full_description,
+                "usage_space": result.usage_space,
+                "usage_category": result.usage_category,
+                "usage_subcategories": result.usage_subcategories,
+                "usage_classification_reason": result.usage_classification_reason,
+                "usage_classification_suggestion": result.usage_classification_suggestion,
+                "usage_classification_version": result.usage_classification_version,
             }
         except Exception as exc:
             last_exc = exc
@@ -299,6 +330,12 @@ def _result_row(item: dict[str, Any]) -> dict[str, Any]:
         "description_main": description["main"],
         "description_detail": description["detail"],
         "description_full": description["full"],
+        "usage_space": description.get("usage_space", ""),
+        "usage_category": description.get("usage_category", ""),
+        "usage_subcategories": description.get("usage_subcategories", []),
+        "usage_classification_reason": description.get("usage_classification_reason", ""),
+        "usage_classification_suggestion": description.get("usage_classification_suggestion") or {},
+        "usage_classification_version": description.get("usage_classification_version", ""),
     }
 
 
@@ -382,16 +419,38 @@ async def _process_all_resources(
         elif has_preview:
             _restore_preview_paths(resource, existing_preview)
 
-        desc_payload = {"main": "", "detail": "", "full": ""}
+        desc_payload = {
+            "main": "",
+            "detail": "",
+            "full": "",
+            "usage_space": "",
+            "usage_category": "",
+            "usage_subcategories": [],
+            "usage_classification_reason": "",
+            "usage_classification_suggestion": {},
+            "usage_classification_version": "",
+        }
         if has_description:
             desc_payload = {
                 "main": str(existing_result.get("description_main") or ""),
                 "detail": str(existing_result.get("description_detail") or ""),
                 "full": str(existing_result.get("description_full") or ""),
+                "usage_space": str(existing_result.get("usage_space") or ""),
+                "usage_category": str(existing_result.get("usage_category") or ""),
+                "usage_subcategories": existing_result.get("usage_subcategories") or [],
+                "usage_classification_reason": str(existing_result.get("usage_classification_reason") or ""),
+                "usage_classification_suggestion": existing_result.get("usage_classification_suggestion") or {},
+                "usage_classification_version": str(existing_result.get("usage_classification_version") or ""),
             }
             resource.description_main = desc_payload["main"]
             resource.description_detail = desc_payload["detail"]
             resource.description_full = desc_payload["full"]
+            resource.usage_space = desc_payload["usage_space"]
+            resource.usage_category = desc_payload["usage_category"]
+            resource.usage_subcategories = desc_payload["usage_subcategories"] if isinstance(desc_payload["usage_subcategories"], list) else []
+            resource.usage_classification_reason = desc_payload["usage_classification_reason"]
+            resource.usage_classification_suggestion = desc_payload["usage_classification_suggestion"] if isinstance(desc_payload["usage_classification_suggestion"], dict) else {}
+            resource.usage_classification_version = desc_payload["usage_classification_version"]
         else:
             try:
                 desc_payload = await _generate_description_with_retry(
@@ -521,10 +580,22 @@ async def _upload_processed_only(
             "main": str(existing_result.get("description_main") or ""),
             "detail": str(existing_result.get("description_detail") or ""),
             "full": str(existing_result.get("description_full") or ""),
+            "usage_space": str(existing_result.get("usage_space") or ""),
+            "usage_category": str(existing_result.get("usage_category") or ""),
+            "usage_subcategories": existing_result.get("usage_subcategories") or [],
+            "usage_classification_reason": str(existing_result.get("usage_classification_reason") or ""),
+            "usage_classification_suggestion": existing_result.get("usage_classification_suggestion") or {},
+            "usage_classification_version": str(existing_result.get("usage_classification_version") or ""),
         }
         resource.description_main = desc_payload["main"]
         resource.description_detail = desc_payload["detail"]
         resource.description_full = desc_payload["full"]
+        resource.usage_space = desc_payload["usage_space"]
+        resource.usage_category = desc_payload["usage_category"]
+        resource.usage_subcategories = desc_payload["usage_subcategories"] if isinstance(desc_payload["usage_subcategories"], list) else []
+        resource.usage_classification_reason = desc_payload["usage_classification_reason"]
+        resource.usage_classification_suggestion = desc_payload["usage_classification_suggestion"] if isinstance(desc_payload["usage_classification_suggestion"], dict) else {}
+        resource.usage_classification_version = desc_payload["usage_classification_version"]
 
         item = {
             "resource": resource,
@@ -558,7 +629,8 @@ async def _upload_processed_only(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="基于 ResourceCrawler output 的资源级处理流水线")
+    parser = argparse.ArgumentParser(description="基于 ResourceCrawler crawler_state.db 的资源级处理流水线")
+    parser.add_argument("--crawler-state-db", default=DEFAULT_CRAWLER_STATE_DB, help="crawler_state.db 路径")
     parser.add_argument("--crawler-output", required=True, help="ResourceCrawler output 根目录")
     parser.add_argument("--work-dir", default=None, help="工作输出目录（默认 ./test_workdir_crawler）")
     parser.add_argument("--server", default=None, help="服务端地址")
@@ -585,8 +657,8 @@ def main() -> int:
         print("错误：--upload-only 不能与 --no-upload 同时使用", file=sys.stderr)
         return 1
 
-    project_root = Path(_SCRIPT_DIR).resolve().parents[1]
-    work_dir = os.path.abspath(args.work_dir) if args.work_dir else str(project_root / "test_workdir_crawler")
+    repo_root = Path(_SCRIPT_DIR).resolve().parents[1]
+    work_dir = os.path.abspath(args.work_dir) if args.work_dir else str(repo_root / "data" / "workdirs" / "test_workdir_crawler")
     previews_dir = os.path.join(work_dir, "previews")
     os.makedirs(previews_dir, exist_ok=True)
 
@@ -596,13 +668,14 @@ def main() -> int:
     report = Report()
     print("=" * 60)
     print("  ResourceCrawler 资源级处理流程")
+    print(f"  Crawler DB:     {os.path.abspath(args.crawler_state_db)}")
     print(f"  Crawler Output: {crawler_output}")
     print(f"  工作目录:       {work_dir}")
     print(f"  服务端:         {server}")
     print(f"  LLM:            {llm_provider}")
     print("=" * 60)
 
-    catalog = load_crawler_catalog(crawler_output)
+    catalog = load_crawler_catalog(crawler_output, crawler_state_db=args.crawler_state_db)
     resources_jsonl_path = os.path.join(work_dir, "crawler_resources.jsonl")
     results_jsonl_path = os.path.join(work_dir, "test_results.jsonl")
     if not args.resume and not args.upload_only:

@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, patch
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-_ROOT = Path(__file__).resolve().parents[3]
-_SERVER_DIR = _ROOT / "Server"
+_SERVER_DIR = Path(__file__).resolve().parents[2]
+_ROOT = _SERVER_DIR.parent
 for _p in (str(_ROOT), str(_SERVER_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -23,7 +23,7 @@ class _FakeStorage:
         return 0
 
     def upload_fileobj(self, key, fileobj, content_type):
-        return 0
+        return 0, "", ""
 
 
 class _FakeMilvus:
@@ -209,6 +209,11 @@ class TestPgCloudClient(unittest.IsolatedAsyncioTestCase):
                     description_main="stone floor texture",
                     description_detail="detail",
                     description_full="full",
+                    usage_space="2D",
+                    usage_category="环境",
+                    usage_subcategories=["地形"],
+                    usage_classification_reason="地面贴图直接用于构成地表。",
+                    usage_classification_version="game_visual_usage_v1.0",
                 )
             )
             await session.commit()
@@ -230,6 +235,10 @@ class TestPgCloudClient(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(desc_rows), 1)
         self.assertEqual(desc_rows[0].main_content, "stone floor texture")
+        self.assertEqual(desc_rows[0].usage_space, "2D")
+        self.assertEqual(desc_rows[0].usage_category, "环境")
+        self.assertEqual(desc_rows[0].usage_subcategories_json, '["地形"]')
+        self.assertEqual(desc_rows[0].usage_classification_version, "game_visual_usage_v1.0")
         self.assertEqual(len(emb_rows), 1)
         self.assertEqual(emb_rows[0].dimension, 3)
         self.assertEqual(emb_rows[0].model_version, "unit-test-model")

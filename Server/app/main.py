@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from sqlalchemy import text
 
 from app.config import settings
-from app.deps import close_milvus, engine, get_milvus
+from app.deps import close_milvus, close_reranker, engine, get_milvus
 from app.models.tables import Base
 from app.routers import browse, health, resources, search
 from app.services.milvus_search_client import ensure_collection
@@ -24,6 +26,39 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+_FTS_SQL_PATH = Path(__file__).resolve().parents[1] / "sql" / "fts_setup.sql"
+
+
+def _split_sql(raw: str) -> list[str]:
+    """Split SQL into individual statements, respecting $$ dollar-quoted blocks."""
+    statements: list[str] = []
+    buf: list[str] = []
+    in_dollar = False
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        # Track $$ dollar-quoted blocks (PL/pgSQL function bodies)
+        i = 0
+        while i < len(line) - 1:
+            if line[i] == "$" and line[i + 1] == "$":
+                in_dollar = not in_dollar
+                i += 2
+            else:
+                i += 1
+        buf.append(line)
+        if stripped.endswith(";") and not in_dollar:
+            stmt = "\n".join(buf).strip()
+            if stmt:
+                statements.append(stmt)
+            buf = []
+    # Handle trailing statement without semicolon
+    if buf:
+        stmt = "\n".join(buf).strip()
+        if stmt:
+            statements.append(stmt)
+    return statements
 
 
 @asynccontextmanager
@@ -37,6 +72,16 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Database init deferred (will retry on first request): %s", exc)
 
+    if _FTS_SQL_PATH.exists():
+        logger.info("Executing FTS setup SQL …")
+        fts_sql = _FTS_SQL_PATH.read_text(encoding="utf-8")
+        async with engine.begin() as conn:
+            for stmt in _split_sql(fts_sql):
+                await conn.execute(text(stmt))
+        logger.info("FTS setup complete.")
+    else:
+        raise RuntimeError(f"FTS SQL not found at {_FTS_SQL_PATH} — pg_jieba is required")
+
     try:
         logger.info("Ensuring Milvus collection …")
         ensure_collection(get_milvus())
@@ -47,6 +92,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # --- shutdown ---
+    await close_reranker()
     close_milvus()
     await engine.dispose()
     logger.info("Connections closed.")

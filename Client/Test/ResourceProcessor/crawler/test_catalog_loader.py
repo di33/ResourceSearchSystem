@@ -18,138 +18,172 @@ from ResourceProcessor.preview_metadata import (
 )
 
 
-def _write_jsonl(path: Path, rows: list[dict]):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-
 def _make_png(path: Path, color: str = "red"):
     path.parent.mkdir(parents=True, exist_ok=True)
     with Image.new("RGB", (64, 64), color=color) as img:
         img.save(path)
 
 
-def _create_asset_index_db(db_path: str, index_rows: list[dict]):
-    """创建 asset_index SQLite 表并插入测试数据。"""
+def _create_crawler_state_db(db_path: str, resources: list[dict], assets: list[dict]):
+    """创建最小 crawler_state.db。"""
     conn = sqlite3.connect(db_path)
     conn.execute(
-        """CREATE TABLE asset_index (
-            asset_id   TEXT NOT NULL,
-            file_path  TEXT NOT NULL DEFAULT '',
-            source     TEXT NOT NULL DEFAULT '',
-            pack_name  TEXT NOT NULL DEFAULT '',
-            fmt        TEXT NOT NULL DEFAULT '',
-            style      TEXT NOT NULL DEFAULT '',
-            theme      TEXT NOT NULL DEFAULT ''
+        """CREATE TABLE assets (
+            id TEXT PRIMARY KEY,
+            pack_id TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            metadata_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            source TEXT,
+            source_pack TEXT,
+            source_url TEXT,
+            asset_type TEXT,
+            index_json TEXT,
+            updated_at TIMESTAMP
         )"""
     )
-    for row in index_rows:
+    conn.execute(
+        """CREATE TABLE resource_index (
+            row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL,
+            pack_id TEXT,
+            source TEXT,
+            pack_name TEXT,
+            resource_type TEXT NOT NULL,
+            title TEXT,
+            resource_path TEXT,
+            group_name TEXT,
+            parent_resource_id TEXT,
+            member_count INTEGER DEFAULT 0,
+            record_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
+    for row in assets:
         md = row.get("metadata", {}) or {}
         conn.execute(
-            "INSERT INTO asset_index VALUES (?,?,?,?,?,?,?)",
+            """INSERT INTO assets
+               (id, pack_id, file_path, metadata_json, source, source_pack, source_url, asset_type, index_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 row["id"],
+                row.get("pack_id", ""),
                 row.get("file_path", ""),
+                json.dumps(md, ensure_ascii=False),
                 row.get("source", ""),
                 row.get("source_pack", ""),
-                str(md.get("format", "")).lower(),
-                str(md.get("style", "")),
-                str(md.get("theme", "")),
+                row.get("source_url", ""),
+                row.get("asset_type", ""),
+                json.dumps(row, ensure_ascii=False),
             ),
         )
-    conn.execute("CREATE INDEX idx_asset_id ON asset_index(asset_id)")
-    conn.execute(
-        "CREATE INDEX idx_asset_source_pack ON asset_index(source, pack_name, file_path)"
-    )
+    for row in resources:
+        conn.execute(
+            """INSERT INTO resource_index
+               (id, pack_id, source, pack_name, resource_type, title, resource_path,
+                group_name, parent_resource_id, member_count, record_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                row.get("id", ""),
+                row.get("pack_id", ""),
+                row.get("source", ""),
+                row.get("pack_name", ""),
+                row.get("resource_type", ""),
+                row.get("title", ""),
+                row.get("resource_path", ""),
+                row.get("group_name", ""),
+                row.get("parent_resource_id", ""),
+                row.get("member_count", 0),
+                json.dumps(row, ensure_ascii=False),
+            ),
+        )
+    conn.execute("CREATE INDEX idx_resource_index_id ON resource_index(id)")
+    conn.execute("CREATE INDEX idx_resource_index_source_pack ON resource_index(source, pack_id)")
     conn.commit()
     conn.close()
 
 
 def test_catalog_loader_and_adapter(tmp_path):
     output_root = tmp_path / "output"
-    db_path = str(tmp_path / "pipeline.db")
+    crawler_state_db = str(tmp_path / "crawler_state.db")
     pack_name = "Demo Pack"
     image_rel = "sprites/hero.png"
     image_abs = output_root / "assets" / "kenney" / pack_name / image_rel
     _make_png(image_abs)
 
-    _write_jsonl(
-        output_root / "metadata" / "resource_index.jsonl",
-        [
-            {
-                "id": "res-hero",
-                "source": "kenney",
-                "pack_id": "pack-hero",
-                "pack_name": pack_name,
-                "resource_type": "single_image",
-                "title": "Hero",
-                "resource_path": image_rel,
-                "member_count": 1,
-                "file_paths": [image_rel],
-                "asset_ids": ["asset-hero"],
-                "tags": ["character", "pixel"],
-                "description": "Main hero sprite",
-                "category": "sprites",
-                "license": "CC0",
-                "parent_resource_id": "res-pack",
-            },
-            {
-                "id": "res-missing",
-                "source": "kenney",
-                "pack_id": "pack-hero",
-                "pack_name": pack_name,
-                "resource_type": "audio_file",
-                "title": "Coin",
-                "resource_path": "audio/coin.ogg",
-                "member_count": 1,
-                "file_paths": ["audio/coin.ogg"],
-                "asset_ids": ["asset-coin"],
-                "tags": ["ui"],
-                "description": "Coin pickup",
-                "category": "audio",
-                "license": "CC0",
-            },
-            {
-                "id": "res-pack",
-                "source": "kenney",
-                "pack_name": pack_name,
-                "resource_type": "pack",
-                "title": "Demo Pack",
-                "resource_path": "",
-                "member_count": 2,
-                "file_paths": [image_rel],
-                "asset_ids": ["asset-hero"],
-                "tags": ["bundle"],
-                "description": "Whole pack",
-                "category": "sprites",
-                "license": "CC0",
-                "child_resource_ids": ["res-hero", "res-missing"],
-                "child_resource_count": 2,
-                "contains_resource_types": ["single_image", "audio_file"],
-            },
-        ],
-    )
-    _create_asset_index_db(
-        db_path,
-        [
-            {
-                "id": "asset-hero",
-                "source": "kenney",
-                "source_pack": pack_name,
-                "file_path": image_rel,
-                "metadata": {"format": "png", "style": "pixel-art", "theme": "fantasy"},
-            },
-            {
-                "id": "asset-coin",
-                "source": "kenney",
-                "source_pack": pack_name,
-                "file_path": "audio/coin.ogg",
-                "metadata": {"format": "ogg"},
-            },
-        ],
-    )
+    resources = [
+        {
+            "id": "res-hero",
+            "source": "kenney",
+            "pack_id": "pack-hero",
+            "pack_name": pack_name,
+            "resource_type": "single_image",
+            "title": "Hero",
+            "resource_path": image_rel,
+            "member_count": 1,
+            "file_paths": [image_rel],
+            "asset_ids": ["asset-hero"],
+            "tags": ["character", "pixel"],
+            "description": "Main hero sprite",
+            "category": "sprites",
+            "license": "CC0",
+            "parent_resource_id": "res-pack",
+        },
+        {
+            "id": "res-missing",
+            "source": "kenney",
+            "pack_id": "pack-hero",
+            "pack_name": pack_name,
+            "resource_type": "audio_file",
+            "title": "Coin",
+            "resource_path": "audio/coin.ogg",
+            "member_count": 1,
+            "file_paths": ["audio/coin.ogg"],
+            "asset_ids": ["asset-coin"],
+            "tags": ["ui"],
+            "description": "Coin pickup",
+            "category": "audio",
+            "license": "CC0",
+        },
+        {
+            "id": "res-pack",
+            "source": "kenney",
+            "pack_name": pack_name,
+            "resource_type": "pack",
+            "title": "Demo Pack",
+            "resource_path": "",
+            "member_count": 2,
+            "file_paths": [image_rel],
+            "asset_ids": ["asset-hero"],
+            "tags": ["bundle"],
+            "description": "Whole pack",
+            "category": "sprites",
+            "license": "CC0",
+            "child_resource_ids": ["res-hero", "res-missing"],
+            "child_resource_count": 2,
+            "contains_resource_types": ["single_image", "audio_file"],
+        },
+    ]
+    assets = [
+        {
+            "id": "asset-hero",
+            "pack_id": "pack-hero",
+            "source": "kenney",
+            "source_pack": pack_name,
+            "file_path": image_rel,
+            "metadata": {"format": "png", "style": "pixel-art", "theme": "fantasy"},
+        },
+        {
+            "id": "asset-coin",
+            "pack_id": "pack-hero",
+            "source": "kenney",
+            "source_pack": pack_name,
+            "file_path": "audio/coin.ogg",
+            "metadata": {"format": "ogg"},
+        },
+    ]
+    _create_crawler_state_db(crawler_state_db, resources, assets)
     pack_json = output_root / "metadata" / "kenney" / f"{pack_name}.json"
     pack_json.parent.mkdir(parents=True, exist_ok=True)
     pack_json.write_text(
@@ -165,7 +199,7 @@ def test_catalog_loader_and_adapter(tmp_path):
         encoding="utf-8",
     )
 
-    catalog = load_crawler_catalog(str(output_root), db_path=db_path)
+    catalog = load_crawler_catalog(str(output_root), crawler_state_db=crawler_state_db)
     records = list(catalog.iter_resources())
     assert len(records) == 3
     assert records[0].resolved_files == [str(image_abs.resolve())]
@@ -231,3 +265,74 @@ def test_build_description_input_prefers_primary_audio_file(tmp_path):
     assert desc_input.preview_path == str(preview_path)
     assert desc_input.resolved_llm_input_path == str(audio_path)
     assert desc_input.resolved_llm_input_type == "audio"
+
+
+def test_build_description_input_includes_gallery_previews(tmp_path):
+    primary_path = tmp_path / "pack.webp"
+    gallery_path = tmp_path / "pack_gallery_02.webp"
+    _make_png(primary_path, color="blue")
+    _make_png(gallery_path, color="green")
+
+    entity = ResourceProcessingEntity(
+        resource_type="pack",
+        source_directory=str(tmp_path),
+        pack_name="Pack",
+        title="Pack",
+        previews=[
+            PreviewInfo(
+                strategy=PreviewStrategy.CONTACT_SHEET,
+                role="primary",
+                path=str(primary_path),
+                mode="child_previews",
+            ),
+            PreviewInfo(
+                strategy=PreviewStrategy.CONTACT_SHEET,
+                role="gallery",
+                path=str(gallery_path),
+                mode="child_previews_gallery",
+            ),
+        ],
+    )
+
+    desc_input = build_description_input(entity)
+    assert desc_input.preview_path == str(primary_path)
+    assert desc_input.preview_paths == [str(primary_path), str(gallery_path)]
+    assert desc_input.resolved_llm_input_paths == [str(primary_path), str(gallery_path)]
+
+
+def test_build_description_input_uses_representative_audio_for_audio_pack(tmp_path):
+    files = []
+    for idx, name in enumerate(["click_001.ogg", "click_002.ogg", "close_001.ogg", "open_001.ogg"]):
+        audio_path = tmp_path / "Audio" / name
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
+        audio_path.write_bytes(b"OggS")
+        files.append(
+            FileInfo(
+                file_path=str(audio_path),
+                file_name=name,
+                file_size=audio_path.stat().st_size,
+                file_format="ogg",
+                content_md5=f"audio-md5-{idx}",
+                is_primary=(idx == 0),
+            )
+        )
+
+    preview_path = tmp_path / "audio_pack.webp"
+    _make_png(preview_path, color="blue")
+    entity = ResourceProcessingEntity(
+        resource_type="pack",
+        source_directory=str(tmp_path),
+        pack_name="Interface Sounds",
+        title="Interface Sounds",
+        files=files,
+        contains_resource_types=["audio_file"],
+        previews=[PreviewInfo(strategy=PreviewStrategy.STATIC, path=str(preview_path), mode="audio_summary")],
+    )
+
+    desc_input = build_description_input(entity)
+
+    assert desc_input.resolved_llm_input_type == "audio"
+    assert len(desc_input.resolved_llm_input_paths) == 3
+    assert Path(desc_input.resolved_llm_input_paths[0]).name == "click_001.ogg"
+    assert desc_input.auxiliary_metadata["audio_groups"]["click"] == 2
+    assert desc_input.preview_path == str(preview_path)

@@ -33,9 +33,16 @@ def _load_dotenv(path: str) -> dict[str, str]:
     return env
 
 
+def _load_dotenv_files(*paths: Path) -> dict[str, str]:
+    env: dict[str, str] = {}
+    for path in paths:
+        env.update(_load_dotenv(str(path)))
+    return env
+
+
 def init_env() -> dict[str, str]:
-    project_root = Path(_SCRIPT_DIR).resolve().parents[2]
-    dotenv = _load_dotenv(str(project_root / ".env"))
+    client_root = Path(_SCRIPT_DIR).resolve().parents[1]
+    dotenv = _load_dotenv_files(client_root / ".env", client_root / ".env.local")
     for key, value in dotenv.items():
         if value and key not in os.environ:
             os.environ[key] = value
@@ -53,13 +60,39 @@ def env(key: str, fallback: str = "") -> str:
 # CLI argument parser
 # ---------------------------------------------------------------------------
 
-_PROJECT_ROOT = Path(_SCRIPT_DIR).resolve().parents[1]
+_CLIENT_ROOT = Path(_SCRIPT_DIR).resolve().parents[1]
+_REPO_ROOT = _CLIENT_ROOT.parent
+_DATA_ROOT = _REPO_ROOT / "data"
+_DEFAULT_CRAWLER_OUTPUT = env("CRAWLER_OUTPUT", r"K:\ResourceCrawler\output")
+_DEFAULT_CRAWLER_STATE_DB = env("CRAWLER_STATE_DB", r"G:\ResourceCrawler\data\crawler_state.db")
 
 
-def make_arg_parser(description: str, extra_args: list[tuple] | None = None) -> argparse.ArgumentParser:
+def make_arg_parser(
+    description: str,
+    extra_args: list[tuple] | None = None,
+    *,
+    include_crawler_args: bool = False,
+    crawler_output_required: bool = False,
+) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description)
-    parser.add_argument("--db-path", default=str(_PROJECT_ROOT / "pipeline.db"), help="SQLite 数据库路径 (默认 pipeline.db)")
-    parser.add_argument("--crawler-output", required=True, help="ResourceCrawler output 根目录")
+    parser.add_argument(
+        "--db-path",
+        default=str(_DATA_ROOT / "databases" / "pipeline.db"),
+        help="SQLite 数据库路径 (默认 data/databases/pipeline.db)",
+    )
+    if include_crawler_args:
+        crawler_output_default = _DEFAULT_CRAWLER_OUTPUT if crawler_output_required else ""
+        parser.add_argument(
+            "--crawler-state-db",
+            default=_DEFAULT_CRAWLER_STATE_DB,
+            help="ResourceCrawler crawler_state.db 路径",
+        )
+        parser.add_argument(
+            "--crawler-output",
+            required=crawler_output_required and not crawler_output_default,
+            default=crawler_output_default,
+            help="ResourceCrawler output 根目录，仅用于定位 assets/metadata",
+        )
     parser.add_argument("--limit", type=int, default=None, help="最多处理多少个资源")
     parser.add_argument("--resource-type", default="", help="只处理指定资源类型")
     parser.add_argument("--source-filter", default="", help="只处理指定来源站点")
@@ -129,13 +162,14 @@ _STATE_ORDINAL: dict[str, int] = {
     "preview_ready": 2,
     "description_failed": 3,
     "description_ready": 4,
-    "embedding_failed": 5,
-    "embedding_ready": 6,
-    "package_ready": 7,
-    "registered": 8,
-    "uploaded": 9,
-    "committed": 10,
-    "synced": 11,
+    "classify_ready": 5,
+    "embedding_failed": 6,
+    "embedding_ready": 7,
+    "package_ready": 8,
+    "registered": 9,
+    "uploaded": 10,
+    "committed": 11,
+    "synced": 12,
 }
 
 
@@ -147,6 +181,45 @@ def state_ge(state_a: str, state_b: str) -> bool:
 def state_lt(state_a: str, state_b: str) -> bool:
     """Return True if state_a is < state_b in pipeline order."""
     return _STATE_ORDINAL.get(state_a, -1) < _STATE_ORDINAL.get(state_b, -1)
+
+
+def merge_cached_entity_state(entity, cached_entity):
+    """Keep fresh crawler metadata while carrying DB-generated state/results."""
+    if cached_entity is None:
+        return entity
+    if not getattr(entity, "files", None) and getattr(cached_entity, "files", None):
+        entity.files = cached_entity.files
+    for attr in (
+        "process_state",
+        "previews",
+        "resource_id",
+        "download_object_key",
+        "download_file_name",
+        "download_content_type",
+        "download_file_size",
+        "description_main",
+        "description_detail",
+        "description_full",
+        "prompt_version",
+        "description_quality_score",
+        "usage_space",
+        "usage_category",
+        "usage_subcategories",
+        "usage_classification_reason",
+        "usage_classification_suggestion",
+        "usage_classification_version",
+        "embedding_dimension",
+        "embedding_checksum",
+        "embedding_generate_time",
+        "embedding_model_version",
+        "retry_count",
+        "last_error_code",
+        "last_error_message",
+        "updated_at",
+    ):
+        if hasattr(cached_entity, attr):
+            setattr(entity, attr, getattr(cached_entity, attr))
+    return entity
 
 
 # ---------------------------------------------------------------------------

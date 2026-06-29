@@ -9,11 +9,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_db, get_milvus, get_s3
-from app.middleware.auth import require_auth
+from app.middleware.auth import require_search_auth
 from app.services.ks3_storage import KS3Storage
 from app.services.milvus_search_client import MilvusSearchClient
+from CloudService.search_client import DownloadLinkRequest, SearchRequest
 
-router = APIRouter(tags=["search"], dependencies=[Depends(require_auth)])
+router = APIRouter(tags=["search"], dependencies=[Depends(require_search_auth)])
 
 
 # ---------------------------------------------------------------------------
@@ -26,6 +27,11 @@ class SearchBody(BaseModel):
     format_filter: Optional[List[str]] = None
     top_k: int = 10
     similarity_threshold: float = 0.5
+    # --- BM25 / Hybrid ---
+    search_mode: str = Field(default="hybrid", pattern="^(vector|bm25|hybrid)$")
+    bm25_weight: float = Field(default=0.5, ge=0.0, le=1.0)
+    # --- Reranker ---
+    enable_reranker: Optional[bool] = None
 
 class SearchResultOut(BaseModel):
     resource_id: str
@@ -48,6 +54,11 @@ class SearchResultOut(BaseModel):
     parent_download_url: str = ""
     child_resource_count: int = 0
     contains_resource_types: List[str] = Field(default_factory=list)
+    # --- BM25 / Hybrid scores ---
+    vector_score: float = 0.0
+    bm25_score: float = 0.0
+    rrf_score: float = 0.0
+    reranker_score: float = 0.0
 
 class SuggestionOut(BaseModel):
     rewrite_queries: List[str] = Field(default_factory=list)
@@ -90,8 +101,6 @@ def _build_search_client(session: AsyncSession) -> MilvusSearchClient:
 
 @router.post("/search", response_model=SearchOut)
 async def search_resources(body: SearchBody, session: AsyncSession = Depends(get_db)):
-    from CloudService.search_client import SearchRequest
-
     client = _build_search_client(session)
     req = SearchRequest(
         query_text=body.query_text,
@@ -99,6 +108,9 @@ async def search_resources(body: SearchBody, session: AsyncSession = Depends(get
         format_filter=body.format_filter,
         top_k=body.top_k,
         similarity_threshold=body.similarity_threshold,
+        search_mode=body.search_mode,
+        bm25_weight=body.bm25_weight,
+        enable_reranker=body.enable_reranker,
     )
     resp = await client.search(req)
 
@@ -134,6 +146,10 @@ async def search_resources(body: SearchBody, session: AsyncSession = Depends(get
                 parent_download_url=r.parent_download_url,
                 child_resource_count=r.child_resource_count,
                 contains_resource_types=r.contains_resource_types,
+                vector_score=r.vector_score,
+                bm25_score=r.bm25_score,
+                rrf_score=r.rrf_score,
+                reranker_score=r.reranker_score,
             )
             for r in resp.results
         ],
@@ -144,8 +160,6 @@ async def search_resources(body: SearchBody, session: AsyncSession = Depends(get
 
 @router.post("/download", response_model=DownloadOut)
 async def download_resource(body: DownloadBody, session: AsyncSession = Depends(get_db)):
-    from CloudService.search_client import DownloadLinkRequest
-
     client = _build_search_client(session)
     req = DownloadLinkRequest(
         resource_id=body.resource_id,

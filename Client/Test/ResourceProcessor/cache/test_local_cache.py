@@ -189,6 +189,24 @@ def test_insert_and_get_preview(tmp_path):
         store.close()
 
 
+def test_delete_previews_by_task_only_deletes_target_task(tmp_path):
+    store = LocalCacheStore(str(tmp_path / "test.db"))
+    try:
+        task_1 = store.insert_task(_make_entity(content_md5="one"))
+        task_2 = store.insert_task(_make_entity(content_md5="two"))
+        preview_1 = PreviewInfo(strategy=PreviewStrategy.STATIC, path="/tmp/preview-1.webp")
+        preview_2 = PreviewInfo(strategy=PreviewStrategy.STATIC, path="/tmp/preview-2.webp")
+        store.insert_preview(task_1, preview_1)
+        store.insert_preview(task_1, preview_2)
+        store.insert_preview(task_2, preview_1)
+
+        assert store.delete_previews_by_task(task_1) == 2
+        assert store.get_previews_by_task(task_1) == []
+        assert len(store.get_previews_by_task(task_2)) == 1
+    finally:
+        store.close()
+
+
 # ---- 8. test_insert_and_get_description ----
 
 
@@ -203,6 +221,12 @@ def test_insert_and_get_description(tmp_path):
             full_description="A landscape photo showing mountains at sunset with clouds",
             prompt_version="v2",
             quality_score=0.95,
+            usage_space="2D",
+            usage_category="环境",
+            usage_subcategories=["场景背景"],
+            usage_classification_reason="作为不可交互的场景后方视觉背景使用。",
+            usage_classification_suggestion=None,
+            usage_classification_version="game_visual_usage_v1.0",
         )
         assert isinstance(did, int)
 
@@ -213,6 +237,16 @@ def test_insert_and_get_description(tmp_path):
         assert row["full_description"] == "A landscape photo showing mountains at sunset with clouds"
         assert row["prompt_version"] == "v2"
         assert row["quality_score"] == 0.95
+        assert row["usage_space"] == "2D"
+        assert row["usage_category"] == "环境"
+        assert row["usage_subcategories"] == '["场景背景"]'
+        assert row["usage_classification_version"] == "game_visual_usage_v1.0"
+
+        entity = store.rebuild_entity_from_cache(task_id)
+        assert entity is not None
+        assert entity.usage_space == "2D"
+        assert entity.usage_category == "环境"
+        assert entity.usage_subcategories == ["场景背景"]
     finally:
         store.close()
 
@@ -461,6 +495,58 @@ def test_get_preview_by_task_returns_primary_only(tmp_path):
         result = store.get_preview_by_task(task_id)
         assert result is not None
         assert result["role"] == "primary"
+    finally:
+        store.close()
+
+
+def test_rebuild_entity_uses_latest_primary_preview_set(tmp_path):
+    """Rebuilding ignores stale previews that were superseded by a newer primary."""
+    store = LocalCacheStore(str(tmp_path / "test.db"))
+    try:
+        task_id = store.insert_task(_make_entity())
+        store.insert_preview(
+            task_id,
+            PreviewInfo(
+                strategy=PreviewStrategy.CONTACT_SHEET,
+                role="primary",
+                path="/p/old_primary.webp",
+                format="webp",
+            ),
+        )
+        store.insert_preview(
+            task_id,
+            PreviewInfo(
+                strategy=PreviewStrategy.CONTACT_SHEET,
+                role="gallery",
+                path="/p/old_gallery.webp",
+                format="webp",
+            ),
+        )
+        store.insert_preview(
+            task_id,
+            PreviewInfo(
+                strategy=PreviewStrategy.CONTACT_SHEET,
+                role="primary",
+                path="/p/new_primary.webp",
+                format="webp",
+            ),
+        )
+        store.insert_preview(
+            task_id,
+            PreviewInfo(
+                strategy=PreviewStrategy.CONTACT_SHEET,
+                role="gallery",
+                path="/p/new_gallery.webp",
+                format="webp",
+            ),
+        )
+
+        active = store.get_active_previews_by_task(task_id)
+        assert [row["path"] for row in active] == ["/p/new_primary.webp", "/p/new_gallery.webp"]
+
+        entity = store.rebuild_entity_from_cache(task_id)
+        assert entity is not None
+        assert [preview.path for preview in entity.previews] == ["/p/new_primary.webp", "/p/new_gallery.webp"]
     finally:
         store.close()
 

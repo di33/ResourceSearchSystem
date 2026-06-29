@@ -70,6 +70,8 @@ class TestCommitRequestIdempotencyKey(unittest.TestCase):
         )
         self.assertTrue(req.idempotency_key.startswith("commit-"))
         self.assertGreater(len(req.idempotency_key), len("commit-"))
+        self.assertEqual(req.usage_space, "")
+        self.assertEqual(req.usage_subcategories, [])
 
 
 class TestDetermineUploadMode(unittest.TestCase):

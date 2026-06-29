@@ -9,7 +9,7 @@
 ```
 ResourceUpload/
 │
-├── Client/                          # 本地客户端
+├── client/                          # 本地客户端
 │   ├── Scripts/
 │   │   ├── run_resource_pipeline.py # CLI 入口：筛选 → 预览 → 索引
 │   │   └── ResourceProcessor/       # 客户端 Python 包
@@ -39,7 +39,7 @@ ResourceUpload/
 │   │       └── core/
 │   └── resource_types.json          # 支持的文件扩展名配置
 │
-├── Server/                          # 云端服务
+├── server/                          # 云端服务
 │   ├── Scripts/
 │   │   └── CloudService/            # 云端 Python 包
 │   │       ├── cloud_client.py      # 注册/上传/提交 API 合约 & Mock
@@ -50,12 +50,22 @@ ResourceUpload/
 │   └── Test/
 │       └── CloudService/
 │
+├── data/                            # 数据库、日志、预览、报告和运行 workdir
+│   ├── databases/
+│   ├── logs/
+│   ├── previews/
+│   ├── reports/
+│   ├── runtime/
+│   └── workdirs/
+│
 ├── Design/                          # 设计文档
-├── specs.md                         # 12 个 Spec 实施清单
+├── specs/                           # Spec 文档与实施清单
+│   └── specs.md                     # 12 个 Spec 实施清单
 ├── pytest.ini                       # pytest 配置
 ├── conftest.py                      # 测试路径初始化
 ├── run_tests.py                     # unittest 运行脚本（备选）
-└── requirements.txt                 # Python 依赖
+├── client/requirements.txt          # 客户端依赖
+└── server/requirements.txt          # 服务端依赖
 ```
 
 ---
@@ -74,12 +84,13 @@ ResourceUpload/
 
 ## 快速开始
 
-> 常用运维命令（启动/重启、清空数据、搜索、全流程上传）请见 `OPERATIONS_GUIDE.md`。
+> 常用运维命令请见 `client/OPERATIONS_GUIDE.md` 和 `server/OPERATIONS_GUIDE.md`。
 
 ### 1. 安装依赖
 
 ```bash
-pip install -r requirements.txt
+pip install -r client/requirements.txt
+pip install -r server/requirements.txt
 ```
 
 ### 2. 运行全部测试
@@ -97,7 +108,7 @@ python run_tests.py
 ### 3. 运行资源处理流水线（本地端 CLI）
 
 ```bash
-python Client/Scripts/run_resource_pipeline.py \
+python client/Scripts/run_resource_pipeline.py \
     --source /path/to/your/resources \
     --work-dir /path/to/output
 ```
@@ -108,7 +119,7 @@ python Client/Scripts/run_resource_pipeline.py \
 |------|------|------|
 | `--source` | 是 | 原始资源根目录，递归扫描 |
 | `--work-dir` | 是 | 工作输出目录，生成 images/models/others/previews 子目录 |
-| `--config` | 否 | `resource_types.json` 路径，默认 `Client/resource_types.json` |
+| `--config` | 否 | `resource_types.json` 路径，默认 `client/resource_types.json` |
 | `--max-file-size` | 否 | 单文件字节上限，超出跳过 |
 | `--max-file-count` | 否 | 最多处理文件数 |
 | `--no-previews` | 否 | 跳过预览生成，仅拷贝分类和索引 |
@@ -125,24 +136,25 @@ python Client/Scripts/run_resource_pipeline.py \
 
 ```bash
 set BLENDER_EXE=C:\Program Files\Blender Foundation\Blender 4.0\blender.exe
-python Client/Scripts/run_resource_pipeline.py --source ... --work-dir ...
+python client/Scripts/run_resource_pipeline.py --source ... --work-dir ...
 ```
 
 未找到 Blender 时自动退化为占位 GIF（512×512 灰底 + 文件名标注）。
 
 ### 5. 运行 ResourceCrawler 资源级流水线
 
-当输入不是“本地原始目录”，而是 `ResourceCrawler` 已经生成好的 `output/metadata/*.jsonl` 与 `output/assets/...` 时，使用专用入口：
+当输入不是“本地原始目录”，而是 `ResourceCrawler` 的 `crawler_state.db` 与 `output/assets/...` 时，使用专用入口：
 
 ```bash
-python Client/Scripts/run_crawler_resource_pipeline.py \
+python client/Scripts/run_crawler_resource_pipeline.py \
+    --crawler-state-db G:/ResourceCrawler/data/crawler_state.db \
     --crawler-output G:/ResourceCrawler/output \
-    --work-dir G:/ResourceUpload/test_workdir_crawler
+    --work-dir G:/ResourceUpload/data/workdirs/test_workdir_crawler
 ```
 
 这条流水线会执行：
-- 读取 `resource_index.jsonl` 作为资源级入口
-- 结合 `index.jsonl` 和包级 JSON 补全 `pack_name`、`resource_path`、`tags`、`description` 等上下文
+- 读取 `crawler_state.db.resource_index` 作为资源级入口
+- 结合 `crawler_state.db.assets` 和包级 JSON 补全 `pack_name`、`resource_path`、`tags`、`description` 等上下文
 - 按 `resource_type` 生成缩略图
 - 用缩略图和结构化元数据生成 LLM 描述
 - 复用现有上传接口完成 `register -> upload-batch -> previews -> commit`
@@ -153,12 +165,13 @@ python Client/Scripts/run_crawler_resource_pipeline.py \
 
 | 参数 | 必填 | 说明 |
 |------|------|------|
+| `--crawler-state-db` | 否 | `ResourceCrawler/data/crawler_state.db` 路径 |
 | `--crawler-output` | 是 | `ResourceCrawler/output` 根目录 |
-| `--work-dir` | 否 | 工作输出目录，默认 `./test_workdir_crawler` |
+| `--work-dir` | 否 | 工作输出目录，默认 `data/workdirs/test_workdir_crawler` |
 | `--resource-type` | 否 | 只处理某一类资源，如 `single_image` / `tileset` / `audio_file` |
 | `--source-filter` | 否 | 只处理某个来源，如 `kenney` |
 | `--limit` | 否 | 最多处理多少条资源 |
-| `--llm-provider` | 否 | 描述生成 provider，默认读 `.env` 的 `CLIENT_LLM_PROVIDER` |
+| `--llm-provider` | 否 | 描述生成 provider，默认读 `.env` / `.env.local` 的 `CLIENT_LLM_PROVIDER` |
 | `--no-previews` | 否 | 跳过预览生成 |
 | `--no-upload` | 否 | 仅本地处理，不上传 |
 | `--server` | 否 | 指定服务端地址 |
@@ -198,7 +211,7 @@ python Client/Scripts/run_crawler_resource_pipeline.py \
 }
 ```
 
-默认位于 `Client/resource_types.json`，可通过 `--config` 指定自定义路径。
+默认位于 `client/resource_types.json`，可通过 `--config` 指定自定义路径。
 
 ---
 
@@ -208,7 +221,7 @@ python Client/Scripts/run_crawler_resource_pipeline.py \
 
 | 模块 | 功能 |
 |------|------|
-| `crawler/catalog_loader` | 读取 `resource_index.jsonl` / `index.jsonl` / 包级 JSON，构建资源目录 |
+| `crawler/catalog_loader` | 读取 `crawler_state.db.resource_index` / `assets` / 包级 JSON，构建资源目录 |
 | `crawler/resource_adapter` | 将 crawler 资源记录映射成统一的 `ResourceProcessingEntity` 和描述输入 |
 | `preview/crawler_thumbnail_policy` | 按 `resource_type` 生成资源级缩略图，支持 metadata fallback |
 | `preview/thumbnail_generator` | 图片缩略图（长边 512, WebP 优先）、FBX 旋转 GIF、占位降级 |
@@ -512,8 +525,8 @@ class RealCloudClient(BaseCloudClient):
 **Q: 如何只运行某个模块的测试？**
 
 ```bash
-python -m pytest Client/Test/ResourceProcessor/preview/ -v     # 预览模块
-python -m pytest Server/Test/CloudService/ -v                   # 云端模块
+python -m pytest client/Test/ResourceProcessor/preview/ -v     # 预览模块
+python -m pytest server/Test/CloudService/ -v                   # 云端模块
 python -m pytest -k "test_dedup" -v                             # 按名称匹配
 ```
 

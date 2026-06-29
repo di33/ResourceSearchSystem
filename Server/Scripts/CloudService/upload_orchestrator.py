@@ -29,6 +29,12 @@ class UploadTask:
     description_main: str = ""
     description_detail: str = ""
     description_full: str = ""
+    usage_space: str = ""
+    usage_category: str = ""
+    usage_subcategories: list[str] = field(default_factory=list)
+    usage_classification_reason: str = ""
+    usage_classification_suggestion: dict = field(default_factory=dict)
+    usage_classification_version: str = ""
     embedding_dimension: int = 0
     embedding_vector_data: list = field(default_factory=list)
 
@@ -129,6 +135,12 @@ class UploadOrchestrator:
                 description_main=task.description_main,
                 description_detail=task.description_detail,
                 description_full=task.description_full,
+                usage_space=task.usage_space,
+                usage_category=task.usage_category,
+                usage_subcategories=task.usage_subcategories,
+                usage_classification_reason=task.usage_classification_reason,
+                usage_classification_suggestion=task.usage_classification_suggestion,
+                usage_classification_version=task.usage_classification_version,
             )
             commit_resp = await self.client.commit(commit_req)
 

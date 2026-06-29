@@ -19,6 +19,12 @@ class _FakeResponse:
         return None
 
 
+class _FakeSession:
+    def __init__(self, get, post):
+        self.get = get
+        self.post = post
+
+
 def test_infer_upload_resource_type_prefers_entity_type():
     entity = ResourceProcessingEntity(
         resource_type="tileset",
@@ -66,6 +72,7 @@ def test_upload_pipeline_skips_metadata_only_resources(monkeypatch, tmp_path):
             }
         ],
         "http://localhost:8000",
+        session=_FakeSession(fake_get, fake_post),
     )
 
     assert summary.skipped_no_files == 1
@@ -133,6 +140,7 @@ def test_upload_pipeline_registers_zip_for_multifile_resource(monkeypatch, tmp_p
             }
         ],
         "http://localhost:8000",
+        session=_FakeSession(fake_get, fake_post),
     )
 
     assert summary.success_count == 1
@@ -144,6 +152,81 @@ def test_upload_pipeline_registers_zip_for_multifile_resource(monkeypatch, tmp_p
     assert "a.png" in names
     assert "b.png" in names
     assert any(name.endswith(".zip") for name in names)
+
+
+def test_upload_pipeline_uploads_gallery_preview_roles(monkeypatch, tmp_path):
+    file_a = tmp_path / "a.png"
+    preview_primary = tmp_path / "pack.webp"
+    preview_gallery = tmp_path / "pack_gallery_02.webp"
+    file_a.write_bytes(b"a")
+    preview_primary.write_bytes(b"primary")
+    preview_gallery.write_bytes(b"gallery")
+
+    resource = ResourceProcessingEntity(
+        resource_type="pack",
+        source_directory=str(tmp_path),
+        title="Pack",
+        content_md5="pack-md5",
+        files=[
+            FileInfo(
+                file_path=str(file_a),
+                file_name=file_a.name,
+                file_size=file_a.stat().st_size,
+                file_format="png",
+                content_md5="md5-a",
+                is_primary=True,
+            )
+        ],
+        previews=[
+            PreviewInfo(strategy=PreviewStrategy.CONTACT_SHEET, role="primary", path=str(preview_primary)),
+            PreviewInfo(strategy=PreviewStrategy.CONTACT_SHEET, role="gallery", path=str(preview_gallery)),
+        ],
+    )
+
+    preview_uploads = []
+
+    def fake_get(url, timeout):
+        return _FakeResponse({"status": "ok"})
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/register"):
+            return _FakeResponse({"resource_id": "res-1", "exists": False, "upload_mode": "direct", "multipart_chunk_size": 0, "state": "registered"})
+        if url.endswith("/upload-batch"):
+            return _FakeResponse({"success": True, "file_count": 1, "uploaded_bytes": 1})
+        if url.endswith("/previews"):
+            preview_uploads.append(
+                {
+                    "data": kwargs.get("data"),
+                    "names": [entry[1][0] for entry in kwargs.get("files", [])],
+                }
+            )
+            return _FakeResponse({"success": True, "preview_count": 2})
+        if url.endswith("/commit"):
+            return _FakeResponse({"state": "committed", "resource_id": "res-1"})
+        raise AssertionError(url)
+
+    monkeypatch.setattr("ResourceProcessor.core.upload_pipeline.requests.get", fake_get)
+    monkeypatch.setattr("ResourceProcessor.core.upload_pipeline.requests.post", fake_post)
+
+    summary = upload_enriched_resources(
+        [
+            {
+                "resource": resource,
+                "resource_type": "pack",
+                "description": {"main": "m", "detail": "d", "full": "主体：m\n细节：d"},
+            }
+        ],
+        "http://localhost:8000",
+        session=_FakeSession(fake_get, fake_post),
+    )
+
+    assert summary.success_count == 1
+    assert preview_uploads == [
+        {
+            "data": {"roles": "primary,gallery"},
+            "names": ["pack.webp", "pack_gallery_02.webp"],
+        }
+    ]
 
 
 def test_register_idempotency_key_prefers_source_resource_id():
@@ -216,6 +299,7 @@ def test_upload_pipeline_continues_when_register_reuses_uncommitted_task(monkeyp
             }
         ],
         "http://localhost:8000",
+        session=_FakeSession(fake_get, fake_post),
     )
 
     assert summary.success_count == 1

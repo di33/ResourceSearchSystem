@@ -14,7 +14,6 @@ import asyncio
 import base64
 import logging
 import os
-import re
 from pathlib import Path
 
 from ResourceProcessor.description.description_generator import (
@@ -22,8 +21,10 @@ from ResourceProcessor.description.description_generator import (
     DescriptionInput,
     DescriptionResult,
     LLMFactory,
+    build_description_result,
 )
 from ResourceProcessor.description.prompt_config import get_system_prompt, get_user_prompt
+from ResourceProcessor.description.usage_classification import parse_description_response
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +49,10 @@ def _build_user_content_vision(input_data: DescriptionInput) -> list[dict]:
     content: list[dict] = []
 
     if input_data.resolved_llm_input_type != "audio":
-        b64 = _encode_image_base64(input_data.resolved_llm_input_path)
-        if b64:
-            content.append({"type": "image_url", "image_url": {"url": b64}})
+        for image_path in input_data.resolved_llm_input_paths:
+            b64 = _encode_image_base64(image_path)
+            if b64:
+                content.append({"type": "image_url", "image_url": {"url": b64}})
     else:
         logger.warning("Zhipu vision model does not attach audio input; falling back to text context only.")
 
@@ -67,18 +69,7 @@ def _build_user_content_text(input_data: DescriptionInput) -> str:
 
 def _parse_response(text: str) -> tuple[str, str]:
     """Extract main and detail from the model output."""
-    main, detail = "", ""
-    for line in text.strip().splitlines():
-        line = line.strip()
-        if line.startswith("主体：") or line.startswith("主体:"):
-            main = re.sub(r"^主体[：:]", "", line).strip()
-        elif line.startswith("细节：") or line.startswith("细节:"):
-            detail = re.sub(r"^细节[：:]", "", line).strip()
-    if not main:
-        main = text.strip().splitlines()[0] if text.strip() else ""
-    if not detail:
-        lines = text.strip().splitlines()
-        detail = lines[1] if len(lines) > 1 else main
+    main, detail, _score, _classification = parse_description_response(text)
     return main, detail
 
 
@@ -135,13 +126,14 @@ class ZhipuLLMProvider(BaseMultiModalLLMProvider):
         self, input_data: DescriptionInput
     ) -> DescriptionResult:
         raw_text = await asyncio.to_thread(self._call_sync, input_data)
-        main, detail = _parse_response(raw_text)
-        full = f"主体：{main}\n细节：{detail}"
-        return DescriptionResult(
+        main, detail, score, classification = parse_description_response(raw_text)
+        return build_description_result(
+            input_data,
             main_content=main,
             detail_content=detail,
-            full_description=full,
             prompt_version=PROMPT_VERSION,
+            description_quality_score=score,
+            classification=classification,
         )
 
 

@@ -2,16 +2,27 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 import logging
 import mimetypes
 from typing import Optional
+from urllib.parse import quote
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def build_s3_client_config() -> Config:
+    return Config(
+        signature_version=settings.ks3_signature_version,
+        s3={"addressing_style": settings.ks3_addressing_style},
+    )
 
 
 class KS3Storage:
@@ -29,6 +40,7 @@ class KS3Storage:
                 aws_access_key_id=settings.ks3_access_key,
                 aws_secret_access_key=settings.ks3_secret_key,
                 region_name=settings.ks3_region,
+                config=build_s3_client_config(),
             )
 
     # ---- upload ----
@@ -49,20 +61,30 @@ class KS3Storage:
         logger.info("Uploaded %s (%d bytes)", key, size)
         return size
 
-    def upload_fileobj(self, key: str, fileobj, content_type: str = "application/octet-stream") -> tuple[int, str]:
-        """Upload from a file-like object. Returns (content_length, etag)."""
+    def upload_fileobj(self, key: str, fileobj, content_type: str = "application/octet-stream") -> tuple[int, str, str]:
+        """Upload from a file-like object. Returns (content_length, etag, content_md5)."""
+        # Read content first to compute MD5, then wrap in BytesIO for boto3.
+        # This avoids issues with boto3 reading the fileobj multiple times
+        # and with file objects being closed after upload.
+        data = fileobj.read()
+        content_md5 = hashlib.md5(data).hexdigest()
         self.s3.upload_fileobj(
-            Fileobj=fileobj,
+            Fileobj=io.BytesIO(data),
             Bucket=self.bucket,
             Key=key,
             ExtraArgs={"ContentType": content_type},
         )
         head = self.s3.head_object(Bucket=self.bucket, Key=key)
-        return head.get("ContentLength", 0), head.get("ETag", "")
+        logger.info("upload_fileobj %s: size=%d, content_md5=%s",
+                     key, len(data), content_md5)
+        return head.get("ContentLength", 0), head.get("ETag", ""), content_md5
 
     # ---- presigned URLs ----
 
     def generate_presigned_download_url(self, key: str, expires: int | None = None) -> str:
+        if settings.ks3_cdn_endpoint:
+            return f"{settings.ks3_cdn_endpoint.rstrip('/')}/{quote(key, safe='/')}"
+
         expires = expires or settings.ks3_presign_expires
         return self.presign_s3.generate_presigned_url(
             "get_object",

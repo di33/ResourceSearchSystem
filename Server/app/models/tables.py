@@ -11,9 +11,22 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    func,
+    TypeDecorator,
 )
+from sqlalchemy.dialects.postgresql import TSVECTOR as PG_TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+class _TSVECTOR(TypeDecorator):
+    """TSVECTOR that falls back to TEXT on non-PostgreSQL dialects (e.g. SQLite in tests)."""
+
+    impl = Text
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(PG_TSVECTOR())
+        return dialect.type_descriptor(Text())
 
 
 class Base(DeclarativeBase):
@@ -109,6 +122,9 @@ class ResourcePreview(Base):
 
 class ResourceDescription(Base):
     __tablename__ = "resource_description"
+    __table_args__ = (
+        Index("ix_resource_description_search_vector", "search_vector", postgresql_using="gin"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     task_id: Mapped[int] = mapped_column(ForeignKey("resource_task.id"), nullable=False)
@@ -117,7 +133,14 @@ class ResourceDescription(Base):
     full_description: Mapped[str] = mapped_column(Text, default="")
     prompt_version: Mapped[str] = mapped_column(String(32), default="")
     quality_score: Mapped[float | None] = mapped_column(Float)
+    usage_space: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    usage_category: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    usage_subcategories_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    usage_classification_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    usage_classification_suggestion_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    usage_classification_version: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    search_vector: Mapped[str | None] = mapped_column(_TSVECTOR, nullable=True)
 
     task: Mapped[ResourceTask] = relationship(back_populates="descriptions")
 

@@ -17,12 +17,14 @@ def validate_preview(
     max_static_size_kb: int = 100,
     max_dynamic_size_kb: int = 200,
     min_dimension: int = 64,
+    allow_solid_color: bool = False,
 ) -> tuple:
     """
     Validate a generated preview image.
 
     Returns ``(passed: bool, reason: str)``.  Size-limit violations are treated
-    as warnings (still passes), but all-black / all-white images hard-fail.
+    as warnings (still passes). All-black / all-white images hard-fail by
+    default, unless the caller has verified that the source asset is also solid.
     """
     p = Path(preview_path)
 
@@ -53,9 +55,9 @@ def validate_preview(
     max_val = max(ch[1] for ch in extrema)
     min_val = min(ch[0] for ch in extrema)
 
-    if max_val == 0:
+    if max_val == 0 and not allow_solid_color:
         return False, "Image is all black"
-    if min_val == 255:
+    if min_val == 255 and not allow_solid_color:
         return False, "Image is all white / blank"
 
     return True, ""

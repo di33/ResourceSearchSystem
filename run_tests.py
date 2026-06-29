@@ -13,7 +13,10 @@ import unittest
 
 def main() -> int:
     root = os.path.dirname(os.path.abspath(__file__))
-    for sub in ("Client", "Server"):
+    for sub in ("client", "server"):
+        base = os.path.join(root, sub)
+        if base not in sys.path:
+            sys.path.insert(0, base)
         scripts = os.path.join(root, sub, "Scripts")
         if scripts not in sys.path:
             sys.path.insert(0, scripts)
@@ -22,7 +25,7 @@ def main() -> int:
 
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
-    for sub in ("Client", "Server"):
+    for sub in ("client", "server"):
         test_dir = os.path.join(root, sub, "Test")
         if os.path.isdir(test_dir):
             suite.addTests(loader.discover(test_dir, pattern="test_*.py", top_level_dir=root))

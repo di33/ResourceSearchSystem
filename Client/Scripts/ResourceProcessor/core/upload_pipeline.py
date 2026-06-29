@@ -76,6 +76,12 @@ def _resource_int(resource: ResourceProcessingEntity | dict[str, Any], attr: str
         return 0
 
 
+def _resource_any(resource: ResourceProcessingEntity | dict[str, Any], attr: str, fallback: Any = None) -> Any:
+    if isinstance(resource, ResourceProcessingEntity):
+        return getattr(resource, attr, fallback)
+    return resource.get(attr, fallback)
+
+
 def _register_idempotency_key(resource: ResourceProcessingEntity | dict[str, Any]) -> str:
     source_resource_id = _resource_text(resource, "source_resource_id").strip()
     if source_resource_id:
@@ -167,21 +173,25 @@ def upload_enriched_resources(
     enriched: Iterable[dict[str, Any]],
     server: str,
     reporter: Reporter | None = None,
+    session: requests.Session | None = None,
+    health_checked: bool = False,
 ) -> UploadSummary:
+    _session = session or requests.Session()
     summary = UploadSummary()
 
-    try:
-        health_resp = requests.get(f"{server}/health", timeout=5)
-        health = health_resp.json()
-        if health.get("status") != "ok":
-            _report(reporter, "FAIL", "服务端健康检查", f"状态: {health.get('status')}")
+    if not health_checked:
+        try:
+            health_resp = _session.get(f"{server}/health", timeout=5)
+            health = health_resp.json()
+            if health.get("status") != "ok":
+                _report(reporter, "FAIL", "服务端健康检查", f"状态: {health.get('status')}")
+                summary.failed_count += 1
+                return summary
+            _report(reporter, "OK", "服务端健康检查", "所有组件正常")
+        except Exception as exc:
+            _report(reporter, "FAIL", "服务端健康检查", f"无法连接: {exc}")
             summary.failed_count += 1
             return summary
-        _report(reporter, "OK", "服务端健康检查", "所有组件正常")
-    except Exception as exc:
-        _report(reporter, "FAIL", "服务端健康检查", f"无法连接: {exc}")
-        summary.failed_count += 1
-        return summary
 
     for item in enriched:
         resource = item["resource"]
@@ -203,6 +213,12 @@ def upload_enriched_resources(
             summary.skipped_no_files += 1
             _report(reporter, "OK", f"跳过 [{label}]", "无可上传原始文件（metadata-only 资源）")
             continue
+
+        # Recompute content_md5 from disk for files with empty/missing md5
+        from ResourceProcessor.crawler.resource_adapter import _md5_file
+        for f in files_info:
+            if not f.get("content_md5") and f.get("file_path") and os.path.isfile(f["file_path"]):
+                f["content_md5"] = _md5_file(f["file_path"])
 
         try:
             register_body = {
@@ -227,6 +243,7 @@ def upload_enriched_resources(
                 "files": [
                     {
                         "file_name": f["file_name"],
+                        "file_path": f.get("file_path", f["file_name"]),
                         "file_size": f["file_size"],
                         "file_format": f["file_format"],
                         "content_md5": f["content_md5"],
@@ -246,7 +263,8 @@ def upload_enriched_resources(
                 register_body["download_file_name"] = files_info[0]["file_name"]
                 register_body["download_content_type"] = "application/octet-stream"
                 register_body["download_file_size"] = files_info[0]["file_size"]
-            resp = requests.post(f"{server}/resources/register", json=register_body, timeout=30)
+            register_timeout = max(120, 30 + len(files_info) // 50)
+            resp = _session.post(f"{server}/resources/register", json=register_body, timeout=register_timeout)
             resp.raise_for_status()
             register_data = resp.json()
             resource_id = register_data["resource_id"]
@@ -265,32 +283,56 @@ def upload_enriched_resources(
             _report(reporter, "FAIL", f"注册 [{label}]", str(exc)[:120])
             continue
 
-        upload_files = []
-        download_file = None
+        _FILE_UPLOAD_BATCH_SIZE = 50
+
         try:
-            for f in files_info:
-                file_path = f.get("file_path", "")
-                if file_path and os.path.isfile(file_path):
-                    upload_files.append(("files", (f["file_name"], open(file_path, "rb"), "application/octet-stream")))
+            # Build download package once
             package = _build_download_package(resource)
+            download_file = None
             if package is not None:
                 package_name, package_bytes, package_content_type = package
                 download_file = ("download_file", (package_name, io.BytesIO(package_bytes), package_content_type))
-            if upload_files:
-                files_payload = list(upload_files)
-                if download_file is not None:
-                    files_payload.append(download_file)
-                resp = requests.post(f"{server}/resources/{resource_id}/upload-batch", files=files_payload, timeout=120)
-                resp.raise_for_status()
-                upload_data = resp.json()
-                if not upload_data.get("success"):
-                    raise RuntimeError(upload_data.get("error_message", "unknown"))
-                _report(
-                    reporter,
-                    "OK",
-                    f"上传文件 [{label}]",
-                    f"{upload_data.get('file_count', 0)} 个文件, {upload_data.get('uploaded_bytes', 0)} bytes",
-                )
+
+            # Prepare file list with valid paths
+            valid_files_info = [
+                f for f in files_info
+                if f.get("file_path") and os.path.isfile(f["file_path"])
+            ]
+
+            total_file_count = 0
+            total_uploaded_bytes = 0
+
+            # Split into batches to avoid "Too many open files"
+            for batch_start in range(0, max(len(valid_files_info), 1), _FILE_UPLOAD_BATCH_SIZE):
+                batch = valid_files_info[batch_start:batch_start + _FILE_UPLOAD_BATCH_SIZE]
+                upload_files = []
+                try:
+                    for f in batch:
+                        upload_files.append(("files", (f["file_name"], open(f["file_path"], "rb"), "application/octet-stream")))
+                    # Attach download_file to the last batch
+                    is_last_batch = batch_start + _FILE_UPLOAD_BATCH_SIZE >= len(valid_files_info)
+                    files_payload = list(upload_files)
+                    if is_last_batch and download_file is not None:
+                        files_payload.append(download_file)
+                    if not files_payload:
+                        continue
+                    resp = _session.post(f"{server}/resources/{resource_id}/upload-batch", files=files_payload, timeout=120)
+                    resp.raise_for_status()
+                    upload_data = resp.json()
+                    if not upload_data.get("success"):
+                        raise RuntimeError(upload_data.get("error_message", "unknown"))
+                    total_file_count += upload_data.get("file_count", 0)
+                    total_uploaded_bytes += upload_data.get("uploaded_bytes", 0)
+                finally:
+                    for _, (_, file_obj, _) in upload_files:
+                        file_obj.close()
+
+            _report(
+                reporter,
+                "OK",
+                f"上传文件 [{label}]",
+                f"{total_file_count} 个文件, {total_uploaded_bytes} bytes",
+            )
         except Exception as exc:
             summary.failed_count += 1
             error_msg = str(exc)
@@ -300,8 +342,6 @@ def upload_enriched_resources(
                 _report(reporter, "FAIL", f"上传文件 [{label}]", error_msg[:120])
             continue
         finally:
-            for _, (_, file_obj, _) in upload_files:
-                file_obj.close()
             if download_file is not None:
                 download_file[1][1].close()
 
@@ -317,7 +357,7 @@ def upload_enriched_resources(
                     roles.append(preview.role if hasattr(preview, "role") else preview.get("role", "primary"))
             if preview_files:
                 data = {"roles": ",".join(roles)} if roles else None
-                resp = requests.post(
+                resp = _session.post(
                     f"{server}/resources/{resource_id}/previews",
                     files=preview_files,
                     data=data,
@@ -339,8 +379,28 @@ def upload_enriched_resources(
                 "description_main": desc.get("main", ""),
                 "description_detail": desc.get("detail", ""),
                 "description_full": desc.get("full", ""),
+                "usage_space": desc.get("usage_space") or _resource_text(resource, "usage_space"),
+                "usage_category": desc.get("usage_category") or _resource_text(resource, "usage_category"),
+                "usage_subcategories": (
+                    desc.get("usage_subcategories")
+                    if isinstance(desc.get("usage_subcategories"), list)
+                    else _resource_list(resource, "usage_subcategories")
+                ),
+                "usage_classification_reason": (
+                    desc.get("usage_classification_reason")
+                    or _resource_text(resource, "usage_classification_reason")
+                ),
+                "usage_classification_suggestion": (
+                    desc.get("usage_classification_suggestion")
+                    if isinstance(desc.get("usage_classification_suggestion"), dict)
+                    else (_resource_any(resource, "usage_classification_suggestion", {}) or {})
+                ),
+                "usage_classification_version": (
+                    desc.get("usage_classification_version")
+                    or _resource_text(resource, "usage_classification_version")
+                ),
             }
-            resp = requests.post(f"{server}/resources/{resource_id}/commit", json=commit_body, timeout=30)
+            resp = _session.post(f"{server}/resources/{resource_id}/commit", json=commit_body, timeout=30)
             resp.raise_for_status()
             commit_data = resp.json()
             if commit_data.get("state") == "committed":

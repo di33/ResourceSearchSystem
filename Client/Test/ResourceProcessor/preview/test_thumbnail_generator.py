@@ -177,6 +177,20 @@ def test_validate_preview_fails_all_white(tmp_path):
     assert "white" in reason.lower()
 
 
+def test_validate_preview_allows_solid_color_when_opted_in(tmp_path):
+    """Solid previews can pass after callers verify the source asset itself is solid."""
+    black = tmp_path / "black.png"
+    white = tmp_path / "white.png"
+    Image.new("RGB", (128, 128), (0, 0, 0)).save(black)
+    Image.new("RGB", (128, 128), (255, 255, 255)).save(white)
+
+    passed_black, reason_black = validate_preview(str(black), allow_solid_color=True)
+    passed_white, reason_white = validate_preview(str(white), allow_solid_color=True)
+
+    assert passed_black, reason_black
+    assert passed_white, reason_white
+
+
 def test_validate_preview_fails_nonexistent():
     """Validation must fail for a non-existent file."""
     passed, reason = validate_preview("/no/such/file.png")

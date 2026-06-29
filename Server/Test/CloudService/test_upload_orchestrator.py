@@ -85,6 +85,11 @@ def _make_task(task_id: int) -> UploadTask:
         description_main="A cube",
         description_detail="Simple cube mesh",
         description_full="A simple cube mesh for testing",
+        usage_space="3D",
+        usage_category="物件",
+        usage_subcategories=["摆件"],
+        usage_classification_reason="独立模型可作为场景物件使用。",
+        usage_classification_version="game_visual_usage_v1.0",
     )
 
 
@@ -146,6 +151,9 @@ class TestUploadTaskFields(unittest.TestCase):
         self.assertEqual(task.description_main, "A cube")
         self.assertEqual(task.description_detail, "Simple cube mesh")
         self.assertEqual(task.description_full, "A simple cube mesh for testing")
+        self.assertEqual(task.usage_space, "3D")
+        self.assertEqual(task.usage_category, "物件")
+        self.assertEqual(task.usage_subcategories, ["摆件"])
 
 
 class TestUploadOutcomeDefaults(unittest.TestCase):
@@ -218,6 +226,9 @@ class TestUploadOrchestratorSuccess(unittest.TestCase):
             self.assertEqual(req.description_main, self.task.description_main)
             self.assertEqual(req.description_detail, self.task.description_detail)
             self.assertEqual(req.description_full, self.task.description_full)
+            self.assertEqual(req.usage_space, self.task.usage_space)
+            self.assertEqual(req.usage_category, self.task.usage_category)
+            self.assertEqual(req.usage_subcategories, self.task.usage_subcategories)
         _run_async(run())
 
     def test_execute_updates_cache_states(self):

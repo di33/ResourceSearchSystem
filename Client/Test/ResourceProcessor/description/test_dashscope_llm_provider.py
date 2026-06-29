@@ -93,6 +93,27 @@ def test_build_user_content_with_audio(tmp_path):
     assert any("text" in item for item in content)
 
 
+def test_build_user_content_with_multiple_audio_inputs(tmp_path):
+    audio_a = tmp_path / "click_001.ogg"
+    audio_b = tmp_path / "close_001.ogg"
+    audio_a.write_bytes(b"OggS")
+    audio_b.write_bytes(b"OggS")
+    content = _build_user_content(
+        DescriptionInput(
+            preview_path=str(tmp_path / "preview.webp"),
+            resource_type="pack",
+            preview_strategy="static",
+            auxiliary_metadata={"format": "ogg"},
+            llm_input_path=str(audio_a),
+            llm_input_paths=[str(audio_a), str(audio_b)],
+            llm_input_type="audio",
+        )
+    )
+    audio_items = [item for item in content if "audio" in item]
+    assert len(audio_items) == 2
+    assert all("image" not in item for item in content)
+
+
 # ---------------------------------------------------------------------------
 # DashScopeLLMProvider construction
 # ---------------------------------------------------------------------------

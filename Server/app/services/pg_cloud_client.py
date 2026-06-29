@@ -81,6 +81,30 @@ class PgCloudClient(BaseCloudClient):
         if request.download_file_size and not task.download_file_size:
             task.download_file_size = request.download_file_size
 
+    async def _merge_file_content_md5(self, task: ResourceTask, request: RegisterRequest) -> None:
+        """Update content_md5 for files when request provides non-empty values."""
+        # Use file_path as key since multiple files can share the same name
+        # but have different paths (e.g., subfolder1/1.png vs subfolder2/1.png)
+        request_md5_by_path = {}
+        for f in request.files:
+            if f.content_md5 and f.file_path:
+                request_md5_by_path[f.file_path] = f.content_md5
+        if not request_md5_by_path:
+            return
+        existing_files = (
+            await self.session.execute(
+                select(ResourceFile).where(ResourceFile.task_id == task.id)
+            )
+        ).scalars().all()
+        updated = 0
+        for f in existing_files:
+            new_md5 = request_md5_by_path.get(f.file_path)
+            if new_md5 and new_md5 != f.content_md5:
+                f.content_md5 = new_md5
+                updated += 1
+        if updated:
+            logger.info("merge_file_md5: updated %d files for task %s", updated, task.resource_id)
+
     def _existing_register_response(self, task: ResourceTask, request: RegisterRequest) -> RegisterResponse:
         return RegisterResponse(
             resource_id=task.resource_id or "",
@@ -180,6 +204,7 @@ class PgCloudClient(BaseCloudClient):
         existing_by_source = await self._find_existing_by_source_resource_id(request)
         if existing_by_source:
             self._merge_task_metadata(existing_by_source, request)
+            await self._merge_file_content_md5(existing_by_source, request)
             await self._backfill_relationships(existing_by_source)
             await self.session.flush()
             return self._existing_register_response(existing_by_source, request)
@@ -195,6 +220,7 @@ class PgCloudClient(BaseCloudClient):
 
         if existing:
             self._merge_task_metadata(existing, request)
+            await self._merge_file_content_md5(existing, request)
             await self._backfill_relationships(existing)
             await self.session.flush()
             return self._existing_register_response(existing, request)
@@ -211,6 +237,7 @@ class PgCloudClient(BaseCloudClient):
 
         if dup:
             self._merge_task_metadata(dup, request)
+            await self._merge_file_content_md5(dup, request)
             await self._backfill_relationships(dup)
             await self.session.flush()
             return self._existing_register_response(dup, request)
@@ -245,22 +272,26 @@ class PgCloudClient(BaseCloudClient):
             idempotency_key=request.idempotency_key,
         )
         self.session.add(task)
+        await self.session.flush()
 
-        # Insert all files
-        for file_info in request.files:
-            ks3_key = f"files/{resource_id}/{file_info.file_name}"
-            db_file = ResourceFile(
-                task=task,
-                file_path=file_info.file_path,
-                file_name=file_info.file_name,
-                file_size=file_info.file_size,
-                file_format=file_info.file_format,
-                content_md5=file_info.content_md5,
-                file_role=file_info.file_role,
-                ks3_key=ks3_key,
-                is_primary=file_info.is_primary,
-            )
-            self.session.add(db_file)
+        # Bulk insert all files using a single INSERT statement
+        if request.files:
+            from sqlalchemy import insert as sa_insert
+            file_rows = [
+                {
+                    "task_id": task.id,
+                    "file_path": fi.file_path,
+                    "file_name": fi.file_name,
+                    "file_size": fi.file_size,
+                    "file_format": fi.file_format,
+                    "content_md5": fi.content_md5,
+                    "file_role": fi.file_role,
+                    "ks3_key": f"files/{resource_id}/{fi.file_name}",
+                    "is_primary": fi.is_primary,
+                }
+                for fi in request.files
+            ]
+            await self.session.execute(sa_insert(ResourceFile), file_rows)
 
         self.session.add(
             ProcessLog(task=task, event="registered", detail=f"resource_id={resource_id}, files={len(request.files)}")
@@ -293,8 +324,8 @@ class PgCloudClient(BaseCloudClient):
         """Upload from an in-memory file object (used by the HTTP endpoint)."""
         key = f"files/{resource_id}/{filename}"
         try:
-            uploaded, etag = self.storage.upload_fileobj(key, fileobj, content_type)
-            return UploadResult(success=True, uploaded_bytes=uploaded, s3_etag=etag)
+            uploaded, etag, md5 = self.storage.upload_fileobj(key, fileobj, content_type)
+            return UploadResult(success=True, uploaded_bytes=uploaded, s3_etag=etag, content_md5=md5)
         except Exception as exc:
             logger.error("upload_file_obj failed for %s: %s", resource_id, exc)
             return UploadResult(success=False, error_message=str(exc))
@@ -302,7 +333,7 @@ class PgCloudClient(BaseCloudClient):
     async def upload_download_obj(self, resource_id: str, filename: str, fileobj, content_type: str) -> UploadResult:
         key = f"downloads/{resource_id}/{filename}"
         try:
-            uploaded, etag = self.storage.upload_fileobj(key, fileobj, content_type)
+            uploaded, _etag, _md5 = self.storage.upload_fileobj(key, fileobj, content_type)
         except Exception as exc:
             logger.error("upload_download_obj failed for %s: %s", resource_id, exc)
             return UploadResult(success=False, error_message=str(exc))
@@ -336,7 +367,7 @@ class PgCloudClient(BaseCloudClient):
         """Upload preview from an in-memory file object."""
         key = f"previews/{resource_id}/{filename}"
         try:
-            uploaded, _etag = self.storage.upload_fileobj(key, fileobj, content_type)
+            uploaded, _etag, _md5 = self.storage.upload_fileobj(key, fileobj, content_type)
             return UploadResult(success=True, uploaded_bytes=uploaded)
         except Exception as exc:
             logger.error("upload_preview_obj failed for %s: %s", resource_id, exc)
@@ -400,6 +431,12 @@ class PgCloudClient(BaseCloudClient):
             detail_content=request.description_detail,
             full_description=request.description_full,
             prompt_version="",
+            usage_space=request.usage_space,
+            usage_category=request.usage_category,
+            usage_subcategories_json=json.dumps(request.usage_subcategories or [], ensure_ascii=False),
+            usage_classification_reason=request.usage_classification_reason,
+            usage_classification_suggestion_json=json.dumps(request.usage_classification_suggestion or {}, ensure_ascii=False),
+            usage_classification_version=request.usage_classification_version,
         )
         self.session.add(desc)
 

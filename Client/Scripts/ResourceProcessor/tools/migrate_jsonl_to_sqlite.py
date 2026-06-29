@@ -1,10 +1,13 @@
-"""Migrate existing JSONL data (crawler_resources.jsonl / test_results.jsonl) to SQLite.
+"""Deprecated: migrate old JSONL data to SQLite.
+
+The active flow now rebuilds pipeline.db from crawler_state.db:
+``python -m ResourceProcessor.tools.rebuild_pipeline_from_crawler_state``.
 
 Usage:
     python -m ResourceProcessor.tools.migrate_jsonl_to_sqlite \
-        --resources-jsonl test_workdir/crawler_resources.jsonl \
-        --results-jsonl test_workdir/test_results.jsonl \
-        --db-path pipeline.db \
+        --resources-jsonl data/workdirs/test_workdir/crawler_resources.jsonl \
+        --results-jsonl data/workdirs/test_workdir/test_results.jsonl \
+        --db-path data/databases/pipeline.db \
         [--crawler-output K:\\ResourceCrawler\\output] \
         [--dry-run]
 """
@@ -104,10 +107,11 @@ def _pick_primary(files: list[dict], resource_type: str) -> list[dict]:
 
 
 def main() -> int:
+    default_db = Path(__file__).resolve().parents[4] / "data" / "databases" / "pipeline.db"
     parser = argparse.ArgumentParser(description="将 JSONL 状态迁移到 SQLite")
     parser.add_argument("--resources-jsonl", required=True, help="crawler_resources.jsonl 路径")
     parser.add_argument("--results-jsonl", required=True, help="test_results.jsonl 路径")
-    parser.add_argument("--db-path", default="pipeline.db", help="SQLite 数据库路径")
+    parser.add_argument("--db-path", default=str(default_db), help="SQLite 数据库路径")
     parser.add_argument("--crawler-output", default=None, help="ResourceCrawler output 目录 (用于补充 resource_file)")
     parser.add_argument("--dry-run", action="store_true", help="只报告，不写入")
     args = parser.parse_args()
@@ -253,6 +257,12 @@ def main() -> int:
         description_main = row.get("description_main", "")
         description_detail = row.get("description_detail", "")
         description_full = row.get("description_full", "")
+        usage_space = row.get("usage_space", "")
+        usage_category = row.get("usage_category", "")
+        usage_subcategories = row.get("usage_subcategories") if isinstance(row.get("usage_subcategories"), list) else []
+        usage_classification_reason = row.get("usage_classification_reason", "")
+        usage_classification_suggestion = row.get("usage_classification_suggestion") if isinstance(row.get("usage_classification_suggestion"), dict) else {}
+        usage_classification_version = row.get("usage_classification_version", "")
 
         if not description_full.strip():
             continue
@@ -292,6 +302,12 @@ def main() -> int:
                 detail_content=description_detail,
                 full_description=description_full,
                 prompt_version="migrated",
+                usage_space=usage_space,
+                usage_category=usage_category,
+                usage_subcategories=usage_subcategories,
+                usage_classification_reason=usage_classification_reason,
+                usage_classification_suggestion=usage_classification_suggestion,
+                usage_classification_version=usage_classification_version,
             )
             cache.update_task_state(task_id, ProcessState.DESCRIPTION_READY)
             migrated_desc += 1

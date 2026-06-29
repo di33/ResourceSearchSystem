@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, Form
 from pydantic import BaseModel
@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 class FileInfoIn(BaseModel):
     file_name: str
+    file_path: str = ""
     file_size: int
     file_format: str
     content_md5: str
@@ -80,6 +81,12 @@ class CommitBody(BaseModel):
     description_main: str
     description_detail: str
     description_full: str
+    usage_space: str = ""
+    usage_category: str = ""
+    usage_subcategories: List[str] = []
+    usage_classification_reason: str = ""
+    usage_classification_suggestion: dict[str, Any] = {}
+    usage_classification_version: str = ""
     idempotency_key: str = ""
 
 
@@ -124,6 +131,12 @@ class ResourceDescriptionOut(BaseModel):
     main_content: str
     detail_content: str
     full_description: str
+    usage_space: str = ""
+    usage_category: str = ""
+    usage_subcategories: List[str] = []
+    usage_classification_reason: str = ""
+    usage_classification_suggestion: dict[str, Any] = {}
+    usage_classification_version: str = ""
 
 
 class ResourceEmbeddingOut(BaseModel):
@@ -234,6 +247,16 @@ def _loads_json_list(raw: Optional[str]) -> list[str]:
     return [str(v) for v in value] if isinstance(value, list) else []
 
 
+def _loads_json_dict(raw: Optional[str]) -> dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -246,7 +269,7 @@ async def register_resource(body: RegisterBody, session: AsyncSession = Depends(
     client = _build_client(session)
     file_infos = [
         FileInfo(
-            file_path=f.file_name,
+            file_path=f.file_path or f.file_name,
             file_name=f.file_name,
             file_size=f.file_size,
             file_format=f.file_format,
@@ -333,19 +356,6 @@ async def upload_files_batch(
                 error_message=f"Failed to upload {filename}: {result.error_message}",
             )
 
-        # MD5 validation via S3 ETag (more reliable than tracking reads)
-        expected_md5 = registered_files.get(filename)
-        if expected_md5 and result.s3_etag:
-            # S3 ETag for non-multipart uploads is the MD5 of the content
-            s3_md5 = result.s3_etag.strip('"').split("-")[0]
-            if s3_md5 and len(s3_md5) == 32 and s3_md5 != expected_md5:
-                await session.commit()
-                return UploadBatchOut(
-                    success=False,
-                    uploaded_bytes=total_uploaded,
-                    file_count=uploaded_file_count,
-                    error_message=f"MD5 mismatch for {filename}: expected={expected_md5}, actual={s3_md5}",
-                )
         total_uploaded += result.uploaded_bytes
         uploaded_file_count += 1
 
@@ -450,6 +460,12 @@ async def commit_resource(
         description_main=body.description_main,
         description_detail=body.description_detail,
         description_full=body.description_full,
+        usage_space=body.usage_space,
+        usage_category=body.usage_category,
+        usage_subcategories=body.usage_subcategories,
+        usage_classification_reason=body.usage_classification_reason,
+        usage_classification_suggestion=body.usage_classification_suggestion,
+        usage_classification_version=body.usage_classification_version,
         idempotency_key=body.idempotency_key,
     )
     resp = await client.commit(req)
@@ -554,6 +570,12 @@ async def get_resource_detail(resource_id: str, session: AsyncSession = Depends(
             main_content=d.main_content,
             detail_content=d.detail_content,
             full_description=d.full_description,
+            usage_space=d.usage_space,
+            usage_category=d.usage_category,
+            usage_subcategories=_loads_json_list(d.usage_subcategories_json),
+            usage_classification_reason=d.usage_classification_reason,
+            usage_classification_suggestion=_loads_json_dict(d.usage_classification_suggestion_json),
+            usage_classification_version=d.usage_classification_version,
         )
     embed = None
     if task.embeddings:

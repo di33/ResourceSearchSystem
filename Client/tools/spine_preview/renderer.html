@@ -1,0 +1,235 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #f6f7f9;
+  }
+  canvas {
+    display: block;
+  }
+</style>
+<canvas id="canvas"></canvas>
+<script src="/vendor/spine-webgl-3.8.js"></script>
+<script>
+(async function () {
+  const params = new URLSearchParams(location.search);
+  const width = Number(params.get("width") || 768);
+  const height = Number(params.get("height") || 768);
+  const frameCount = Number(params.get("frames") || 5);
+  const singleAnimation = params.get("animation");
+  const singleTime = Number(params.get("time") || 0);
+  const canvas = document.getElementById("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+
+  const sleepFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+  const encodeCanvas = (source) => source.toDataURL("image/png");
+
+  function fail(error) {
+    window.__spinePreviewError = error && error.stack || String(error);
+    console.error(window.__spinePreviewError);
+  }
+
+  function animationDuration(animation) {
+    if (typeof animation.duration === "number") return animation.duration;
+    let max = 0;
+    for (const timeline of animation.timelines || []) {
+      const frames = timeline.frames;
+      if (frames && frames.length) max = Math.max(max, frames[frames.length - 1]);
+    }
+    return max || 1;
+  }
+
+  function skeletonBounds(skeleton, state, animation, time) {
+    skeleton.setToSetupPose();
+    const entry = state.setAnimation(0, animation.name, false);
+    entry.trackTime = time;
+    entry.animationLast = 0;
+    state.update(0);
+    state.apply(skeleton);
+    skeleton.updateWorldTransform();
+    const offset = new spine.Vector2();
+    const size = new spine.Vector2();
+    skeleton.getBounds(offset, size, []);
+    return { x: offset.x, y: offset.y, width: size.x, height: size.y };
+  }
+
+  function combinedBounds(skeleton, state, animation, times) {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const time of times) {
+      const b = skeletonBounds(skeleton, state, animation, time);
+      if (!isFinite(b.width) || !isFinite(b.height) || b.width <= 0 || b.height <= 0) continue;
+      minX = Math.min(minX, b.x);
+      minY = Math.min(minY, b.y);
+      maxX = Math.max(maxX, b.x + b.width);
+      maxY = Math.max(maxY, b.y + b.height);
+    }
+    if (!isFinite(minX) || !isFinite(minY) || maxX <= minX || maxY <= minY) {
+      return { x: -width / 4, y: -height / 4, width: width / 2, height: height / 2 };
+    }
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  }
+
+  function clear(gl) {
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.clearColor(246 / 255, 247 / 255, 249 / 255, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+
+  function fitCamera(sceneRenderer, bounds) {
+    const pad = Math.max(bounds.width, bounds.height) * 0.14 + 12;
+    const viewW = Math.max(1, bounds.width + pad * 2);
+    const viewH = Math.max(1, bounds.height + pad * 2);
+    sceneRenderer.camera.viewportWidth = viewW;
+    sceneRenderer.camera.viewportHeight = viewH;
+    sceneRenderer.camera.position.x = bounds.x + bounds.width / 2;
+    sceneRenderer.camera.position.y = bounds.y + bounds.height / 2;
+    sceneRenderer.camera.update();
+  }
+
+  function drawFrame(gl, sceneRenderer, skeletonRenderer, skeleton, state, animation, time, bounds) {
+    clear(gl);
+    skeleton.setToSetupPose();
+    const entry = state.setAnimation(0, animation.name, false);
+    entry.trackTime = time;
+    entry.animationLast = 0;
+    state.update(0);
+    state.apply(skeleton);
+    skeleton.updateWorldTransform();
+    fitCamera(sceneRenderer, bounds);
+    sceneRenderer.batcherShader.bind();
+    sceneRenderer.batcherShader.setUniform4x4f(spine.webgl.Shader.MVP_MATRIX, sceneRenderer.camera.projectionView.values);
+    sceneRenderer.batcherShader.setUniformi("u_texture", 0);
+    sceneRenderer.batcher.begin(sceneRenderer.batcherShader);
+    skeletonRenderer.draw(sceneRenderer.batcher, skeleton);
+    sceneRenderer.batcher.end();
+  }
+
+  function makeSheet(frames) {
+    const cols = frames.length;
+    const thumbW = 240;
+    const thumbH = 240;
+    const gap = 10;
+    const sheet = document.createElement("canvas");
+    sheet.width = cols * thumbW + (cols + 1) * gap;
+    sheet.height = thumbH + gap * 2;
+    const ctx = sheet.getContext("2d");
+    ctx.fillStyle = "#f6f7f9";
+    ctx.fillRect(0, 0, sheet.width, sheet.height);
+    return Promise.all(frames.map((dataUrl) => new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => {
+        const idx = frames.indexOf(dataUrl);
+        const scale = Math.min(thumbW / image.width, thumbH / image.height);
+        const w = Math.round(image.width * scale);
+        const h = Math.round(image.height * scale);
+        const x = gap + idx * (thumbW + gap) + Math.floor((thumbW - w) / 2);
+        const y = gap + Math.floor((thumbH - h) / 2);
+        ctx.drawImage(image, x, y, w, h);
+        resolve();
+      };
+      image.onerror = reject;
+      image.src = dataUrl;
+    }))).then(() => encodeCanvas(sheet));
+  }
+
+  async function loadAssets(gl) {
+    const assetManager = new spine.webgl.AssetManager(gl);
+    assetManager.loadText("skeleton.json");
+    assetManager.loadTextureAtlas("skeleton.atlas");
+    while (!assetManager.isLoadingComplete()) {
+      await sleepFrame();
+    }
+    if (assetManager.hasErrors && assetManager.hasErrors()) {
+      throw new Error("Spine asset load failed: " + JSON.stringify(assetManager.getErrors()));
+    }
+    const atlas = assetManager.get("skeleton.atlas");
+    const atlasLoader = new spine.AtlasAttachmentLoader(atlas);
+    const skeletonJson = new spine.SkeletonJson(atlasLoader);
+    const skeletonData = skeletonJson.readSkeletonData(assetManager.get("skeleton.json"));
+    return skeletonData;
+  }
+
+  try {
+    if (!window.spine || !spine.webgl) throw new Error("spine-webgl runtime not loaded");
+    const gl = canvas.getContext("webgl", {
+      alpha: false,
+      premultipliedAlpha: false,
+      preserveDrawingBuffer: true,
+      antialias: true,
+    }) || canvas.getContext("experimental-webgl", {
+      alpha: false,
+      premultipliedAlpha: false,
+      preserveDrawingBuffer: true,
+      antialias: true,
+    });
+    if (!gl) throw new Error("WebGL context unavailable");
+
+    const skeletonData = await loadAssets(gl);
+    const skeleton = new spine.Skeleton(skeletonData);
+    const stateData = new spine.AnimationStateData(skeleton.data);
+    const state = new spine.AnimationState(stateData);
+    const sceneRenderer = new spine.webgl.SceneRenderer(canvas, gl, true);
+    const skeletonRenderer = new spine.webgl.SkeletonRenderer(gl, true);
+    skeletonRenderer.premultipliedAlpha = false;
+
+    const animations = [];
+    if (singleAnimation) {
+      const animation = skeletonData.animations.find((item) => item.name === singleAnimation);
+      if (!animation) throw new Error("Animation not found: " + singleAnimation);
+      const duration = animationDuration(animation);
+      const times = [];
+      const samples = Math.max(3, frameCount);
+      for (let i = 0; i < samples; i++) {
+        times.push(samples === 1 ? 0 : (duration * i) / samples);
+      }
+      times.push(Math.max(0, Math.min(duration, singleTime)));
+      const bounds = combinedBounds(skeleton, state, animation, times);
+      drawFrame(gl, sceneRenderer, skeletonRenderer, skeleton, state, animation, singleTime, bounds);
+      window.__spinePreviewResult = { skeletonName: skeletonData.name || "", animations: [{ name: animation.name, duration }] };
+      document.body.setAttribute("data-ready", "1");
+      console.log("SPINE_FRAME_READY", animation.name, singleTime);
+      return;
+    }
+
+    for (const animation of skeletonData.animations) {
+      const duration = animationDuration(animation);
+      const times = [];
+      for (let i = 0; i < frameCount; i++) {
+        const t = frameCount === 1 ? 0 : (duration * i) / frameCount;
+        times.push(Math.max(0, Math.min(duration, t)));
+      }
+      const bounds = combinedBounds(skeleton, state, animation, times);
+      const frames = [];
+      for (const time of times) {
+        drawFrame(gl, sceneRenderer, skeletonRenderer, skeleton, state, animation, time, bounds);
+        await sleepFrame();
+        frames.push(encodeCanvas(canvas));
+      }
+      animations.push({
+        name: animation.name,
+        duration,
+        frames,
+        sheet: await makeSheet(frames),
+      });
+    }
+
+    window.__spinePreviewResult = {
+      skeletonName: skeletonData.name || "",
+      animations,
+    };
+    console.log("SPINE_PREVIEW_READY", animations.length);
+  } catch (error) {
+    fail(error);
+  }
+})();
+</script>

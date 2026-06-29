@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,9 @@ from ResourceProcessor.crawler.catalog_loader import CrawlerAssetRecord, Crawler
 from ResourceProcessor.description.description_generator import DescriptionInput
 from ResourceProcessor.preview_metadata import FileInfo, ResourceProcessingEntity
 
+AUDIO_EXTS = {".ogg", ".wav", ".mp3", ".flac"}
+MAX_AUDIO_DESCRIPTION_SAMPLES = 8
+
 
 def _md5_file(path: str) -> str:
     hasher = hashlib.md5()
@@ -18,6 +22,17 @@ def _md5_file(path: str) -> str:
         for chunk in iter(lambda: f.read(8192), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def _md5_file_cached(path: str, file_md5_cache: dict[str, str] | None = None) -> str:
+    if file_md5_cache is None:
+        return _md5_file(path)
+    key = os.path.abspath(path)
+    digest = file_md5_cache.get(key)
+    if digest is None:
+        digest = _md5_file(path)
+        file_md5_cache[key] = digest
+    return digest
 
 
 def compute_resource_fingerprint(record: CrawlerResourceRecord) -> str:
@@ -92,7 +107,69 @@ def _build_file_role(record: CrawlerResourceRecord, abs_path: str) -> tuple[str,
     return "attachment", is_first
 
 
-def build_processing_entity(record: CrawlerResourceRecord) -> ResourceProcessingEntity:
+def _audio_group_key(path: str) -> str:
+    stem = Path(path).stem.lower()
+    stem = re.sub(r"[\s_\-]+(?:\d{1,4}|[a-z])$", "", stem)
+    stem = re.sub(r"[\s_\-]+(?:\d{1,4}|[a-z])$", "", stem)
+    stem = re.sub(r"[\s_\-]+", " ", stem).strip()
+    return stem or Path(path).stem.lower()
+
+
+def _audio_files(entity: ResourceProcessingEntity) -> list[FileInfo]:
+    return sorted(
+        [
+            file_info
+            for file_info in entity.files
+            if file_info.file_path and Path(file_info.file_path).suffix.lower() in AUDIO_EXTS
+        ],
+        key=lambda item: _natural_description_key(item.file_path),
+    )
+
+
+def _natural_description_key(value: str) -> list[tuple[int, object]]:
+    parts: list[tuple[int, object]] = []
+    chunk = ""
+    is_digit = False
+    for ch in Path(str(value)).name.lower():
+        if ch.isdigit():
+            if chunk and not is_digit:
+                parts.append((1, chunk))
+                chunk = ""
+            chunk += ch
+            is_digit = True
+        else:
+            if chunk and is_digit:
+                parts.append((0, int(chunk)))
+                chunk = ""
+            chunk += ch
+            is_digit = False
+    if chunk:
+        parts.append((0, int(chunk)) if is_digit else (1, chunk))
+    return parts
+
+
+def _is_pure_audio_pack(entity: ResourceProcessingEntity) -> bool:
+    return entity.resource_type == "pack" and set(entity.contains_resource_types or []) == {"audio_file"}
+
+
+def _representative_audio_paths(entity: ResourceProcessingEntity, limit: int = MAX_AUDIO_DESCRIPTION_SAMPLES) -> tuple[list[str], dict[str, int]]:
+    audio_files = _audio_files(entity)
+    group_counts: Counter[str] = Counter(_audio_group_key(item.file_path) for item in audio_files)
+    representatives: dict[str, str] = {}
+    for item in audio_files:
+        group = _audio_group_key(item.file_path)
+        representatives.setdefault(group, item.file_path)
+
+    ordered_groups = sorted(group_counts, key=lambda group: (-group_counts[group], _natural_description_key(group)))
+    sample_paths = [representatives[group] for group in ordered_groups[:limit] if group in representatives]
+    return sample_paths, dict(sorted(group_counts.items(), key=lambda item: (-item[1], _natural_description_key(item[0]))))
+
+
+def build_processing_entity(
+    record: CrawlerResourceRecord,
+    *,
+    file_md5_cache: dict[str, str] | None = None,
+) -> ResourceProcessingEntity:
     files: list[FileInfo] = []
     preferred_rel = _prefer_primary_relative_path(record)
     preferred_name = Path(preferred_rel).name.lower()
@@ -109,7 +186,7 @@ def build_processing_entity(record: CrawlerResourceRecord) -> ResourceProcessing
                 file_name=file_name,
                 file_size=os.path.getsize(abs_path),
                 file_format=ext,
-                content_md5=_md5_file(abs_path),
+                content_md5=_md5_file_cached(abs_path, file_md5_cache),
                 file_role=file_role,
                 is_primary=is_primary,
             )
@@ -170,29 +247,58 @@ def build_processing_entity(record: CrawlerResourceRecord) -> ResourceProcessing
 
 
 def build_description_input(entity: ResourceProcessingEntity) -> DescriptionInput:
-    preview = entity.previews[0] if entity.previews else None
+    preview = next((item for item in reversed(entity.previews) if item.role == "primary"), None)
+    if preview is None and entity.previews:
+        preview = entity.previews[-1]
+    preview_paths: list[str] = []
+    if preview and preview.path:
+        preview_paths.append(preview.path)
+    for item in entity.previews:
+        if item.role != "gallery" or not item.path or item.path in preview_paths:
+            continue
+        preview_paths.append(item.path)
     primary_file = entity.primary_file
     asset_formats = entity.auxiliary_metadata.get("asset_formats", [])
     missing_count = len(entity.missing_files)
     denominator = entity.member_count or max(len(entity.files) + missing_count, 1)
     llm_input_path = preview.path if preview and preview.path else ""
+    llm_input_paths: list[str] = []
+    audio_groups: dict[str, int] = {}
     llm_input_type = "image"
     if entity.resource_type == "audio_file" and primary_file and primary_file.file_path:
         llm_input_path = primary_file.file_path
+        llm_input_paths = [primary_file.file_path]
         llm_input_type = "audio"
+    elif _is_pure_audio_pack(entity):
+        audio_paths, audio_groups = _representative_audio_paths(entity)
+        if audio_paths:
+            llm_input_path = audio_paths[0]
+            llm_input_paths = audio_paths
+        else:
+            audio_groups = {}
+        llm_input_type = "audio"
+
+    auxiliary_metadata = {
+        "format": ", ".join(asset_formats) if asset_formats else (entity.files[0].file_format if entity.files else "unknown"),
+        "file_count": len(entity.files),
+        "member_count": entity.member_count,
+        "missing_file_count": missing_count,
+        "styles": entity.auxiliary_metadata.get("styles", {}),
+        "themes": entity.auxiliary_metadata.get("themes", {}),
+    }
+    if audio_groups:
+        auxiliary_metadata["audio_group_count"] = len(audio_groups)
+        auxiliary_metadata["audio_groups"] = audio_groups
+        auxiliary_metadata["representative_audio_files"] = [Path(path).name for path in llm_input_paths]
+
     return DescriptionInput(
         preview_path=preview.path if preview and preview.path else "",
+        preview_paths=preview_paths,
         resource_type=entity.resource_type,
         preview_strategy=preview.strategy.value if preview else "none",
-        auxiliary_metadata={
-            "format": ", ".join(asset_formats) if asset_formats else (entity.files[0].file_format if entity.files else "unknown"),
-            "file_count": len(entity.files),
-            "member_count": entity.member_count,
-            "missing_file_count": missing_count,
-            "styles": entity.auxiliary_metadata.get("styles", {}),
-            "themes": entity.auxiliary_metadata.get("themes", {}),
-        },
+        auxiliary_metadata=auxiliary_metadata,
         llm_input_path=llm_input_path,
+        llm_input_paths=llm_input_paths,
         llm_input_type=llm_input_type,
         title=entity.title,
         pack_name=entity.pack_name,
@@ -203,6 +309,7 @@ def build_description_input(entity: ResourceProcessingEntity) -> DescriptionInpu
         category=entity.category,
         member_count=entity.member_count,
         asset_formats=asset_formats,
+        source_file_path=primary_file.file_path if primary_file and primary_file.file_path else "",
         preview_mode=preview.mode if preview else "none",
         preview_confidence=preview.confidence if preview else "low",
         missing_file_ratio=missing_count / float(denominator),

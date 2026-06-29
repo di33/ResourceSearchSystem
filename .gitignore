@@ -6,14 +6,39 @@ __pycache__/
 # C extensions
 *.so
 
-# Runtime logs
+# Runtime logs and local databases
+*.log
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
 integrity_check.log
 
-# Local environment and editor state
-.env
+# Local secret overrides and editor state
+.env.local
+.env.*.local
 .vscode/
+.npm-cache/
+.venv/
+.uv-cache/
+.uv-python/
 
 # Test working directories and generated resources
 test_workdir/
 test_workdir_*/
 test_resources/
+.analysis_tmp/
+preview_by_type*/
+preview_refresh_status*/
+client_resource_summary_assets/
+client_resource_summary.md
+client_resource_report.docx
+latest_preview_refresh_status_dir.txt
+upload_log.txt
+_qa_*
+_startprocess_test.*.log
+tmpclaude-*-cwd
+
+# Runtime data and generated reports
+data/*
+!data/README.md
