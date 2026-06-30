@@ -317,7 +317,7 @@ async def register_resource(body: RegisterBody, session: AsyncSession = Depends(
 @router.post("/{resource_id}/upload-batch", response_model=UploadBatchOut)
 async def upload_files_batch(
     resource_id: str,
-    files: List[UploadFile] = File(...),
+    files: Optional[List[UploadFile]] = File(None),
     download_file: Optional[UploadFile] = File(None),
     session: AsyncSession = Depends(get_db),
 ):
@@ -339,7 +339,7 @@ async def upload_files_batch(
 
     total_uploaded = 0
     uploaded_file_count = 0
-    for file in files:
+    for file in files or []:
         filename = file.filename or "upload"
         result = await client.upload_file_obj(
             resource_id,

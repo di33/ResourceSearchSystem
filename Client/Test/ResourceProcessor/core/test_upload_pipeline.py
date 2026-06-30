@@ -183,6 +183,7 @@ def test_upload_pipeline_uploads_gallery_preview_roles(monkeypatch, tmp_path):
         ],
     )
 
+    upload_files_payloads = []
     preview_uploads = []
 
     def fake_get(url, timeout):
@@ -192,6 +193,7 @@ def test_upload_pipeline_uploads_gallery_preview_roles(monkeypatch, tmp_path):
         if url.endswith("/register"):
             return _FakeResponse({"resource_id": "res-1", "exists": False, "upload_mode": "direct", "multipart_chunk_size": 0, "state": "registered"})
         if url.endswith("/upload-batch"):
+            upload_files_payloads.append(kwargs["files"])
             return _FakeResponse({"success": True, "file_count": 1, "uploaded_bytes": 1})
         if url.endswith("/previews"):
             preview_uploads.append(
@@ -221,6 +223,8 @@ def test_upload_pipeline_uploads_gallery_preview_roles(monkeypatch, tmp_path):
     )
 
     assert summary.success_count == 1
+    assert [entry[0] for entry in upload_files_payloads[0]] == ["download_file"]
+    assert upload_files_payloads[0][0][1][0].endswith(".zip")
     assert preview_uploads == [
         {
             "data": {"roles": "primary,gallery"},

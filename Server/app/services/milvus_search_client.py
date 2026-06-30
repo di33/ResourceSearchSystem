@@ -549,7 +549,6 @@ class MilvusSearchClient(BaseSearchClient):
         parent_rids = {t.parent_resource_id for t in tasks_raw if t.parent_resource_id}
         parent_tasks_by_rid: dict[str, ResourceTask] = {}
         parent_previews_by_task: dict[int, list] = {}
-        parent_files_by_task: dict[int, list] = {}
         if parent_rids:
             parent_tasks_raw = (
                 await self.session.execute(
@@ -566,12 +565,6 @@ class MilvusSearchClient(BaseSearchClient):
                     )
                 ).scalars().all():
                     parent_previews_by_task.setdefault(pp.task_id, []).append(pp)
-                for pf in (
-                    await self.session.execute(
-                        select(ResourceFile).where(ResourceFile.task_id.in_(parent_task_ids))
-                    )
-                ).scalars().all():
-                    parent_files_by_task.setdefault(pf.task_id, []).append(pf)
 
         # Build results
         results: list[SearchResultItem] = []
@@ -605,7 +598,7 @@ class MilvusSearchClient(BaseSearchClient):
             file_download_url = ""
             if task.download_object_key:
                 file_download_url = self.storage.generate_presigned_download_url(task.download_object_key)
-            elif files:
+            elif files and task.resource_type != "pack":
                 primary_file = files[0]
                 file_key = primary_file.ks3_key or f"files/{rid}/{primary_file.file_name}"
                 file_download_url = self.storage.generate_presigned_download_url(file_key)
@@ -618,16 +611,10 @@ class MilvusSearchClient(BaseSearchClient):
                 parent_task = parent_tasks_by_rid.get(parent_resource_id)
                 if parent_task is not None:
                     parent_title = parent_task.title
-                    if parent_task.download_object_key:
+                    if parent_task.process_state == "committed" and parent_task.download_object_key:
                         parent_download_url = self.storage.generate_presigned_download_url(
                             parent_task.download_object_key
                         )
-                    else:
-                        parent_files = parent_files_by_task.get(parent_task.id, [])
-                        if parent_files:
-                            pf = parent_files[0]
-                            pk = pf.ks3_key or f"files/{parent_resource_id}/{pf.file_name}"
-                            parent_download_url = self.storage.generate_presigned_download_url(pk)
                     parent_previews = parent_previews_by_task.get(parent_task.id, [])
                     if parent_previews and parent_previews[0].path:
                         parent_preview_url = self.storage.generate_presigned_download_url(

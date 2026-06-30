@@ -211,7 +211,112 @@ class TestMilvusSearchClient(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.results[0].resource_id, "res-pack-001")
         self.assertEqual(response.results[0].resource_type, "pack")
         self.assertEqual(response.results[0].file_format, "fbx")
+        self.assertEqual(response.results[0].file_download_url, "")
         self.assertEqual(fake_milvus.search_calls[0]["limit"], 30)
+
+        await session.close()
+
+    async def test_search_only_returns_parent_download_for_committed_download_object(self):
+        session = self.session_factory()
+        parent = ResourceTask(
+            content_md5="md5-parent",
+            resource_type="pack",
+            source_directory="assets/pack",
+            process_state="registered",
+            resource_id="res-parent-001",
+            title="Parent Pack",
+            source_resource_id="src-parent-001",
+            idempotency_key="register-parent-001",
+        )
+        session.add(parent)
+        await session.flush()
+        session.add_all(
+            [
+                ResourceFile(
+                    task_id=parent.id,
+                    file_path="assets/pack/first.png",
+                    file_name="first.png",
+                    file_size=1024,
+                    file_format="png",
+                    content_md5="parent-file-md5",
+                    ks3_key="files/res-parent-001/first.png",
+                    is_primary=True,
+                ),
+                ResourcePreview(
+                    task_id=parent.id,
+                    strategy="contact_sheet",
+                    role="primary",
+                    path="parent.webp",
+                    format="webp",
+                ),
+            ]
+        )
+
+        child = ResourceTask(
+            content_md5="md5-child",
+            resource_type="single_image",
+            source_directory="assets/pack/child",
+            process_state="committed",
+            resource_id="res-child-001",
+            parent_resource_id="res-parent-001",
+            title="Child Image",
+            source_resource_id="src-child-001",
+            idempotency_key="register-child-001",
+        )
+        session.add(child)
+        await session.flush()
+        session.add_all(
+            [
+                ResourceDescription(
+                    task_id=child.id,
+                    main_content="child image",
+                    detail_content="detail",
+                    full_description="full",
+                ),
+                ResourceFile(
+                    task_id=child.id,
+                    file_path="assets/pack/child/image.png",
+                    file_name="image.png",
+                    file_size=256,
+                    file_format="png",
+                    content_md5="child-file-md5",
+                    ks3_key="files/res-child-001/image.png",
+                    is_primary=True,
+                ),
+            ]
+        )
+        await session.commit()
+
+        fake_milvus = _FakeMilvus(
+            [[{"distance": 0.95, "entity": {"resource_id": "res-child-001", "resource_type": "single_image"}}]]
+        )
+        client = MilvusSearchClient(fake_milvus, session, _FakeStorage())
+
+        with patch("app.services.milvus_search_client._embed_query", new=AsyncMock(return_value=[0.1, 0.2, 0.3])):
+            response = await client.search(
+                SearchRequest(query_text="child image", top_k=5, similarity_threshold=0.5)
+            )
+
+        self.assertEqual(response.total_count, 1)
+        item = response.results[0]
+        self.assertEqual(item.parent_resource_id, "res-parent-001")
+        self.assertEqual(item.parent_title, "Parent Pack")
+        self.assertEqual(item.parent_preview_url, "https://storage.local/previews/res-parent-001/parent.webp")
+        self.assertEqual(item.parent_download_url, "")
+
+        parent.process_state = "committed"
+        parent.download_object_key = "downloads/res-parent-001/parent-pack.zip"
+        await session.commit()
+
+        with patch("app.services.milvus_search_client._embed_query", new=AsyncMock(return_value=[0.1, 0.2, 0.3])):
+            response = await client.search(
+                SearchRequest(query_text="child image", top_k=5, similarity_threshold=0.5)
+            )
+
+        self.assertEqual(
+            response.results[0].parent_download_url,
+            "https://storage.local/downloads/res-parent-001/parent-pack.zip",
+        )
 
         await session.close()
 

@@ -293,11 +293,15 @@ def upload_enriched_resources(
                 package_name, package_bytes, package_content_type = package
                 download_file = ("download_file", (package_name, io.BytesIO(package_bytes), package_content_type))
 
-            # Prepare file list with valid paths
-            valid_files_info = [
-                f for f in files_info
-                if f.get("file_path") and os.path.isfile(f["file_path"])
-            ]
+            # Pack resources upload a generated download archive plus previews.
+            # Child resources already upload their own source files, so uploading
+            # the pack's expanded files again is redundant and fragile for large packs.
+            valid_files_info = []
+            if resource_type != "pack":
+                valid_files_info = [
+                    f for f in files_info
+                    if f.get("file_path") and os.path.isfile(f["file_path"])
+                ]
 
             total_file_count = 0
             total_uploaded_bytes = 0
