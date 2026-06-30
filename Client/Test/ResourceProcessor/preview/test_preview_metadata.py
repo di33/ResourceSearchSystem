@@ -28,8 +28,6 @@ def test_process_state_values():
         "description_ready",
         "description_failed",
         "classify_ready",
-        "embedding_ready",
-        "embedding_failed",
         "package_ready",
         "registered",
         "uploaded",
@@ -293,7 +291,6 @@ def test_process_state_transition_coverage():
         ProcessState.PREVIEW_READY,
         ProcessState.DESCRIPTION_READY,
         ProcessState.CLASSIFY_READY,
-        ProcessState.EMBEDDING_READY,
         ProcessState.PACKAGE_READY,
         ProcessState.REGISTERED,
         ProcessState.UPLOADED,
@@ -308,7 +305,6 @@ def test_process_state_transition_coverage():
     failure_states = {
         ProcessState.PREVIEW_FAILED,
         ProcessState.DESCRIPTION_FAILED,
-        ProcessState.EMBEDDING_FAILED,
     }
     all_states = set(happy_path) | failure_states
     assert all_states == set(ProcessState)

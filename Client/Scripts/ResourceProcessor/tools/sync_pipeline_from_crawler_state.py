@@ -76,7 +76,6 @@ ASSET_INDEX_DDL = """CREATE TABLE IF NOT EXISTS asset_index (
 RESOURCE_CHILD_TABLES = (
     "description_lease",
     "resource_description",
-    "resource_embedding",
     "resource_upload_job",
     "process_log",
 )

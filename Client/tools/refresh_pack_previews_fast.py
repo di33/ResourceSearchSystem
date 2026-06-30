@@ -19,13 +19,11 @@ PROCESS_ORDER = {
     "preview_failed": 1,
     "description_ready": 2,
     "description_failed": 2,
-    "embedding_ready": 3,
-    "embedding_failed": 3,
-    "package_ready": 4,
-    "registered": 5,
-    "uploaded": 6,
-    "committed": 7,
-    "synced": 8,
+    "package_ready": 3,
+    "registered": 4,
+    "uploaded": 5,
+    "committed": 6,
+    "synced": 7,
 }
 
 PRIORITY = {

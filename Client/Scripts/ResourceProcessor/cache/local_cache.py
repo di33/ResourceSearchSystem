@@ -113,18 +113,6 @@ class LocalCacheStore:
         """)
 
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS resource_embedding (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_id INTEGER NOT NULL REFERENCES resource_task(id),
-                dimension INTEGER NOT NULL DEFAULT 0,
-                checksum TEXT NOT NULL DEFAULT '',
-                generate_time REAL NOT NULL DEFAULT 0.0,
-                model_version TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL
-            )
-        """)
-
-        cur.execute("""
             CREATE TABLE IF NOT EXISTS resource_upload_job (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id INTEGER NOT NULL REFERENCES resource_task(id),
@@ -532,37 +520,6 @@ class LocalCacheStore:
         ).fetchone()
         return dict(row) if row else None
 
-    # ---- CRUD for resource_embedding ----
-
-    def insert_embedding(
-        self,
-        task_id: int,
-        dimension: int,
-        checksum: str,
-        generate_time: float,
-        model_version: str,
-    ) -> int:
-        conn = sqlite3.connect(self.db_path, timeout=300)
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            cur = conn.execute(
-                """INSERT INTO resource_embedding
-                   (task_id, dimension, checksum, generate_time, model_version, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (task_id, dimension, checksum, generate_time, model_version, self._now()),
-            )
-            conn.commit()
-            return cur.lastrowid
-        finally:
-            conn.close()
-
-    def get_embedding_by_task(self, task_id: int) -> Optional[dict]:
-        row = self._conn.execute(
-            "SELECT * FROM resource_embedding WHERE task_id = ? ORDER BY id DESC LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        return dict(row) if row else None
-
     # ---- process_log ----
 
     def add_log(self, task_id: int, event: str, detail: str = "") -> int:
@@ -592,7 +549,6 @@ class LocalCacheStore:
         failed_states = [
             ProcessState.PREVIEW_FAILED.value,
             ProcessState.DESCRIPTION_FAILED.value,
-            ProcessState.EMBEDDING_FAILED.value,
         ]
         placeholders = ",".join("?" * len(failed_states))
         rows = self._conn.execute(

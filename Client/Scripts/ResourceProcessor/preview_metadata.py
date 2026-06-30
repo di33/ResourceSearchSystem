@@ -38,8 +38,6 @@ class ProcessState(str, Enum):
     DESCRIPTION_READY = "description_ready"
     DESCRIPTION_FAILED = "description_failed"
     CLASSIFY_READY = "classify_ready"
-    EMBEDDING_READY = "embedding_ready"
-    EMBEDDING_FAILED = "embedding_failed"
     PACKAGE_READY = "package_ready"
     REGISTERED = "registered"
     UPLOADED = "uploaded"
@@ -122,11 +120,6 @@ class ResourceProcessingEntity:
     usage_classification_reason: str = ""
     usage_classification_suggestion: Optional[dict] = None
     usage_classification_version: str = ""
-
-    embedding_dimension: int = 0
-    embedding_checksum: str = ""
-    embedding_generate_time: float = 0.0
-    embedding_model_version: str = ""
 
     retry_count: int = 0
     last_error_code: str = ""

@@ -38,7 +38,7 @@ def _make_entity(**overrides) -> ResourceProcessingEntity:
 
 
 def _build_committed_task(store: LocalCacheStore, **entity_overrides) -> int:
-    """Insert a task and advance it to COMMITTED with description & embedding."""
+    """Insert a task and advance it to COMMITTED with a description."""
     entity = _make_entity(**entity_overrides)
     task_id = store.insert_task(entity)
     store.update_task_state(task_id, ProcessState.COMMITTED)
@@ -48,13 +48,6 @@ def _build_committed_task(store: LocalCacheStore, **entity_overrides) -> int:
         detail_content="detail",
         full_description="full",
         prompt_version="prompt_v1",
-    )
-    store.insert_embedding(
-        task_id,
-        dimension=768,
-        checksum="sha256abc",
-        generate_time=0.5,
-        model_version="mock_embed_v1",
     )
     return task_id
 
@@ -98,20 +91,6 @@ def test_check_dedup_rerun_description_on_prompt_change(tmp_path):
         config = ProcessingConfig(prompt_version="prompt_v2")
         result = check_dedup(store, "md5_prompt", config)
         assert result.decision == ReuseDecision.RERUN_DESCRIPTION
-    finally:
-        store.close()
-
-
-# ---- 4. test_check_dedup_rerun_embedding_on_model_change ----
-
-
-def test_check_dedup_rerun_embedding_on_model_change(tmp_path):
-    store = LocalCacheStore(str(tmp_path / "test.db"))
-    try:
-        _build_committed_task(store, content_md5="md5_embed")
-        config = ProcessingConfig(embedding_model_version="new_embed_v2")
-        result = check_dedup(store, "md5_embed", config)
-        assert result.decision == ReuseDecision.RERUN_EMBEDDING
     finally:
         store.close()
 
@@ -244,7 +223,6 @@ def test_get_retry_candidates_respects_max(tmp_path):
 def test_processing_config_defaults():
     config = ProcessingConfig()
     assert config.prompt_version == "prompt_v1"
-    assert config.embedding_model_version == "mock_embed_v1"
     assert config.preview_max_size == 512
     assert config.preview_format_priority == "webp"
 
@@ -256,5 +234,4 @@ def test_reuse_decision_enum_values():
     assert ReuseDecision.NEW == "new"
     assert ReuseDecision.REUSE_ALL == "reuse_all"
     assert ReuseDecision.RERUN_DESCRIPTION == "rerun_description"
-    assert ReuseDecision.RERUN_EMBEDDING == "rerun_embedding"
     assert ReuseDecision.RESUME == "resume"

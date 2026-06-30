@@ -50,7 +50,6 @@ def test_create_tables(tmp_path):
             "resource_file",
             "resource_preview",
             "resource_description",
-            "resource_embedding",
             "resource_upload_job",
             "process_log",
         ])
@@ -251,32 +250,6 @@ def test_insert_and_get_description(tmp_path):
         store.close()
 
 
-# ---- 9. test_insert_and_get_embedding ----
-
-
-def test_insert_and_get_embedding(tmp_path):
-    store = LocalCacheStore(str(tmp_path / "test.db"))
-    try:
-        task_id = store.insert_task(_make_entity())
-        eid = store.insert_embedding(
-            task_id,
-            dimension=768,
-            checksum="sha256abc",
-            generate_time=1.23,
-            model_version="clip-v2",
-        )
-        assert isinstance(eid, int)
-
-        row = store.get_embedding_by_task(task_id)
-        assert row is not None
-        assert row["dimension"] == 768
-        assert row["checksum"] == "sha256abc"
-        assert abs(row["generate_time"] - 1.23) < 1e-6
-        assert row["model_version"] == "clip-v2"
-    finally:
-        store.close()
-
-
 # ---- 10. test_add_and_get_logs ----
 
 
@@ -330,16 +303,14 @@ def test_get_failed_tasks(tmp_path):
         id1 = store.insert_task(_make_entity(content_md5="a"))
         id2 = store.insert_task(_make_entity(content_md5="b"))
         id3 = store.insert_task(_make_entity(content_md5="c"))
-        id4 = store.insert_task(_make_entity(content_md5="d"))
 
         store.update_task_state(id1, ProcessState.PREVIEW_FAILED, "E01", "err")
         store.update_task_state(id2, ProcessState.DESCRIPTION_FAILED, "E02", "err")
-        store.update_task_state(id3, ProcessState.EMBEDDING_FAILED, "E03", "err")
-        # id4 stays DISCOVERED
+        # id3 stays DISCOVERED
 
         failed = store.get_failed_tasks()
-        assert len(failed) == 3
-        assert {r["id"] for r in failed} == {id1, id2, id3}
+        assert len(failed) == 2
+        assert {r["id"] for r in failed} == {id1, id2}
     finally:
         store.close()
 

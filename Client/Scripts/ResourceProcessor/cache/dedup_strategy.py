@@ -1,8 +1,8 @@
 """Deduplication, reuse, and incremental rerun strategy.
 
 Uses content_md5 to detect duplicate resources, decides whether to fully
-reuse cached results, partially regenerate (description / embedding), or
-resume from an interrupted state.
+reuse cached results, regenerate descriptions, or resume from an interrupted
+state.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ class ReuseDecision(str, Enum):
     NEW = "new"
     REUSE_ALL = "reuse_all"
     RERUN_DESCRIPTION = "rerun_description"
-    RERUN_EMBEDDING = "rerun_embedding"
     RESUME = "resume"
 
 
@@ -28,7 +27,6 @@ class ReuseDecision(str, Enum):
 class ProcessingConfig:
     """Current processing configuration used to detect version drift."""
     prompt_version: str = "prompt_v1"
-    embedding_model_version: str = "mock_embed_v1"
     preview_max_size: int = 512
     preview_format_priority: str = "webp"
 
@@ -54,8 +52,6 @@ _RESUMABLE_STATES = frozenset({
     ProcessState.DESCRIPTION_READY,
     ProcessState.DESCRIPTION_FAILED,
     ProcessState.CLASSIFY_READY,
-    ProcessState.EMBEDDING_READY,
-    ProcessState.EMBEDDING_FAILED,
     ProcessState.PACKAGE_READY,
     ProcessState.REGISTERED,
 })
@@ -72,9 +68,8 @@ def check_dedup(
     1. No prior task with same md5 → NEW
     2. Latest task completed & config unchanged → REUSE_ALL
     3. Latest task completed but prompt_version drifted → RERUN_DESCRIPTION
-    4. Latest task completed but embedding_model_version drifted → RERUN_EMBEDDING
-    5. Latest task in intermediate / failed state → RESUME
-    6. Unrecognised state → NEW (safe fallback)
+    4. Latest task in intermediate / failed state → RESUME
+    5. Unrecognised state → NEW (safe fallback)
     """
     tasks = cache.get_tasks_by_md5(content_md5)
     if not tasks:
@@ -86,13 +81,9 @@ def check_dedup(
 
     if state in _COMPLETED_STATES:
         desc = cache.get_description_by_task(task_id)
-        embed = cache.get_embedding_by_task(task_id)
 
         prompt_changed = bool(
             desc and desc.get("prompt_version", "") != config.prompt_version
-        )
-        embed_changed = bool(
-            embed and embed.get("model_version", "") != config.embedding_model_version
         )
 
         if prompt_changed:
@@ -100,12 +91,6 @@ def check_dedup(
                 ReuseDecision.RERUN_DESCRIPTION,
                 existing_task_id=task_id,
                 reason="prompt_version 已变更",
-            )
-        if embed_changed:
-            return DedupResult(
-                ReuseDecision.RERUN_EMBEDDING,
-                existing_task_id=task_id,
-                reason="embedding_model_version 已变更",
             )
         return DedupResult(
             ReuseDecision.REUSE_ALL,
@@ -136,8 +121,6 @@ def get_resumable_tasks(cache: LocalCacheStore) -> list[dict]:
         ProcessState.DESCRIPTION_READY,
         ProcessState.DESCRIPTION_FAILED,
         ProcessState.CLASSIFY_READY,
-        ProcessState.EMBEDDING_READY,
-        ProcessState.EMBEDDING_FAILED,
         ProcessState.PACKAGE_READY,
     ):
         resumable.extend(cache.get_tasks_by_state(state))
