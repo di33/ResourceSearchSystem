@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import logging
 import mimetypes
 from typing import Optional
@@ -63,16 +62,17 @@ class KS3Storage:
 
     def upload_fileobj(self, key: str, fileobj, content_type: str = "application/octet-stream") -> tuple[int, str, str]:
         """Upload from a file-like object. Returns (content_length, etag, content_md5)."""
-        # Read content first to compute MD5, then wrap in BytesIO for boto3.
-        # This avoids issues with boto3 reading the fileobj multiple times
-        # and with file objects being closed after upload.
+        # Read content first to compute MD5 and provide ContentLength.
+        # Tencent COS rejects multipart UploadPart requests without a
+        # Content-Length header, so avoid boto3's managed multipart path here.
         data = fileobj.read()
         content_md5 = hashlib.md5(data).hexdigest()
-        self.s3.upload_fileobj(
-            Fileobj=io.BytesIO(data),
+        self.s3.put_object(
             Bucket=self.bucket,
             Key=key,
-            ExtraArgs={"ContentType": content_type},
+            Body=data,
+            ContentLength=len(data),
+            ContentType=content_type,
         )
         head = self.s3.head_object(Bucket=self.bucket, Key=key)
         logger.info("upload_fileobj %s: size=%d, content_md5=%s",
