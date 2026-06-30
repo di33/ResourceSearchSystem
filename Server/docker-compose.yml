@@ -164,6 +164,9 @@ services:
     build: ./docker/reranker
     ports:
       - "8100:8100"
+    environment:
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+      HF_HOME: /root/.cache/huggingface
     volumes:
       - huggingface_cache:/root/.cache/huggingface
     healthcheck:
