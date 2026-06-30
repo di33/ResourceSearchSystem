@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import sys
 from pathlib import Path
 
@@ -18,8 +20,27 @@ from app.services.ks3_storage import build_s3_client_config  # noqa: E402
 DEFAULT_PREFIXES = ("files/", "previews/", "downloads/")
 
 
+def _add_delete_objects_content_md5(params, **_kwargs) -> None:
+    """Add the Content-MD5 header required by Tencent COS DeleteObjects."""
+    headers = params.get("headers", {})
+    if "Content-MD5" in headers:
+        return
+
+    body = params.get("body", b"")
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    elif isinstance(body, bytearray):
+        body = bytes(body)
+    elif not isinstance(body, bytes):
+        position = body.tell()
+        body = body.read()
+        body.seek(position)
+
+    headers["Content-MD5"] = base64.b64encode(hashlib.md5(body).digest()).decode("ascii")
+
+
 def _build_client():
-    return boto3.client(
+    client = boto3.client(
         "s3",
         endpoint_url=settings.ks3_endpoint,
         aws_access_key_id=settings.ks3_access_key,
@@ -27,6 +48,8 @@ def _build_client():
         region_name=settings.ks3_region,
         config=build_s3_client_config(),
     )
+    client.meta.events.register("before-call.s3.DeleteObjects", _add_delete_objects_content_md5)
+    return client
 
 
 def _iter_objects(s3, bucket: str, prefix: str):
@@ -39,11 +62,8 @@ def _iter_objects(s3, bucket: str, prefix: str):
 
 
 def _delete_batch(s3, bucket: str, batch: list[dict[str, str]]) -> None:
-    # Tencent COS rejects S3 DeleteObjects requests unless Content-MD5 is
-    # present. Single-object delete is slower but works consistently across
-    # MinIO, AWS S3, and COS without custom request signing hooks.
-    for item in batch:
-        s3.delete_object(Bucket=bucket, Key=item["Key"])
+    if batch:
+        s3.delete_objects(Bucket=bucket, Delete={"Objects": batch, "Quiet": True})
 
 
 def main() -> int:
@@ -75,12 +95,12 @@ def main() -> int:
         "--batch-size",
         type=int,
         default=1000,
-        help="Number of objects between delete progress updates.",
+        help="Number of objects per DeleteObjects request. S3 maximum is 1000.",
     )
     args = parser.parse_args()
 
-    if args.batch_size < 1:
-        parser.error("--batch-size must be at least 1")
+    if args.batch_size < 1 or args.batch_size > 1000:
+        parser.error("--batch-size must be between 1 and 1000")
 
     bucket = settings.ks3_bucket
     if args.expect_bucket and args.expect_bucket != bucket:
