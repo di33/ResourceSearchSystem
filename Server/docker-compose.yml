@@ -15,11 +15,6 @@ services:
       DATABASE_URL: postgresql+asyncpg://resource:resource@postgres:5432/resource_upload
       MILVUS_HOST: milvus
       MILVUS_PORT: "19530"
-      KS3_ENDPOINT: http://minio:9000
-      KS3_ACCESS_KEY: minioadmin
-      KS3_SECRET_KEY: minioadmin
-      KS3_BUCKET: resources
-      KS3_ADDRESSING_STYLE: path
       SERVER_EMBEDDING_PROVIDER: ksyun
       SERVER_EMBEDDING_MODEL: qwen3-embedding-8b
       SERVER_EMBEDDING_DIMENSION: "4096"
