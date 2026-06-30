@@ -168,7 +168,7 @@ services:
       HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
       HF_HOME: /root/.cache/huggingface
     volumes:
-      - huggingface_cache:/root/.cache/huggingface
+      - ${HF_CACHE_DIR:-/data/models/huggingface}:/root/.cache/huggingface
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8100/health"]
       interval: 10s
@@ -196,4 +196,3 @@ volumes:
   etcddata:
   milvusdata:
   miniodata:
-  huggingface_cache:
