@@ -39,8 +39,11 @@ def _iter_objects(s3, bucket: str, prefix: str):
 
 
 def _delete_batch(s3, bucket: str, batch: list[dict[str, str]]) -> None:
-    if batch:
-        s3.delete_objects(Bucket=bucket, Delete={"Objects": batch, "Quiet": True})
+    # Tencent COS rejects S3 DeleteObjects requests unless Content-MD5 is
+    # present. Single-object delete is slower but works consistently across
+    # MinIO, AWS S3, and COS without custom request signing hooks.
+    for item in batch:
+        s3.delete_object(Bucket=bucket, Key=item["Key"])
 
 
 def main() -> int:
@@ -72,12 +75,12 @@ def main() -> int:
         "--batch-size",
         type=int,
         default=1000,
-        help="Number of objects per delete_objects request. S3 maximum is 1000.",
+        help="Number of objects between delete progress updates.",
     )
     args = parser.parse_args()
 
-    if args.batch_size < 1 or args.batch_size > 1000:
-        parser.error("--batch-size must be between 1 and 1000")
+    if args.batch_size < 1:
+        parser.error("--batch-size must be at least 1")
 
     bucket = settings.ks3_bucket
     if args.expect_bucket and args.expect_bucket != bucket:
