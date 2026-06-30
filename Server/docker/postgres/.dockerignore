@@ -1,0 +1,4 @@
+vendor/pg_jieba/**/.git
+vendor/pg_jieba/**/build
+vendor/pg_jieba/**/*.o
+vendor/pg_jieba/**/*.a
