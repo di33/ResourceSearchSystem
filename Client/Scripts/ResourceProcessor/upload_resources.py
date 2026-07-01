@@ -25,10 +25,13 @@ async def _upload_one(task_id, item, server, session, report, semaphore, counter
     from ResourceProcessor.core.upload_pipeline import upload_enriched_resources
     from ResourceProcessor.preview_metadata import ProcessState
 
+    last_error: dict[str, str] = {}
+
     def _report_cb(status, step, detail):
         if status == "OK":
             report.ok(step, detail)
         else:
+            last_error["message"] = f"{step}: {detail}"[:2000]
             report.fail(step, detail)
 
     async with semaphore:
@@ -47,10 +50,13 @@ async def _upload_one(task_id, item, server, session, report, semaphore, counter
             counters["skipped_desc"] += 1
         else:
             counters["failed"] += 1
+            error_message = last_error.get("message")
+            if not error_message:
+                error_message = f"success={summary.success_count} failed={summary.failed_count}"
             counters["cache"].record_task_error(
                 task_id,
                 error_code="upload_error",
-                error_message=f"success={summary.success_count} failed={summary.failed_count}",
+                error_message=error_message,
             )
         counters["processed"] += 1
         total = counters["processed"]
