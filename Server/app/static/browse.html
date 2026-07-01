@@ -604,34 +604,6 @@ function renderDetail(d) {
   }
   html += '</div>';
 
-  // Files
-  html += `<div class="section"><div class="section-title">${isPack ? 'Pack File List' : 'Files'}</div>`;
-  if (d.files && d.files.length) {
-    if (isPack) {
-      html += '<table class="file-table"><thead><tr><th>Name</th><th>Format</th><th>Size</th><th>Role</th></tr></thead><tbody>';
-    } else {
-      html += '<table class="file-table"><thead><tr><th>Name</th><th>Format</th><th>Size</th><th>Role</th><th>S3 Key</th><th></th></tr></thead><tbody>';
-    }
-    for (const f of d.files) {
-      const ks3 = f.ks3_key || '-';
-      const hasKey = !!f.ks3_key;
-      html += '<tr>';
-      html += `<td><b>${escapeHtml(f.file_name)}</b></td>`;
-      html += `<td>${escapeHtml(f.file_format)}</td>`;
-      html += `<td>${humanSize(f.file_size)}</td>`;
-      html += `<td>${escapeHtml(f.file_role)}</td>`;
-      if (!isPack) {
-        html += `<td><code style="font-size:11px;color:var(--text2)">${escapeHtml(ks3.length > 50 ? '...' + ks3.slice(-47) : ks3)}</code></td>`;
-        html += `<td>${hasKey ? '<a class="dl-link" href="' + API + '/browse/file/' + encodedRid + '/' + encodeURIComponent(f.file_name) + '" target="_blank">Download</a>' : ''}</td>`;
-      }
-      html += '</tr>';
-    }
-    html += '</tbody></table>';
-  } else {
-    html += '<div style="color:var(--text2);font-size:13px">No files</div>';
-  }
-  html += '</div>';
-
   // Description
   html += '<div class="section"><div class="section-title">Description</div>';
   if (d.description) {
@@ -661,6 +633,34 @@ function renderDetail(d) {
     html += `<div class="section"><div class="section-title" style="color:var(--red)">Last Error</div>`;
     html += `<div style="color:var(--red);font-size:13px;background:var(--bg);padding:12px;border-radius:var(--radius)">${d.last_error}</div></div>`;
   }
+
+  // Files
+  html += `<div class="section"><div class="section-title">${isPack ? 'Pack File List' : 'Files'}</div>`;
+  if (d.files && d.files.length) {
+    if (isPack) {
+      html += '<table class="file-table"><thead><tr><th>Name</th><th>Format</th><th>Size</th><th>Role</th></tr></thead><tbody>';
+    } else {
+      html += '<table class="file-table"><thead><tr><th>Name</th><th>Format</th><th>Size</th><th>Role</th><th>S3 Key</th><th></th></tr></thead><tbody>';
+    }
+    for (const f of d.files) {
+      const ks3 = f.ks3_key || '-';
+      const hasKey = !!f.ks3_key;
+      html += '<tr>';
+      html += `<td><b>${escapeHtml(f.file_name)}</b></td>`;
+      html += `<td>${escapeHtml(f.file_format)}</td>`;
+      html += `<td>${humanSize(f.file_size)}</td>`;
+      html += `<td>${escapeHtml(f.file_role)}</td>`;
+      if (!isPack) {
+        html += `<td><code style="font-size:11px;color:var(--text2)">${escapeHtml(ks3.length > 50 ? '...' + ks3.slice(-47) : ks3)}</code></td>`;
+        html += `<td>${hasKey ? '<a class="dl-link" href="' + API + '/browse/file/' + encodedRid + '/' + encodeURIComponent(f.file_name) + '" target="_blank">Download</a>' : ''}</td>`;
+      }
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+  } else {
+    html += '<div style="color:var(--text2);font-size:13px">No files</div>';
+  }
+  html += '</div>';
 
   panel.innerHTML = html;
 }
