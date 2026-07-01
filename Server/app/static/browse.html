@@ -188,6 +188,27 @@ body {
 .detail-header h2 { font-size: 20px; font-weight: 600; margin-bottom: 4px; word-break: break-all; }
 .detail-header .meta { font-size: 13px; color: var(--text2); display: flex; flex-wrap: wrap; gap: 16px; margin-top: 8px; }
 .detail-header .meta span { display: flex; align-items: center; gap: 4px; }
+.detail-header .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.download-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #fff;
+  border-radius: var(--radius);
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.download-button:hover { background: var(--accent2); }
+.download-meta {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text2);
+  font-size: 12px;
+}
 
 .section { margin-bottom: 28px; }
 .section-title {
@@ -541,27 +562,36 @@ async function selectResource(id) {
 
 function renderDetail(d) {
   const panel = document.getElementById('detail');
+  const rid = d.resource_id;
+  const encodedRid = encodeURIComponent(rid || '');
+  const isPack = d.resource_type === 'pack';
   let html = '<div class="detail-header">';
-  html += `<h2>${d.resource_id || d.content_md5}</h2>`;
+  html += `<h2>${escapeHtml(d.resource_id || d.content_md5)}</h2>`;
   html += '<div class="meta">';
-  html += `<span>Type: <b>${d.resource_type}</b></span>`;
-  html += `<span>State: <b>${d.process_state}</b></span>`;
-  html += `<span>MD5: <code style="font-size:12px">${d.content_md5}</code></span>`;
-  html += `<span>Created: ${d.created_at}</span>`;
-  html += `<span>Updated: ${d.updated_at}</span>`;
-  if (d.source_directory) html += `<span>Source: <code style="font-size:12px">${d.source_directory}</code></span>`;
-  html += '</div></div>';
+  html += `<span>Type: <b>${escapeHtml(d.resource_type)}</b></span>`;
+  html += `<span>State: <b>${escapeHtml(d.process_state)}</b></span>`;
+  html += `<span>MD5: <code style="font-size:12px">${escapeHtml(d.content_md5)}</code></span>`;
+  html += `<span>Created: ${escapeHtml(d.created_at)}</span>`;
+  html += `<span>Updated: ${escapeHtml(d.updated_at)}</span>`;
+  if (d.source_directory) html += `<span>Source: <code style="font-size:12px">${escapeHtml(d.source_directory)}</code></span>`;
+  html += '</div>';
+  if (d.download_object_key) {
+    html += '<div class="actions">';
+    html += `<a class="download-button" href="${API}/browse/download/${encodedRid}">Download ZIP</a>`;
+    html += `<span class="download-meta">${escapeHtml(d.download_file_name || 'package.zip')} · ${humanSize(d.download_file_size)}</span>`;
+    html += '</div>';
+  }
+  html += '</div>';
 
   // Previews
-  const rid = d.resource_id;
   html += '<div class="section"><div class="section-title">Previews</div>';
   if (d.previews && d.previews.length) {
     html += '<div class="preview-grid">';
     for (let i = 0; i < d.previews.length; i++) {
       const p = d.previews[i];
       html += '<div class="preview-card">';
-      html += `<img src="${API}/browse/preview/${rid}/${i}" alt="preview" loading="lazy" onerror="this.parentElement.innerHTML='<div style=\\'padding:20px;color:var(--text2);font-size:12px\\'>No preview available</div>'">`;
-      html += `<div class="label">Role: ${p.role} | Strategy: ${p.strategy}${p.format ? ' | ' + p.format : ''}${p.width ? ' | ' + p.width + 'x' + p.height : ''}</div>`;
+      html += `<img src="${API}/browse/preview/${encodedRid}/${i}" alt="preview" loading="lazy" onerror="this.parentElement.innerHTML='<div style=\\'padding:20px;color:var(--text2);font-size:12px\\'>No preview available</div>'">`;
+      html += `<div class="label">Role: ${escapeHtml(p.role)} | Strategy: ${escapeHtml(p.strategy)}${p.format ? ' | ' + escapeHtml(p.format) : ''}${p.width ? ' | ' + escapeHtml(p.width) + 'x' + escapeHtml(p.height) : ''}</div>`;
       html += '</div>';
     }
     html += '</div>';
@@ -571,19 +601,25 @@ function renderDetail(d) {
   html += '</div>';
 
   // Files
-  html += '<div class="section"><div class="section-title">Files</div>';
+  html += `<div class="section"><div class="section-title">${isPack ? 'Pack File List' : 'Files'}</div>`;
   if (d.files && d.files.length) {
-    html += '<table class="file-table"><thead><tr><th>Name</th><th>Format</th><th>Size</th><th>Role</th><th>S3 Key</th><th></th></tr></thead><tbody>';
+    if (isPack) {
+      html += '<table class="file-table"><thead><tr><th>Name</th><th>Format</th><th>Size</th><th>Role</th></tr></thead><tbody>';
+    } else {
+      html += '<table class="file-table"><thead><tr><th>Name</th><th>Format</th><th>Size</th><th>Role</th><th>S3 Key</th><th></th></tr></thead><tbody>';
+    }
     for (const f of d.files) {
       const ks3 = f.ks3_key || '-';
       const hasKey = !!f.ks3_key;
       html += '<tr>';
-      html += `<td><b>${f.file_name}</b></td>`;
-      html += `<td>${f.file_format}</td>`;
+      html += `<td><b>${escapeHtml(f.file_name)}</b></td>`;
+      html += `<td>${escapeHtml(f.file_format)}</td>`;
       html += `<td>${humanSize(f.file_size)}</td>`;
-      html += `<td>${f.file_role}</td>`;
-      html += `<td><code style="font-size:11px;color:var(--text2)">${ks3.length > 50 ? '...' + ks3.slice(-47) : ks3}</code></td>`;
-      html += `<td>${hasKey ? '<a class="dl-link" href="' + API + '/browse/file/' + rid + '/' + encodeURIComponent(f.file_name) + '" target="_blank">Download</a>' : ''}</td>`;
+      html += `<td>${escapeHtml(f.file_role)}</td>`;
+      if (!isPack) {
+        html += `<td><code style="font-size:11px;color:var(--text2)">${escapeHtml(ks3.length > 50 ? '...' + ks3.slice(-47) : ks3)}</code></td>`;
+        html += `<td>${hasKey ? '<a class="dl-link" href="' + API + '/browse/file/' + encodedRid + '/' + encodeURIComponent(f.file_name) + '" target="_blank">Download</a>' : ''}</td>`;
+      }
       html += '</tr>';
     }
     html += '</tbody></table>';

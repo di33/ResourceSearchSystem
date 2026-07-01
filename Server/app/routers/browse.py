@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import mimetypes
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -12,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_db, get_s3
 from app.config import settings
-from app.models.tables import ResourceFile, ResourceTask
+from app.models.tables import ResourceTask
 
 router = APIRouter(tags=["browse"])
 
@@ -33,6 +34,14 @@ async def _get_task(resource_id: str, session: AsyncSession) -> ResourceTask:
     if not task:
         raise HTTPException(404, f"Resource {resource_id} not found")
     return task
+
+
+def _attachment_disposition(filename: str) -> str:
+    fallback = filename.encode("ascii", "ignore").decode("ascii")
+    fallback = fallback.replace('"', "").replace("/", "_").replace("\\", "_")
+    if not fallback:
+        fallback = "download"
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"
 
 
 @router.get("/browse/preview/{resource_id}/{index}")
@@ -61,6 +70,8 @@ async def proxy_preview(resource_id: str, index: int, session: AsyncSession = De
 async def proxy_file(resource_id: str, filename: str, session: AsyncSession = Depends(get_db)):
     """Stream a resource file from S3 for download."""
     task = await _get_task(resource_id, session)
+    if task.resource_type == "pack":
+        raise HTTPException(404, "Pack members are metadata only; download the package zip")
 
     file_rec = None
     for f in task.files:
@@ -78,6 +89,27 @@ async def proxy_file(resource_id: str, filename: str, session: AsyncSession = De
 
     ct = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     return StreamingResponse(obj["Body"], media_type=ct, headers={
-        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Disposition": _attachment_disposition(filename),
+        "Cache-Control": "public, max-age=3600",
+    })
+
+
+@router.get("/browse/download/{resource_id}")
+async def proxy_download(resource_id: str, session: AsyncSession = Depends(get_db)):
+    """Stream a resource package download from S3."""
+    task = await _get_task(resource_id, session)
+    if not task.download_object_key:
+        raise HTTPException(404, "Package download not found")
+
+    s3 = get_s3()
+    try:
+        obj = s3.get_object(Bucket=settings.ks3_bucket, Key=task.download_object_key)
+    except Exception:
+        raise HTTPException(404, "Package download not found in S3")
+
+    filename = task.download_file_name or Path(task.download_object_key).name or f"{resource_id}.zip"
+    ct = task.download_content_type or obj.get("ContentType") or "application/octet-stream"
+    return StreamingResponse(obj["Body"], media_type=ct, headers={
+        "Content-Disposition": _attachment_disposition(filename),
         "Cache-Control": "public, max-age=3600",
     })
