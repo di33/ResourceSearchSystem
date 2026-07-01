@@ -72,6 +72,14 @@ class Settings(BaseSettings):
     ks3_presign_expires: int = 3600
     ks3_signature_version: str = "s3v4"
     ks3_addressing_style: str = "auto"
+    ks3_cdn_auth_enabled: bool = False
+    ks3_cdn_auth_type: str = "A"
+    ks3_cdn_auth_sign_param: str = "sign"
+    ks3_cdn_auth_expires: int = 86400
+    ks3_cdn_auth_uid: str = "0"
+    ks3_cdn_auth_rand: str = "0"
+    ks3_cdn_auth_key_primary: str = ""
+    ks3_cdn_auth_key_secondary: str = ""
 
     # JWT
     jwt_secret: str = "dev-secret-change-in-production"

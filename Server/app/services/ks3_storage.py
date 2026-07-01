@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import mimetypes
+import time
 from typing import Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import boto3
 from botocore.config import Config
@@ -15,6 +16,11 @@ from botocore.exceptions import ClientError
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _cdn_auth_type_a_signature(uri: str, timestamp: int, rand: str, uid: str, key: str) -> str:
+    raw = f"{uri}-{timestamp}-{rand}-{uid}-{key}"
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
 def build_s3_client_config() -> Config:
@@ -83,7 +89,23 @@ class KS3Storage:
 
     def generate_presigned_download_url(self, key: str, expires: int | None = None) -> str:
         if settings.ks3_cdn_endpoint:
-            return f"{settings.ks3_cdn_endpoint.rstrip('/')}/{quote(key, safe='/')}"
+            uri = f"/{quote(key, safe='/')}"
+            url = f"{settings.ks3_cdn_endpoint.rstrip('/')}{uri}"
+            if settings.ks3_cdn_auth_enabled:
+                if settings.ks3_cdn_auth_type.strip().upper() != "A":
+                    raise ValueError(f"Unsupported CDN auth type: {settings.ks3_cdn_auth_type}")
+                auth_key = settings.ks3_cdn_auth_key_primary
+                if not auth_key:
+                    raise RuntimeError("KS3_CDN_AUTH_KEY_PRIMARY is required when CDN auth is enabled")
+                ttl = expires or settings.ks3_cdn_auth_expires
+                timestamp = int(time.time()) + ttl
+                rand = settings.ks3_cdn_auth_rand or "0"
+                uid = settings.ks3_cdn_auth_uid or "0"
+                signature = _cdn_auth_type_a_signature(uri, timestamp, rand, uid, auth_key)
+                token = f"{timestamp}-{rand}-{uid}-{signature}"
+                query = urlencode({settings.ks3_cdn_auth_sign_param or "sign": token})
+                return f"{url}?{query}"
+            return url
 
         expires = expires or settings.ks3_presign_expires
         return self.presign_s3.generate_presigned_url(
