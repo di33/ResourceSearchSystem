@@ -402,9 +402,13 @@ function typeLabel(t) {
 
 function statusBadge(r) {
   if (typeof r.score === 'number') return `<span class="badge badge-ok">${r.score.toFixed(2)}</span>`;
+  if (r.process_state && r.process_state !== 'committed') {
+    return `<span class="badge badge-partial">${escapeHtml(r.process_state)}</span>`;
+  }
   if (r.has_description && r.has_embedding) return '<span class="badge badge-ok">OK</span>';
-  if (r.has_description || r.has_embedding) return '<span class="badge badge-partial">Partial</span>';
-  return '<span class="badge badge-fail">None</span>';
+  if (r.has_description && !r.has_embedding) return '<span class="badge badge-partial">No Vec</span>';
+  if (!r.has_description && r.has_embedding) return '<span class="badge badge-partial">No Desc</span>';
+  return '<span class="badge badge-fail">Missing</span>';
 }
 
 async function loadStats() {
