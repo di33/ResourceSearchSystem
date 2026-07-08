@@ -16,12 +16,32 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
-# ResourceProcessor 在 Scripts/ 下：将 Scripts 加入 path 才能 import ResourceProcessor
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_SCRIPTS_DIR)
+_REPO_ROOT = Path(_SCRIPTS_DIR).resolve().parents[1]
+_TOOLS_ROOT = _REPO_ROOT / "Tools"
+if str(_TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_ROOT))
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
+
+
+def _load_dotenv(path: Path) -> None:
+    if not path.is_file():
+        return
+    with open(path, encoding="utf-8") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
+_load_dotenv(_TOOLS_ROOT / ".env")
+_load_dotenv(_TOOLS_ROOT / ".env.local")
 
 from ResourceProcessor.core.deps import ensure_requirements  # noqa: E402
 

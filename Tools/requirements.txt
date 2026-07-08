@@ -1,0 +1,8 @@
+Pillow>=10.0.0
+rectangle-packer>=2.1.0
+rectpack>=0.2.2
+fonttools>=4.0.0
+dashscope>=1.20.0
+zhipuai>=2.1.0
+requests>=2.31
+boto3>=1.35

@@ -6,10 +6,10 @@ import sys
 # that individual tests manage themselves.
 _root = os.path.dirname(os.path.abspath(__file__))
 _dotenv_paths = (
-    os.path.join(_root, "client", ".env"),
-    os.path.join(_root, "client", ".env.local"),
-    os.path.join(_root, "server", ".env"),
-    os.path.join(_root, "server", ".env.local"),
+    os.path.join(_root, "Tools", ".env"),
+    os.path.join(_root, "Tools", ".env.local"),
+    os.path.join(_root, "SearchServer", ".env"),
+    os.path.join(_root, "SearchServer", ".env.local"),
 )
 for _dotenv_path in _dotenv_paths:
     if not os.path.isfile(_dotenv_path):
@@ -27,14 +27,14 @@ for _dotenv_path in _dotenv_paths:
                 if _key not in os.environ:
                     os.environ[_key] = _val
 
-for sub in ("client/Scripts", "server/Scripts", "server"):
+for sub in ("", "Tools", "client/Scripts", "SearchServer/Scripts", "SearchServer"):
     p = os.path.join(_root, *sub.split("/"))
     if p not in sys.path:
         sys.path.insert(0, p)
 
 # Also add via pytest hook for earliest possible resolution
 def pytest_configure(config):
-    for sub in ("client/Scripts", "server/Scripts", "server"):
+    for sub in ("", "Tools", "client/Scripts", "SearchServer/Scripts", "SearchServer"):
         p = os.path.join(_root, *sub.split("/"))
         if p not in sys.path:
             sys.path.insert(0, p)

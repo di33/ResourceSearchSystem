@@ -1,4 +1,4 @@
-"""Shared utilities for the split pipeline scripts (generate_previews, generate_descriptions, upload_resources)."""
+"""Client-side utilities for ResourceProcessor pipeline commands."""
 
 from __future__ import annotations
 
@@ -10,22 +10,26 @@ from pathlib import Path
 from typing import Any
 
 
-# ---------------------------------------------------------------------------
-# Environment setup
-# ---------------------------------------------------------------------------
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_CLIENT_SCRIPTS_ROOT = _SCRIPT_DIR.parent
+_CLIENT_ROOT = _CLIENT_SCRIPTS_ROOT.parent
+_REPO_ROOT = _CLIENT_ROOT.parent
+_TOOLS_ROOT = _REPO_ROOT / "Tools"
+_DATA_ROOT = _REPO_ROOT / "data"
 
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPT_DIR)
+for path in (_CLIENT_SCRIPTS_ROOT, _REPO_ROOT, _TOOLS_ROOT):
+    text = str(path)
+    if text not in sys.path:
+        sys.path.append(text)
 
 
-def _load_dotenv(path: str) -> dict[str, str]:
+def _load_dotenv(path: Path) -> dict[str, str]:
     env: dict[str, str] = {}
-    if not os.path.isfile(path):
+    if not path.is_file():
         return env
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
+    with path.open(encoding="utf-8") as handle:
+        for raw in handle:
+            line = raw.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, _, value = line.partition("=")
@@ -36,13 +40,17 @@ def _load_dotenv(path: str) -> dict[str, str]:
 def _load_dotenv_files(*paths: Path) -> dict[str, str]:
     env: dict[str, str] = {}
     for path in paths:
-        env.update(_load_dotenv(str(path)))
+        env.update(_load_dotenv(path))
     return env
 
 
 def init_env() -> dict[str, str]:
-    client_root = Path(_SCRIPT_DIR).resolve().parents[1]
-    dotenv = _load_dotenv_files(client_root / ".env", client_root / ".env.local")
+    dotenv = _load_dotenv_files(
+        _TOOLS_ROOT / ".env",
+        _TOOLS_ROOT / ".env.local",
+        _CLIENT_ROOT / ".env",
+        _CLIENT_ROOT / ".env.local",
+    )
     for key, value in dotenv.items():
         if value and key not in os.environ:
             os.environ[key] = value
@@ -56,13 +64,6 @@ def env(key: str, fallback: str = "") -> str:
     return os.environ.get(key, _DOTENV.get(key, fallback))
 
 
-# ---------------------------------------------------------------------------
-# CLI argument parser
-# ---------------------------------------------------------------------------
-
-_CLIENT_ROOT = Path(_SCRIPT_DIR).resolve().parents[1]
-_REPO_ROOT = _CLIENT_ROOT.parent
-_DATA_ROOT = _REPO_ROOT / "data"
 _DEFAULT_CRAWLER_OUTPUT = env("CRAWLER_OUTPUT", r"K:\ResourceCrawler\output")
 _DEFAULT_CRAWLER_STATE_DB = env("CRAWLER_STATE_DB", r"G:\ResourceCrawler\data\crawler_state.db")
 
@@ -108,11 +109,6 @@ def make_arg_parser(
     return parser
 
 
-# ---------------------------------------------------------------------------
-# Report
-# ---------------------------------------------------------------------------
-
-
 class Report:
     def __init__(self, label: str = ""):
         self.label = label
@@ -142,7 +138,7 @@ class Report:
         print("\n" + "=" * 60)
         label = self.label or "流程"
         print(f"  {label}完成  耗时 {elapsed:.1f}s")
-        print(f"  通过: {sum(1 for s in self.steps if s['status'] == 'OK')}  失败: {len(self.errors)}")
+        print(f"  步骤通过: {sum(1 for s in self.steps if s['status'] == 'OK')}  失败: {len(self.errors)}")
         if self.errors:
             print("  失败详情：")
             for error in self.errors:
@@ -151,11 +147,6 @@ class Report:
         return not self.errors
 
 
-# ---------------------------------------------------------------------------
-# ProcessState ordering (alphabetical string comparison is wrong: 'd' < 'p')
-# ---------------------------------------------------------------------------
-
-# Pipeline order: earlier states < later states
 _STATE_ORDINAL: dict[str, int] = {
     "discovered": 0,
     "preview_failed": 1,
@@ -172,17 +163,14 @@ _STATE_ORDINAL: dict[str, int] = {
 
 
 def state_ge(state_a: str, state_b: str) -> bool:
-    """Return True if state_a is >= state_b in pipeline order."""
     return _STATE_ORDINAL.get(state_a, -1) >= _STATE_ORDINAL.get(state_b, -1)
 
 
 def state_lt(state_a: str, state_b: str) -> bool:
-    """Return True if state_a is < state_b in pipeline order."""
     return _STATE_ORDINAL.get(state_a, -1) < _STATE_ORDINAL.get(state_b, -1)
 
 
 def merge_cached_entity_state(entity, cached_entity):
-    """Keep fresh crawler metadata while carrying DB-generated state/results."""
     if cached_entity is None:
         return entity
     if not getattr(entity, "files", None) and getattr(cached_entity, "files", None):
@@ -214,11 +202,6 @@ def merge_cached_entity_state(entity, cached_entity):
         if hasattr(cached_entity, attr):
             setattr(entity, attr, getattr(cached_entity, attr))
     return entity
-
-
-# ---------------------------------------------------------------------------
-# Progress helper
-# ---------------------------------------------------------------------------
 
 
 def print_progress(current: int, total: int, label: str = "") -> None:

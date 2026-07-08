@@ -10,7 +10,9 @@ from ResourceProcessor.description.description_generator import (
     MockLLMProvider,
     build_description_result,
     generate_resource_description,
+    resolve_prompt_version,
 )
+from ResourceProcessor.description.description_request import build_description_request
 from ResourceProcessor.description.prompt_config import (
     get_classification_user_prompt,
     get_description_user_prompt,
@@ -281,6 +283,29 @@ def test_split_prompts_keep_description_and_classification_contexts_separate(mon
     assert "描述段：只写描述规则" not in classification_prompt
     assert "类型段：只能使用固定类型" in classification_prompt
     assert "可用分类规则" in classification_prompt
+
+
+def test_description_request_uses_pack_prompt_and_disables_media(monkeypatch):
+    monkeypatch.setenv("LLM_PACK_DESCRIPTION_PROMPT", "包描述规则：总结子资源")
+    inp = DescriptionInput(
+        preview_path="/tmp/preview.webp",
+        resource_type="pack",
+        preview_strategy="contact_sheet",
+        auxiliary_metadata={"format": "png"},
+        prompt_context_override="包上下文",
+        description_prompt_env="LLM_PACK_DESCRIPTION_PROMPT",
+        attach_llm_media=False,
+        prompt_version_tag="pack_child_embedding_summary_v1",
+    )
+
+    request = build_description_request(inp)
+
+    assert request.context == "包上下文"
+    assert request.llm_input_paths == []
+    assert request.user_prompt == "包描述规则：总结子资源\n\n资源上下文：\n包上下文"
+    assert resolve_prompt_version("ksyun_v2_split", inp) == (
+        "ksyun_v2_split+pack_child_embedding_summary_v1"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -8,157 +8,26 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
-import re
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from ResourceProcessor.pipeline_common import (
     Report,
+    env,
     make_arg_parser,
     print_progress,
     state_ge,
 )
+from resource_contracts.resource_types import (
+    ANIMATION_SEQUENCE_RESOURCE_TYPE,
+    PACK_RESOURCE_TYPE,
+    SINGLE_IMAGE_RESOURCE_TYPE,
+    is_search_indexable_resource_type,
+)
 
-
-PACK_CHILD_PRIORITY = {
-    "tiled_map": 5,
-    "atlas": 10,
-    "spine_skeleton": 15,
-    "tileset": 20,
-    "animation_sequence": 30,
-    "font_file": 40,
-    "audio_file": 50,
-    "single_image": 70,
-}
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".svg"}
 PREVIEW_FILE_EXTS = IMAGE_EXTS | {".avif"}
-ATLAS_EXTS = {".xml", ".json"}
-TILESET_EXTS = {".tsx"}
-OVERVIEW_DIR_NAMES = {"overview", "overviews", "preview", "previews", "sample", "samples", "cover", "covers"}
-OVERVIEW_EXACT_STEMS = {"overview", "preview", "sample", "cover", "spritesheet", "tilesheet", "tilemap", "sheet"}
-OVERVIEW_SUFFIX_STEMS = ("spritesheet", "tilesheet", "tilemap")
-
-
-def _name_keys(value: str) -> set[str]:
-    text = str(value or "").replace("\\", "/").strip()
-    if not text:
-        return set()
-    name = Path(text).name.lower()
-    stem = Path(name).stem.lower()
-    compact = re.sub(r"[\s_\-]+", "", stem)
-    keys = {name, stem}
-    if compact:
-        keys.add(compact)
-    return {key for key in keys if key}
-
-
-def _json_reference_keys(value) -> set[str]:
-    keys: set[str] = set()
-    interesting = {"name", "filename", "file", "source", "image", "imagepath", "image_path"}
-    if isinstance(value, dict):
-        for key, child in value.items():
-            key_text = str(key)
-            if "." in key_text or "/" in key_text or "\\" in key_text:
-                keys.update(_name_keys(key_text))
-            if key_text.lower() in interesting and isinstance(child, str):
-                keys.update(_name_keys(child))
-            keys.update(_json_reference_keys(child))
-    elif isinstance(value, list):
-        for child in value:
-            keys.update(_json_reference_keys(child))
-    return keys
-
-
-def _metadata_reference_keys(file_path: str) -> set[str]:
-    path = Path(file_path)
-    ext = path.suffix.lower()
-    keys: set[str] = set()
-    try:
-        if ext == ".json":
-            keys.update(_json_reference_keys(json.loads(path.read_text(encoding="utf-8"))))
-        elif ext in ATLAS_EXTS or ext in TILESET_EXTS:
-            root = ET.parse(path).getroot()
-            for elem in root.iter():
-                for attr in ("name", "source", "image", "imagePath", "imagepath", "file", "filename"):
-                    if elem is root and attr.lower() in {"source", "image", "imagepath", "image_path"}:
-                        continue
-                    value = elem.attrib.get(attr, "")
-                    if value:
-                        keys.update(_name_keys(value))
-    except Exception:
-        return set()
-    return keys
-
-
-def _resource_file_keys(files: list[dict]) -> set[str]:
-    keys: set[str] = set()
-    for file_info in files:
-        keys.update(_name_keys(file_info.get("file_name") or file_info.get("file_path") or ""))
-    return keys
-
-
-def _raster_source_paths(files: list[dict]) -> list[str]:
-    paths: list[str] = []
-    for file_info in files:
-        file_path = str(file_info.get("file_path") or "")
-        if file_path and Path(file_path).suffix.lower() in IMAGE_EXTS and Path(file_path).is_file():
-            paths.append(file_path)
-    return paths
-
-
-def _coverage_keys(resource_type: str, files: list[dict]) -> set[str]:
-    keys: set[str] = set()
-    for file_info in files:
-        file_path = file_info.get("file_path") or ""
-        if not file_path:
-            continue
-        ext = Path(file_path).suffix.lower()
-        if resource_type == "atlas" and ext in ATLAS_EXTS:
-            keys.update(_metadata_reference_keys(file_path))
-        elif resource_type == "tileset" and ext in TILESET_EXTS:
-            keys.update(_metadata_reference_keys(file_path))
-        elif resource_type in {"tileset", "animation_sequence"} and ext in IMAGE_EXTS:
-            keys.update(_name_keys(file_info.get("file_name") or file_path))
-
-    if not keys and resource_type in {"tileset", "animation_sequence"}:
-        keys.update(_resource_file_keys(files))
-    return keys
-
-
-def _is_overview_single_image(child: dict, files: list[dict], single_image_count: int) -> bool:
-    if child["resource_type"] != "single_image" or single_image_count < 8:
-        return False
-    parts = [
-        child.get("resource_path", ""),
-        child.get("title", ""),
-        *(file_info.get("file_name", "") for file_info in files),
-    ]
-    for value in parts:
-        text = str(value or "").replace("\\", "/").lower().strip()
-        if not text:
-            continue
-        path = Path(text)
-        if any(part in OVERVIEW_DIR_NAMES for part in path.parts[:-1]):
-            return True
-        stem = path.stem
-        compact_stem = re.sub(r"[\s_\-]+", "", stem)
-        if compact_stem in OVERVIEW_EXACT_STEMS:
-            return True
-        if any(compact_stem.endswith(suffix) for suffix in OVERVIEW_SUFFIX_STEMS):
-            return True
-    return False
-
-
-def _preview_digest(path: str) -> str:
-    try:
-        import hashlib
-
-        return hashlib.md5(Path(path).read_bytes()).hexdigest()
-    except OSError:
-        return ""
 
 
 def _path_key(path: str | Path) -> str:
@@ -192,82 +61,80 @@ def _delete_old_preview_files(old_previews: list[dict], keep_paths: set[str]) ->
     return deleted, skipped
 
 
-def _latest_existing_primary_preview(cache, task_id: int) -> dict | None:
-    rows = cache._conn.execute(
-        """SELECT * FROM resource_preview
-           WHERE task_id = ? AND role = 'primary' AND path IS NOT NULL AND path <> ''
-           ORDER BY id DESC""",
-        (task_id,),
-    ).fetchall()
-    for row in rows:
-        preview = dict(row)
-        if preview.get("path") and Path(preview["path"]).is_file():
-            return preview
-    return None
+def _append_status(status_file: str, message: str) -> None:
+    if not status_file:
+        return
+    path = Path(status_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(message.rstrip() + "\n")
 
 
-def _chunks(values: list[int], size: int = 800):
-    for start in range(0, len(values), size):
-        yield values[start : start + size]
+def _preview_strategy(value: str):
+    from ResourceProcessor.preview_metadata import PreviewStrategy
+
+    try:
+        return PreviewStrategy(str(value or "static"))
+    except ValueError:
+        return PreviewStrategy.STATIC
 
 
-def _latest_existing_primary_previews(cache, task_ids: list[int]) -> dict[int, dict]:
-    previews: dict[int, dict] = {}
-    for chunk in _chunks(task_ids):
-        placeholders = ",".join("?" * len(chunk))
-        rows = cache._conn.execute(
-            f"""SELECT * FROM resource_preview
-                WHERE task_id IN ({placeholders})
-                  AND role = 'primary' AND path IS NOT NULL AND path <> ''
-                ORDER BY task_id, id DESC""",
-            chunk,
-        ).fetchall()
-        for row in rows:
-            preview = dict(row)
-            task_id = int(preview["task_id"])
-            if task_id in previews:
-                continue
-            if preview.get("path") and Path(preview["path"]).is_file():
-                previews[task_id] = preview
+def _remote_preview_infos(result: dict) -> list:
+    from ResourceProcessor.preview_metadata import PreviewInfo
+
+    previews = []
+    for item in result.get("previews") or []:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "")
+        if not path:
+            continue
+        preview_path = Path(path)
+        previews.append(
+            PreviewInfo(
+                strategy=_preview_strategy(str(item.get("strategy") or "static")),
+                role=str(item.get("role") or "primary"),
+                path=str(preview_path),
+                format=str(item.get("format") or preview_path.suffix.lstrip(".") or ""),
+                mode=str(item.get("mode") or "direct"),
+                confidence=str(item.get("confidence") or "high"),
+                width=item.get("width"),
+                height=item.get("height"),
+                size=item.get("size") or (preview_path.stat().st_size if preview_path.is_file() else None),
+                renderer=str(item.get("renderer") or "preview-renderer"),
+                used_placeholder=bool(item.get("used_placeholder") or False),
+                fail_reason=str(item.get("fail_reason") or ""),
+            )
+        )
+    if not previews:
+        raise RuntimeError("preview-renderer returned no preview files")
     return previews
 
 
-def _files_by_task(cache, task_ids: list[int]) -> dict[int, list[dict]]:
-    files: dict[int, list[dict]] = {task_id: [] for task_id in task_ids}
-    for chunk in _chunks(task_ids):
-        placeholders = ",".join("?" * len(chunk))
-        rows = cache._conn.execute(
-            f"""SELECT * FROM resource_file
-                WHERE task_id IN ({placeholders})
-                ORDER BY task_id, is_primary DESC, id""",
-            chunk,
-        ).fetchall()
-        for row in rows:
-            item = dict(row)
-            files.setdefault(int(item["task_id"]), []).append(item)
-    return files
+def _render_previews_with_remote_renderer(
+    manifest: dict,
+    *,
+    preview_renderer: str,
+    client_id: str,
+    previews_dir: str | Path,
+    api_key: str = "",
+    session=None,
+) -> list:
+    from ResourceProcessor.render_previews_via_renderer import render_preview_manifest
+
+    result = render_preview_manifest(
+        manifest,
+        preview_renderer=preview_renderer,
+        client_id=client_id,
+        output_root=Path(previews_dir),
+        api_key=api_key,
+        primary_only=False,
+        session=session,
+    )
+    return _remote_preview_infos(result)
 
 
-def _pack_child_tasks(cache, task_id: int, entity) -> list[dict]:
-    rows = []
-    if entity.source_resource_id:
-        rows = cache._conn.execute(
-            """SELECT * FROM resource_task
-               WHERE parent_resource_id = ? AND id <> ? AND resource_type <> 'pack'
-               ORDER BY id""",
-            (entity.source_resource_id, task_id),
-        ).fetchall()
-    if not rows and entity.source and entity.pack_name:
-        rows = cache._conn.execute(
-            """SELECT * FROM resource_task
-               WHERE source = ? AND pack_name = ? AND id <> ? AND resource_type <> 'pack'
-               ORDER BY id""",
-            (entity.source, entity.pack_name, task_id),
-        ).fetchall()
-    return [dict(row) for row in rows]
-
-
-def _dedupe_pack_child_previews(records: list[dict]) -> list[dict]:
+def _dedupe_pack_child_resources(records: list[dict]) -> list[dict]:
     records.sort(
         key=lambda item: (
             item["priority"],
@@ -276,22 +143,23 @@ def _dedupe_pack_child_previews(records: list[dict]) -> list[dict]:
         )
     )
     selected: list[dict] = []
-    seen_preview_digests: set[str] = set()
+    seen_resources: set[str] = set()
     covered_by_selected: set[str] = set()
 
     for record in records:
-        preview_digest = _preview_digest(record["preview_path"])
-        if preview_digest and preview_digest in seen_preview_digests:
+        resource_key = str(record.get("source_resource_id") or record.get("task_id") or "")
+        if resource_key and resource_key in seen_resources:
             continue
-        if preview_digest:
-            seen_preview_digests.add(preview_digest)
+        if resource_key:
+            seen_resources.add(resource_key)
 
         file_keys = record.pop("_file_keys", set())
         coverage = record.pop("_coverage_keys", set())
-        if record["resource_type"] == "single_image" and file_keys & covered_by_selected:
+        if record["resource_type"] == SINGLE_IMAGE_RESOURCE_TYPE and file_keys & covered_by_selected:
             continue
         if coverage and any(
-            coverage <= selected_record.get("_coverage_keys", set())
+            _pack_child_coverage_can_dedupe(selected_record, record)
+            and coverage <= selected_record.get("_coverage_keys", set())
             and selected_record["priority"] <= record["priority"]
             for selected_record in selected
         ):
@@ -308,6 +176,15 @@ def _dedupe_pack_child_previews(records: list[dict]) -> list[dict]:
         record.pop("_file_keys", None)
         cleaned.append(record)
     return cleaned
+
+
+def _pack_child_coverage_can_dedupe(selected_record: dict, record: dict) -> bool:
+    if (
+        selected_record.get("resource_type") == ANIMATION_SEQUENCE_RESOURCE_TYPE
+        and record.get("resource_type") == ANIMATION_SEQUENCE_RESOURCE_TYPE
+    ):
+        return False
+    return True
 
 
 def _natural_key(value: str) -> list[tuple[int, object]]:
@@ -332,53 +209,6 @@ def _natural_key(value: str) -> list[tuple[int, object]]:
     return parts
 
 
-def _attach_pack_child_previews(cache, task_id: int, entity) -> None:
-    if entity.resource_type != "pack":
-        return
-
-    records: list[dict] = []
-    children = _pack_child_tasks(cache, task_id, entity)
-    child_ids = [int(child["id"]) for child in children]
-    previews_by_task = _latest_existing_primary_previews(cache, child_ids)
-    files_by_task = _files_by_task(cache, child_ids)
-    single_image_count = sum(1 for child in children if child["resource_type"] == "single_image")
-    all_child_file_keys: set[str] = set()
-    for child_id in child_ids:
-        all_child_file_keys.update(_resource_file_keys(files_by_task.get(child_id, [])))
-
-    for child in children:
-        child_id = int(child["id"])
-        preview = previews_by_task.get(child_id)
-        if not preview:
-            continue
-        files = files_by_task.get(child_id, [])
-        coverage = _coverage_keys(child["resource_type"], files)
-        file_keys = _resource_file_keys(files)
-        source_paths = _raster_source_paths(files)
-        is_overview_single = _is_overview_single_image(child, files, single_image_count)
-        priority = 12 if is_overview_single else PACK_CHILD_PRIORITY.get(child["resource_type"], 100)
-        if is_overview_single:
-            coverage = set(all_child_file_keys)
-        records.append(
-            {
-                "task_id": child_id,
-                "source_resource_id": child.get("source_resource_id", ""),
-                "resource_type": child["resource_type"],
-                "title": child.get("title", ""),
-                "resource_path": child.get("resource_path", ""),
-                "preview_path": preview["path"],
-                "source_paths": source_paths[:16],
-                "preview_strategy": preview.get("strategy", ""),
-                "priority": priority,
-                "coverage_count": len(coverage),
-                "_coverage_keys": coverage,
-                "_file_keys": file_keys,
-            }
-        )
-
-    entity.auxiliary_metadata["child_previews"] = _dedupe_pack_child_previews(records)
-
-
 def _cached_task_ids(
     cache,
     resource_type: str = "",
@@ -387,6 +217,10 @@ def _cached_task_ids(
     task_ids: list[int] | None = None,
     min_task_id: int | None = None,
     max_task_id: int | None = None,
+    phase: str = "non-pack",
+    marker: str = "",
+    worker_count: int = 1,
+    worker_index: int = 0,
 ) -> list[int]:
     sql = "SELECT id FROM resource_task WHERE 1 = 1"
     params: list = []
@@ -403,10 +237,24 @@ def _cached_task_ids(
     if resource_type:
         sql += " AND resource_type = ?"
         params.append(resource_type)
+    sql += " AND resource_type <> ?"
+    params.append(PACK_RESOURCE_TYPE)
     if source_filter:
         sql += " AND source = ?"
         params.append(source_filter)
-    sql += " ORDER BY CASE WHEN resource_type = 'pack' THEN 1 ELSE 0 END, id"
+    if marker:
+        sql += """
+            AND NOT EXISTS (
+                SELECT 1 FROM resource_preview rp
+                WHERE rp.task_id = resource_task.id
+                  AND rp.created_at >= ?
+            )
+        """
+        params.append(marker)
+    if worker_count > 1:
+        sql += " AND (id % ?) = ?"
+        params.extend([worker_count, worker_index])
+    sql += " ORDER BY id"
     if limit:
         sql += " LIMIT ?"
         params.append(limit)
@@ -417,14 +265,29 @@ def main() -> int:
     parser = make_arg_parser(
         "生成资源预览并写入 SQLite",
         extra_args=[
-            ("--work-dir", {"default": None, "help": "工作目录；预览写入 <work-dir>/previews/<resource_type>/"}),
+            ("--work-dir", {"default": None, "help": "工作目录；默认仓库根目录 data，预览写入 <work-dir>/previews/<resource_type>/"}),
             ("--force", {"action": "store_true", "help": "强制重新生成匹配资源的预览；成功后清除旧预览记录和旧预览文件"}),
             ("--task-id", {"action": "append", "type": int, "help": "只处理指定 task id；可重复传入"}),
             ("--min-task-id", {"type": int, "default": None, "help": "只处理 id >= 该值的 task"}),
             ("--max-task-id", {"type": int, "default": None, "help": "只处理 id <= 该值的 task"}),
+            ("--preview-mode", {"choices": ["local", "renderer"], "default": "renderer", "help": "预览生成方式：renderer=调用 preview-renderer 服务，local=本地调试生成"}),
+            ("--preview-renderer", {"default": None, "help": "preview-renderer 地址；renderer 模式默认 PREVIEW_RENDERER_URL 或 http://localhost:8200"}),
+            ("--client-id", {"default": None, "help": "renderer 模式写入 X-Client-Id，默认 CLIENT_ID"}),
+            ("--api-key", {"default": None, "help": "preview-renderer API key，默认 PR_PREVIEW_RENDERER_API_KEY/PR_API_KEY"}),
+            ("--phase", {"choices": ["non-pack", "pack", "all"], "default": "non-pack", "help": "兼容旧刷新 worker 参数；pack 资源始终跳过预览生成"}),
+            ("--marker", {"default": "", "help": "只处理 marker 时间之后没有新预览的任务，例如 2026-06-23T13:51:27Z"}),
+            ("--worker-count", {"type": int, "default": 1, "help": "并行 worker 总数；按 task id 取模分片"}),
+            ("--worker-index", {"type": int, "default": 0, "help": "当前 worker 下标，范围 [0, worker-count)"}),
+            ("--progress-every", {"type": int, "default": 25, "help": "每处理 N 个任务打印一次进度"}),
+            ("--status-file", {"default": "", "help": "可选状态日志文件，兼容旧刷新 worker"}),
+            ("--skip-missing-object-manifest", {"action": "store_true", "help": "renderer 模式下跳过没有对象存储 manifest 的任务"}),
         ],
     )
     args = parser.parse_args()
+    if args.worker_count < 1:
+        parser.error("--worker-count must be >= 1")
+    if not 0 <= args.worker_index < args.worker_count:
+        parser.error("--worker-index must be in [0, worker-count)")
 
     from ResourceProcessor.cache.local_cache import LocalCacheStore
     from ResourceProcessor.preview.crawler_thumbnail_policy import CrawlerThumbnailPolicy
@@ -434,9 +297,13 @@ def main() -> int:
     cache = LocalCacheStore(db_path)
 
     project_root = Path(__file__).resolve().parents[3]
-    work_dir = os.path.abspath(args.work_dir) if args.work_dir else str(project_root / "data" / "workdirs" / "test_workdir_crawler")
+    work_dir = os.path.abspath(args.work_dir) if args.work_dir else str(project_root / "data")
     previews_dir = os.path.join(work_dir, "previews")
     os.makedirs(previews_dir, exist_ok=True)
+    preview_mode = "renderer" if args.preview_renderer else args.preview_mode
+    preview_renderer = (args.preview_renderer or env("PREVIEW_RENDERER_URL", "http://localhost:8200")).strip().rstrip("/")
+    client_id = (args.client_id or env("CLIENT_ID", "client")).strip()
+    api_key = args.api_key or env("PR_PREVIEW_RENDERER_API_KEY", env("PR_API_KEY", ""))
 
     report = Report(label="预览生成")
     print("=" * 60)
@@ -454,9 +321,31 @@ def main() -> int:
         print(f"  Task范围:       {args.min_task_id or '-inf'}..{args.max_task_id or '+inf'}")
     if args.force:
         print("  强制刷新:       enabled")
+    print(f"  生成方式:       {preview_mode}")
+    if preview_mode == "renderer":
+        print(f"  Renderer:       {preview_renderer}")
+        print(f"  Client ID:      {client_id}")
+    if args.phase != "non-pack":
+        print(f"  阶段:           {args.phase}")
+    if args.marker:
+        print(f"  Marker:         {args.marker}")
+    if args.worker_count > 1:
+        print(f"  Worker:         {args.worker_index}/{args.worker_count}")
     print("=" * 60)
+    _append_status(
+        args.status_file,
+        (
+            f"start mode={preview_mode} renderer={preview_renderer if preview_mode == 'renderer' else ''} "
+            f"db={db_path} phase={args.phase} worker={args.worker_index}/{args.worker_count}"
+        ),
+    )
 
     policy = CrawlerThumbnailPolicy(previews_dir)
+    remote_session = None
+    if preview_mode == "renderer":
+        import requests
+
+        remote_session = requests.Session()
 
     state_counts = cache.count_tasks_by_state()
     report.ok("当前状态统计", ", ".join(f"{k}={v}" for k, v in state_counts.items()) or "(空)")
@@ -469,12 +358,28 @@ def main() -> int:
     skipped_preview_file_count = 0
     failed = 0
 
-    def process_entity(task_id: int, entity, *, update_state: bool = True) -> bool:
+    def process_entity(task_id: int, entity, *, success_state: ProcessState | None) -> bool:
         nonlocal preview_count, deleted_preview_count, deleted_preview_file_count, skipped_preview_file_count, failed
-        _attach_pack_child_previews(cache, task_id, entity)
         try:
             old_previews = cache.get_previews_by_task(task_id)
-            previews = asyncio.run(policy.generate_previews(entity))
+            if preview_mode == "renderer":
+                object_manifest = cache.get_object_manifest(task_id)
+                if not object_manifest:
+                    raise RuntimeError("missing object-storage manifest; run upload_objects_to_storage first")
+                renderer_kwargs = {
+                    "preview_renderer": preview_renderer,
+                    "client_id": client_id,
+                    "previews_dir": previews_dir,
+                    "session": remote_session,
+                }
+                if api_key:
+                    renderer_kwargs["api_key"] = api_key
+                previews = _render_previews_with_remote_renderer(
+                    object_manifest["manifest"],
+                    **renderer_kwargs,
+                )
+            else:
+                previews = asyncio.run(policy.generate_previews(entity))
             entity.previews = previews
             deleted_preview_count += cache.delete_previews_by_task(task_id)
             for preview in previews:
@@ -487,11 +392,11 @@ def main() -> int:
             )
             deleted_preview_file_count += deleted_files
             skipped_preview_file_count += skipped_files
-            if update_state:
-                cache.update_task_state(task_id, ProcessState.PREVIEW_READY)
+            if success_state is not None:
+                cache.update_task_state(task_id, success_state)
         except Exception as exc:
             failed += 1
-            if update_state:
+            if success_state == ProcessState.PREVIEW_READY:
                 cache.update_task_state(
                     task_id, ProcessState.PREVIEW_FAILED,
                     error_code="preview_error",
@@ -515,25 +420,39 @@ def main() -> int:
         args.task_id,
         args.min_task_id,
         args.max_task_id,
+        phase=args.phase,
+        marker=args.marker,
+        worker_count=args.worker_count,
+        worker_index=args.worker_index,
     ):
         task = cache.get_task_by_id(task_id)
         if task is None:
             failed += 1
+            continue
+        if not is_search_indexable_resource_type(task["resource_type"]):
+            skipped += 1
             continue
         current_state = ProcessState(task["process_state"])
         already_previewed = state_ge(current_state.value, ProcessState.PREVIEW_READY.value)
         if already_previewed and not args.force:
             skipped += 1
             continue
+        if preview_mode == "renderer" and args.skip_missing_object_manifest and not cache.get_object_manifest(task_id):
+            skipped += 1
+            continue
         entity = cache.rebuild_entity_from_cache(task_id)
         if entity is None:
             failed += 1
             continue
-        preserve_later_state = already_previewed and args.force
-        if process_entity(task_id, entity, update_state=not preserve_later_state):
+        success_state = ProcessState.PREVIEW_READY
+        if process_entity(task_id, entity, success_state=success_state):
             processed += 1
-        if processed % 25 == 0 and processed:
+        if args.progress_every and processed % args.progress_every == 0 and processed:
             print_progress(processed, processed + skipped, f"预览累计 {preview_count}, 跳过 {skipped}")
+            _append_status(
+                args.status_file,
+                f"progress processed={processed} skipped={skipped} failed={failed} previews={preview_count}",
+            )
 
     report.ok(
         "预览生成",
@@ -544,8 +463,14 @@ def main() -> int:
     )
     report.ok("最终状态统计", ", ".join(f"{k}={v}" for k, v in cache.count_tasks_by_state().items()))
 
+    if remote_session is not None:
+        remote_session.close()
     cache.close()
     ok = report.summary()
+    _append_status(
+        args.status_file,
+        f"done ok={ok} processed={processed} skipped={skipped} failed={failed} previews={preview_count}",
+    )
     return 0 if ok else 1
 
 

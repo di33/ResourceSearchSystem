@@ -74,6 +74,8 @@ def test_generate_previews_reads_only_pipeline_db(monkeypatch, tmp_path, capsys)
             str(db_path),
             "--work-dir",
             str(tmp_path / "work"),
+            "--preview-mode",
+            "local",
         ],
     )
 
@@ -89,39 +91,165 @@ def test_generate_previews_reads_only_pipeline_db(monkeypatch, tmp_path, capsys)
         store.close()
 
 
-def test_pack_overview_detection_ignores_regular_sheet_suffix():
-    from ResourceProcessor.generate_previews import _is_overview_single_image
+def test_generate_previews_default_renderer_mode_writes_db_and_skips_ready(monkeypatch, tmp_path, capsys):
+    from ResourceProcessor import generate_previews
 
-    assert not _is_overview_single_image(
-        {
-            "resource_type": "single_image",
-            "resource_path": "icons-master/lorc/flaming-sheet.svg",
-            "title": "flaming-sheet.svg",
-        },
-        [{"file_name": "flaming-sheet.svg"}],
-        single_image_count=128,
-    )
-    assert _is_overview_single_image(
-        {
-            "resource_type": "single_image",
-            "resource_path": "preview/character.png",
-            "title": "character.png",
-        },
-        [{"file_name": "character.png"}],
-        single_image_count=128,
-    )
-    assert _is_overview_single_image(
-        {
-            "resource_type": "single_image",
-            "resource_path": "spritesheet.png",
-            "title": "spritesheet.png",
-        },
-        [{"file_name": "spritesheet.png"}],
-        single_image_count=128,
+    db_path = tmp_path / "pipeline.db"
+    store = LocalCacheStore(str(db_path))
+    try:
+        pending_task_id = store.insert_task(
+            _make_entity(tmp_path, source_resource_id="asset-pending", content_md5="asset-pending-md5")
+        )
+        ready_task_id = store.insert_task(
+            _make_entity(tmp_path, source_resource_id="asset-ready", content_md5="asset-ready-md5")
+        )
+        store.upsert_object_manifest(
+            pending_task_id,
+            {
+                "client_resource_id": "asset-pending",
+                "resource_type": "single_image",
+                "source_object": {
+                    "storage_profile_id": "default",
+                    "object_key": "resource-crawler/files/asset-pending/source.png",
+                    "file_name": "source.png",
+                },
+                "source_files": [{"file_name": "source.png", "file_format": "png", "is_primary": True}],
+                "client_metadata": {},
+            },
+        )
+        store.upsert_object_manifest(
+            ready_task_id,
+            {
+                "client_resource_id": "asset-ready",
+                "resource_type": "single_image",
+                "source_object": {
+                    "storage_profile_id": "default",
+                    "object_key": "resource-crawler/files/asset-ready/source.png",
+                    "file_name": "source.png",
+                },
+                "source_files": [{"file_name": "source.png", "file_format": "png", "is_primary": True}],
+                "client_metadata": {},
+            },
+        )
+        store.update_task_state(ready_task_id, ProcessState.PREVIEW_READY)
+    finally:
+        store.close()
+
+    calls = []
+
+    def fake_remote_renderer(manifest, *, preview_renderer, client_id, previews_dir, api_key="", session=None):
+        calls.append((manifest["client_resource_id"], preview_renderer, client_id, session is not None))
+        preview_path = tmp_path / "work" / "previews" / "single_image" / f"{manifest['client_resource_id']}_primary.webp"
+        preview_path.parent.mkdir(parents=True, exist_ok=True)
+        preview_path.write_bytes(b"remote-preview")
+        return [
+            PreviewInfo(
+                strategy=PreviewStrategy.STATIC,
+                path=str(preview_path),
+                format="webp",
+                width=2,
+                height=2,
+                size=preview_path.stat().st_size,
+                renderer="preview-renderer",
+            )
+        ]
+
+    monkeypatch.setattr(generate_previews, "_render_previews_with_remote_renderer", fake_remote_renderer)
+    monkeypatch.setenv("PREVIEW_RENDERER_URL", "http://renderer-from-env")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_previews",
+            "--db-path",
+            str(db_path),
+            "--work-dir",
+            str(tmp_path / "work"),
+            "--client-id",
+            "resource-crawler",
+        ],
     )
 
+    assert generate_previews.main() == 0
+    capsys.readouterr()
 
-def test_force_refresh_supports_task_id_filter_and_clears_old_rows(monkeypatch, tmp_path, capsys):
+    assert calls == [("asset-pending", "http://renderer-from-env", "resource-crawler", True)]
+
+    store = LocalCacheStore(str(db_path))
+    try:
+        previews = store.get_previews_by_task(pending_task_id)
+        assert len(previews) == 1
+        assert previews[0]["renderer"] == "preview-renderer"
+        assert previews[0]["path"].endswith("asset-pending_primary.webp")
+        assert store.get_task_by_id(pending_task_id)["process_state"] == ProcessState.PREVIEW_READY.value
+        assert store.get_previews_by_task(ready_task_id) == []
+    finally:
+        store.close()
+
+
+def test_generate_previews_default_work_dir_uses_repo_data(monkeypatch, tmp_path, capsys):
+    from ResourceProcessor import generate_previews
+
+    db_path = tmp_path / "pipeline.db"
+    store = LocalCacheStore(str(db_path))
+    try:
+        task_id = store.insert_task(
+            _make_entity(tmp_path, source_resource_id="asset-default-dir", content_md5="asset-default-dir-md5")
+        )
+        store.upsert_object_manifest(
+            task_id,
+            {
+                "client_resource_id": "asset-default-dir",
+                "resource_type": "single_image",
+                "source_object": {
+                    "storage_profile_id": "default",
+                    "object_key": "resource-crawler/files/asset-default-dir/source.png",
+                    "file_name": "source.png",
+                },
+                "source_files": [{"file_name": "source.png", "file_format": "png", "is_primary": True}],
+                "client_metadata": {},
+            },
+        )
+    finally:
+        store.close()
+
+    seen_previews_dir = {}
+
+    def fake_remote_renderer(manifest, *, preview_renderer, client_id, previews_dir, api_key="", session=None):
+        seen_previews_dir["value"] = previews_dir
+        preview_path = tmp_path / "preview.webp"
+        preview_path.write_bytes(b"preview")
+        return [
+            PreviewInfo(
+                strategy=PreviewStrategy.STATIC,
+                path=str(preview_path),
+                format="webp",
+                width=1,
+                height=1,
+                size=preview_path.stat().st_size,
+                renderer="preview-renderer",
+            )
+        ]
+
+    monkeypatch.setattr(generate_previews, "_render_previews_with_remote_renderer", fake_remote_renderer)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_previews",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+
+    assert generate_previews.main() == 0
+    capsys.readouterr()
+
+    expected = str((generate_previews.Path(__file__).resolve().parents[3] / "data" / "previews").resolve())
+    assert seen_previews_dir["value"] == expected
+
+
+def test_force_preview_supports_task_id_filter_and_clears_old_rows(monkeypatch, tmp_path, capsys):
     from ResourceProcessor import generate_previews
 
     db_path = tmp_path / "pipeline.db"
@@ -183,6 +311,8 @@ def test_force_refresh_supports_task_id_filter_and_clears_old_rows(monkeypatch, 
             str(db_path),
             "--work-dir",
             str(tmp_path / "work"),
+            "--preview-mode",
+            "local",
             "--task-id",
             str(task_2),
             "--force",
@@ -201,7 +331,7 @@ def test_force_refresh_supports_task_id_filter_and_clears_old_rows(monkeypatch, 
         assert [row["path"] for row in previews_1] == [str(old_preview_1)]
         assert len(previews_2) == 1
         assert previews_2[0]["path"].endswith("asset-md5-2.webp")
-        assert store.get_task_by_id(task_2)["process_state"] == ProcessState.DESCRIPTION_READY.value
+        assert store.get_task_by_id(task_2)["process_state"] == ProcessState.PREVIEW_READY.value
         assert old_preview_1.exists()
         assert not stale_preview_2.exists()
         assert reused_preview_2.exists()
@@ -210,7 +340,63 @@ def test_force_refresh_supports_task_id_filter_and_clears_old_rows(monkeypatch, 
         store.close()
 
 
-def test_force_refresh_pack_clears_old_rows_and_preserves_later_state(monkeypatch, tmp_path, capsys):
+def test_force_preview_on_committed_resets_to_preview_ready(monkeypatch, tmp_path, capsys):
+    from ResourceProcessor import generate_previews
+
+    db_path = tmp_path / "pipeline.db"
+    store = LocalCacheStore(str(db_path))
+    try:
+        task_id = store.insert_task(_make_entity(tmp_path, content_md5="committed-preview-md5"))
+        store.update_task_state(task_id, ProcessState.COMMITTED)
+    finally:
+        store.close()
+
+    async def fake_generate_previews(self, entity):
+        preview_path = self.output_dir / "committed-preview.webp"
+        preview_path.write_bytes(b"preview")
+        return [
+            PreviewInfo(
+                strategy=PreviewStrategy.STATIC,
+                path=str(preview_path),
+                format="webp",
+                width=1,
+                height=1,
+                size=preview_path.stat().st_size,
+            )
+        ]
+
+    monkeypatch.setattr(
+        "ResourceProcessor.preview.crawler_thumbnail_policy.CrawlerThumbnailPolicy.generate_previews",
+        fake_generate_previews,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_previews",
+            "--db-path",
+            str(db_path),
+            "--work-dir",
+            str(tmp_path / "work"),
+            "--preview-mode",
+            "local",
+            "--task-id",
+            str(task_id),
+            "--force",
+        ],
+    )
+
+    assert generate_previews.main() == 0
+    capsys.readouterr()
+
+    store = LocalCacheStore(str(db_path))
+    try:
+        assert store.get_task_by_id(task_id)["process_state"] == ProcessState.PREVIEW_READY.value
+    finally:
+        store.close()
+
+
+def test_force_preview_pack_is_skipped(monkeypatch, tmp_path, capsys):
     from ResourceProcessor import generate_previews
 
     db_path = tmp_path / "pipeline.db"
@@ -277,19 +463,8 @@ def test_force_refresh_pack_clears_old_rows_and_preserves_later_state(monkeypatc
     calls = []
 
     async def fake_generate_previews(self, entity):
-        calls.append((entity.resource_type, list(entity.auxiliary_metadata.get("child_previews", []))))
-        preview_path = self.output_dir / "pack_refresh.webp"
-        preview_path.write_bytes(b"preview")
-        return [
-            PreviewInfo(
-                strategy=PreviewStrategy.CONTACT_SHEET,
-                path=str(preview_path),
-                format="webp",
-                width=1,
-                height=1,
-                size=preview_path.stat().st_size,
-            )
-        ]
+        calls.append(entity.resource_type)
+        raise AssertionError("pack previews should be skipped")
 
     monkeypatch.setattr(
         "ResourceProcessor.preview.crawler_thumbnail_policy.CrawlerThumbnailPolicy.generate_previews",
@@ -304,6 +479,8 @@ def test_force_refresh_pack_clears_old_rows_and_preserves_later_state(monkeypatc
             str(db_path),
             "--work-dir",
             str(tmp_path / "work"),
+            "--preview-mode",
+            "local",
             "--resource-type",
             "pack",
             "--force",
@@ -313,18 +490,16 @@ def test_force_refresh_pack_clears_old_rows_and_preserves_later_state(monkeypatc
     assert generate_previews.main() == 0
     capsys.readouterr()
 
-    assert len(calls) == 1
-    assert calls[0][0] == "pack"
-    assert len(calls[0][1]) == 1
+    assert calls == []
 
     store = LocalCacheStore(str(db_path))
     try:
         assert store.get_task_by_id(pack_id)["process_state"] == ProcessState.DESCRIPTION_READY.value
         pack_previews = store.get_previews_by_task(pack_id)
         assert len(pack_previews) == 1
-        assert pack_previews[0]["path"].endswith("pack_refresh.webp")
+        assert pack_previews[0]["path"] == str(old_pack_preview_path)
         assert len(store.get_previews_by_task(child_id)) == 1
-        assert not old_pack_preview_path.exists()
+        assert old_pack_preview_path.exists()
         assert child_preview_path.exists()
     finally:
         store.close()
@@ -434,7 +609,7 @@ def test_generate_descriptions_resume_skips_existing_description(monkeypatch, tm
         store.close()
 
 
-def test_generate_descriptions_keeps_existing_description_on_refresh_failure(monkeypatch, tmp_path, capsys):
+def test_generate_descriptions_keeps_existing_description_on_regeneration_failure(monkeypatch, tmp_path, capsys):
     from ResourceProcessor import generate_descriptions
 
     db_path = tmp_path / "pipeline.db"
@@ -485,6 +660,132 @@ def test_generate_descriptions_keeps_existing_description_on_refresh_failure(mon
         store.close()
 
 
+def test_generate_descriptions_force_regenerates_only_requested_resource_type(monkeypatch, tmp_path, capsys):
+    from ResourceProcessor import generate_descriptions
+
+    db_path = tmp_path / "pipeline.db"
+    store = LocalCacheStore(str(db_path))
+    try:
+        pack_id = store.insert_task(
+            _make_entity(
+                tmp_path,
+                content_md5="pack-md5",
+                resource_type="pack",
+                title="Pack",
+                source_resource_id="pack-src",
+                child_resource_count=0,
+                files=[],
+            )
+        )
+        image_id = store.insert_task(
+            _make_entity(
+                tmp_path,
+                content_md5="image-md5",
+                resource_type="single_image",
+                title="Image",
+                source_resource_id="image-src",
+            )
+        )
+        for task_id in (pack_id, image_id):
+            store.insert_description(
+                task_id,
+                main_content="old main",
+                detail_content="old detail",
+                full_description="主体：old main\n细节：old detail",
+                prompt_version="old",
+            )
+            store.update_task_state(task_id, ProcessState.COMMITTED)
+    finally:
+        store.close()
+
+    calls = []
+
+    async def fake_generate(cache, task_id, entity, *args, **kwargs):
+        calls.append((task_id, entity.resource_type))
+        cache.insert_description(
+            task_id,
+            main_content=f"new {entity.resource_type}",
+            detail_content="new detail",
+            full_description=f"主体：new {entity.resource_type}\n细节：new detail",
+            prompt_version="force-test",
+        )
+        return True
+
+    monkeypatch.setattr(generate_descriptions, "_generate_with_retry", fake_generate)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_descriptions",
+            "--db-path",
+            str(db_path),
+            "--llm-provider",
+            "mock",
+            "--concurrency",
+            "1",
+            "--resource-type",
+            "pack",
+            "--force",
+        ],
+    )
+
+    assert generate_descriptions.main() == 0
+    out = capsys.readouterr().out
+    assert "强制刷新:       pack" in out
+    assert calls == []
+
+    store = LocalCacheStore(str(db_path))
+    try:
+        pack_desc_count = store._conn.execute(
+            "SELECT COUNT(*) AS cnt FROM resource_description WHERE task_id = ?",
+            (pack_id,),
+        ).fetchone()["cnt"]
+        image_desc_count = store._conn.execute(
+            "SELECT COUNT(*) AS cnt FROM resource_description WHERE task_id = ?",
+            (image_id,),
+        ).fetchone()["cnt"]
+        assert pack_desc_count == 1
+        assert image_desc_count == 1
+        assert store.get_description_by_task(pack_id)["prompt_version"] == "old"
+        assert store.get_description_by_task(image_id)["prompt_version"] == "old"
+        assert store.get_task_by_id(pack_id)["process_state"] == ProcessState.COMMITTED.value
+        assert store.get_task_by_id(image_id)["process_state"] == ProcessState.COMMITTED.value
+    finally:
+        store.close()
+
+
+def test_generate_descriptions_ctrl_c_returns_clean_interrupt(monkeypatch, tmp_path, capsys):
+    from ResourceProcessor import generate_descriptions
+
+    db_path = tmp_path / "pipeline.db"
+    store = LocalCacheStore(str(db_path))
+    store.close()
+
+    def raise_keyboard_interrupt(_coro):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(generate_descriptions.asyncio, "run", raise_keyboard_interrupt)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_descriptions",
+            "--db-path",
+            str(db_path),
+            "--llm-provider",
+            "mock",
+            "--concurrency",
+            "1",
+        ],
+    )
+
+    assert generate_descriptions.main() == 130
+    out = capsys.readouterr().out
+    assert "用户中断" in out
+    assert "中断时状态统计" in out
+    assert "Traceback" not in out
+
+
 def test_description_retry_classifies_transient_errors():
     import requests
 
@@ -497,12 +798,46 @@ def test_description_retry_classifies_transient_errors():
     assert _is_retryable_error(
         RuntimeError("HTTPSConnectionPool(host='kspmas.ksyun.com', port=443): Max retries exceeded with url")
     )
+    assert _is_retryable_error(
+        RuntimeError(
+            'Ksyun chat.completions 调用失败: code=502, body=<!DOCTYPE HTML>'
+            '<title>502 Bad Gateway</title>Powered by CLOUD ELB 1.0.0'
+        )
+    )
+    assert _is_retryable_error(
+        RuntimeError("Ksyun chat.completions 调用失败: code=503, body=Service Unavailable")
+    )
+    assert _is_retryable_error(
+        RuntimeError("Ksyun chat.completions 调用失败: code=504, body=Gateway Timeout")
+    )
     assert not _is_retryable_error(
         RuntimeError("Ksyun chat.completions 调用失败: code=413, body=Payload Too Large")
     )
     assert not _is_retryable_error(
         RuntimeError("Ksyun chat.completions 调用失败: code=400, body={\"error\":\"Bad Request\"}")
     )
+
+
+def test_description_progress_label_uses_streaming_counts():
+    from ResourceProcessor.generate_descriptions import _description_progress_label
+
+    label = _description_progress_label(
+        {
+            "processed": 1500,
+            "enqueued": 1532,
+            "desc_ok": 1179,
+            "failed": 321,
+            "feeder_done": False,
+            "skipped_existing": 2,
+            "skipped_audio": 3,
+            "skipped_rebuild": 4,
+        }
+    )
+
+    assert "已处理 1500" in label
+    assert "已入队 1532" in label
+    assert "扫描中" in label
+    assert "1500/1500" not in label
 
 
 def test_classify_resources_reads_only_pipeline_db(monkeypatch, tmp_path, capsys):
@@ -555,16 +890,7 @@ def test_classify_resources_reads_only_pipeline_db(monkeypatch, tmp_path, capsys
 
 
 def test_upload_resources_dry_run_reads_only_pipeline_db(monkeypatch, tmp_path, capsys):
-    import requests
     from ResourceProcessor import upload_resources
-
-    class _FakeResponse:
-        def json(self):
-            return {"status": "ok"}
-
-    class _FakeSession:
-        def get(self, url, timeout):
-            return _FakeResponse()
 
     db_path = tmp_path / "pipeline.db"
     store = LocalCacheStore(str(db_path))
@@ -595,7 +921,6 @@ def test_upload_resources_dry_run_reads_only_pipeline_db(monkeypatch, tmp_path, 
     finally:
         store.close()
 
-    monkeypatch.setattr(requests, "Session", lambda: _FakeSession())
     monkeypatch.setattr(
         sys,
         "argv",
@@ -610,4 +935,4 @@ def test_upload_resources_dry_run_reads_only_pipeline_db(monkeypatch, tmp_path, 
     assert upload_resources.main() == 0
     out = capsys.readouterr().out
     assert "Crawler DB" not in out
-    assert "可上传 2 个资源" in out
+    assert "生成 manifest 2" in out

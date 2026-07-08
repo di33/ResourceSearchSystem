@@ -2,13 +2,29 @@ from __future__ import annotations
 
 import datetime as dt
 import sqlite3
+import sys
 from collections import defaultdict
 from pathlib import Path
 from xml.sax.saxutils import escape
 from zipfile import ZIP_DEFLATED, ZipFile
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from resource_contracts.resource_types import (  # noqa: E402
+    ANIMATION_SEQUENCE_RESOURCE_TYPE,
+    ATLAS_RESOURCE_TYPE,
+    AUDIO_FILE_RESOURCE_TYPE,
+    FONT_FILE_RESOURCE_TYPE,
+    PACK_RESOURCE_TYPE,
+    RESOURCE_TYPE_DISPLAY_NAMES_ZH,
+    SINGLE_IMAGE_RESOURCE_TYPE,
+    TILED_MAP_RESOURCE_TYPE,
+    TILED_TILESET_RESOURCE_TYPE,
+    TILESET_RESOURCE_TYPE,
+)
+
 DB_PATH = REPO_ROOT / "data" / "databases" / "pipeline.db"
 OUT_PATH = REPO_ROOT / "data" / "reports" / "client_resource_report.docx"
 CLIENT_DB_CANDIDATES = [
@@ -17,46 +33,36 @@ CLIENT_DB_CANDIDATES = [
     REPO_ROOT / "data" / "databases" / "pipeline.db",
 ]
 
-DISPLAY_NAMES = {
-    "single_image": "单图",
-    "audio_file": "音频文件",
-    "animation_sequence": "动画序列",
-    "tileset": "图块集",
-    "pack": "资源包",
-    "atlas": "图集",
-    "tiled_map": "Tiled 地图",
-    "font_file": "字体文件",
-    "tiled_tileset": "Tiled 图块定义",
-}
+DISPLAY_NAMES = dict(RESOURCE_TYPE_DISPLAY_NAMES_ZH)
 
 STRUCTURE_NOTES = {
-    "single_image": (
+    SINGLE_IMAGE_RESOURCE_TYPE: (
         "独立图片资源。通常是一条 resource_task 对应一个主文件；少量记录可能附带同格式文件。"
         "格式来自 resource_file.file_format，主文件通过 is_primary=1 标识。"
     ),
-    "audio_file": (
+    AUDIO_FILE_RESOURCE_TYPE: (
         "独立音频资源。结构以单个音频文件为主，预览通常是 metadata card，描述依赖标题、包名和路径上下文。"
     ),
-    "animation_sequence": (
+    ANIMATION_SEQUENCE_RESOURCE_TYPE: (
         "多帧动画资源。一个任务下挂多张帧图，file_role 多为 frame/main，预览策略倾向于抽帧 GIF。"
     ),
-    "tileset": (
+    TILESET_RESOURCE_TYPE: (
         "图块集合资源。一个任务包含多张 tile 图片，常见 file_role 为 tile/main，预览为 contact_sheet 拼贴。"
     ),
-    "pack": (
+    PACK_RESOURCE_TYPE: (
         "包级聚合资源。resource_path 常为 __pack__，任务下可挂大量主文件与附件，"
         "用于表示一个完整素材包或项目包。"
     ),
-    "atlas": (
+    ATLAS_RESOURCE_TYPE: (
         "图集资源。通常由图像和描述/索引文件组合，如 PNG + XML；主文件可能是图片或索引文件。"
     ),
-    "tiled_map": (
+    TILED_MAP_RESOURCE_TYPE: (
         "Tiled 地图资源。以 TMX 地图文件为核心，并关联地图引用的 PNG 素材。"
     ),
-    "font_file": (
+    FONT_FILE_RESOURCE_TYPE: (
         "字体资源。单个 TTF/OTF 文件为主，预览通常是说明型卡片或静态预览。"
     ),
-    "tiled_tileset": (
+    TILED_TILESET_RESOURCE_TYPE: (
         "Tiled 图块定义资源。以 TSX 定义文件为核心，记录图块集元数据。"
     ),
 }
@@ -314,10 +320,11 @@ def collect_data() -> dict:
         SELECT lower(rf.file_format) AS file_format, COUNT(*) AS c
         FROM resource_file rf
         JOIN resource_task rt ON rt.id = rf.task_id
-        WHERE rt.resource_type='single_image' AND rf.is_primary=1
+        WHERE rt.resource_type=? AND rf.is_primary=1
         GROUP BY lower(rf.file_format)
         ORDER BY c DESC, file_format
         """,
+        (SINGLE_IMAGE_RESOURCE_TYPE,),
     )
     data["single_image_examples_by_format"] = {}
     for fmt in [row["file_format"] for row in single_formats]:
@@ -335,12 +342,12 @@ def collect_data() -> dict:
             JOIN resource_file rf ON rf.task_id = rt.id AND rf.is_primary=1
             LEFT JOIN resource_preview rp ON rp.task_id = rt.id AND rp.role='primary'
             LEFT JOIN ({latest_desc}) ld ON ld.task_id = rt.id
-            WHERE rt.resource_type='single_image' AND lower(rf.file_format)=?
+            WHERE rt.resource_type=? AND lower(rf.file_format)=?
             GROUP BY rt.id
             ORDER BY rt.id ASC
             LIMIT 3
             """,
-            (fmt,),
+            (SINGLE_IMAGE_RESOURCE_TYPE, fmt),
         )
 
     conn.close()
@@ -713,13 +720,13 @@ def add_content(doc: Docx, data: dict) -> None:
         "单图是当前库中的主体类型。下面按主文件格式统计，并为每种格式抽取前三条样例。"
     )
     single_dist = []
-    for row in primary_formats_by_type.get("single_image", []):
+    for row in primary_formats_by_type.get(SINGLE_IMAGE_RESOURCE_TYPE, []):
         single_dist.append(
             [
                 row["file_format"],
                 fmt_int(row["primary_file_count"]),
                 fmt_int(row["resource_count"]),
-                fmt_pct(row["resource_count"], by_type["single_image"]["resource_count"]),
+                fmt_pct(row["resource_count"], by_type[SINGLE_IMAGE_RESOURCE_TYPE]["resource_count"]),
             ]
         )
     doc.table(["格式", "主文件数", "涉及资源数", "在单图中占比"], single_dist, [1600, 2000, 2200, 3560])

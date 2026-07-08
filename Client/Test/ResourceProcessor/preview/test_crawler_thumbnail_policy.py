@@ -3,12 +3,16 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
+from ResourceProcessor.generate_previews import _dedupe_pack_child_resources
 from ResourceProcessor.preview.crawler_thumbnail_policy import (
     CrawlerThumbnailPolicy,
     _open_for_sheet,
     _open_pack_collage_image,
+    _pack_child_resource_records,
     _pack_child_preview_records,
+    _pack_direct_image_pages,
     _pack_preview_pages,
+    _pack_collage_item_sizes,
     _render_dense_atlas_image,
     _save_contact_sheet,
     _save_pack_collage,
@@ -17,6 +21,17 @@ from ResourceProcessor.preview.crawler_thumbnail_policy import (
     _tileset_sheet_image_paths,
 )
 from ResourceProcessor.preview_metadata import FileInfo, ResourceProcessingEntity
+from spriter_preview.runtime_preview import (
+    FileRef,
+    RenderSprite,
+    Spatial,
+    _bounds_for_animation,
+    _parse_scml,
+    _render_animation_frame,
+    _scale_for_bounds,
+    _sprite_corners,
+    _unmap_from_parent,
+)
 
 
 def _make_image(path: Path, color: str, size: tuple[int, int] = (96, 96)):
@@ -42,6 +57,102 @@ def _make_unique_icon_preview(path: Path, index: int):
         draw.rectangle((18, 18, 42, 42), fill=(index % 256, 0, 0))
         draw.point((index % 48, (index // 48) % 48), fill="black")
         img.save(path)
+
+
+def test_spriter_sprite_pivot_y_one_is_top_origin():
+    sprite = RenderSprite(
+        file_ref=FileRef(
+            folder=0,
+            file=0,
+            name="part.png",
+            width=40,
+            height=100,
+            pivot_x=0.0,
+            pivot_y=1.0,
+            path=None,
+        ),
+        spatial=Spatial(),
+        pivot_x=0.0,
+        pivot_y=1.0,
+        z_index=0,
+    )
+
+    corners = _sprite_corners(sprite)
+    assert corners[0] == (0.0, 0.0)
+    assert corners[2] == (40.0, -100.0)
+
+
+def test_spriter_mirrored_parent_flips_child_angle():
+    parent = Spatial(angle=30.0, scale_x=1.0, scale_y=-2.0)
+    child = Spatial(angle=70.0, scale_x=1.0, scale_y=0.5)
+
+    world = _unmap_from_parent(child, parent)
+
+    assert world.angle == -40.0
+    assert world.scale_x == 1.0
+    assert world.scale_y == -1.0
+
+
+def test_spriter_actions_render_with_shared_scale(tmp_path):
+    image_path = tmp_path / "body.png"
+    _make_image(image_path, "red", size=(20, 40))
+    scml_path = tmp_path / "shared_scale.scml"
+    scml_path.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<spriter_data scml_version="1.0" generator="BrashMonkey Spriter" generator_version="r11">
+  <folder id="0">
+    <file id="0" name="body.png" width="20" height="40" pivot_x="0.5" pivot_y="0.5"/>
+  </folder>
+  <entity id="0" name="entity_000">
+    <animation id="0" name="idle" length="1000" looping="true">
+      <mainline>
+        <key id="0">
+          <object_ref id="0" timeline="0" key="0" z_index="0"/>
+        </key>
+      </mainline>
+      <timeline id="0" name="body">
+        <key id="0">
+          <object folder="0" file="0" x="0" y="0"/>
+        </key>
+      </timeline>
+    </animation>
+    <animation id="1" name="dash" length="1000" looping="true">
+      <mainline>
+        <key id="0">
+          <object_ref id="0" timeline="0" key="0" z_index="0"/>
+        </key>
+      </mainline>
+      <timeline id="0" name="body">
+        <key id="0">
+          <object folder="0" file="0" x="-200" y="0"/>
+        </key>
+        <key id="1" time="500">
+          <object folder="0" file="0" x="200" y="0"/>
+        </key>
+      </timeline>
+    </animation>
+  </entity>
+</spriter_data>
+""",
+        encoding="utf-8",
+    )
+    data = _parse_scml(scml_path, [image_path])
+    idle, dash = data.animations[:2]
+    idle_bounds = _bounds_for_animation(data, idle, 5)
+    dash_bounds = _bounds_for_animation(data, dash, 5)
+    shared_scale = _scale_for_bounds([idle_bounds, dash_bounds], size=160)
+
+    assert shared_scale < _scale_for_bounds([idle_bounds], size=160)
+
+    idle_frame = _render_animation_frame(data, idle, 0, idle_bounds, size=160, scale=shared_scale)
+    dash_frame = _render_animation_frame(data, dash, 0, dash_bounds, size=160, scale=shared_scale)
+    idle_box = idle_frame.getchannel("A").getbbox()
+    dash_box = dash_frame.getchannel("A").getbbox()
+
+    assert idle_box is not None
+    assert dash_box is not None
+    assert abs((idle_box[2] - idle_box[0]) - (dash_box[2] - dash_box[0])) <= 1
+    assert abs((idle_box[3] - idle_box[1]) - (dash_box[3] - dash_box[1])) <= 1
 
 
 def test_metadata_card_long_text_stays_inside_frame(tmp_path, monkeypatch):
@@ -105,6 +216,79 @@ async def test_single_image_preview_generation(tmp_path):
     assert previews[0].confidence == "high"
     assert Path(previews[0].path).is_file()
     assert Path(previews[0].path).parent.name == "single_image"
+
+
+@pytest.mark.asyncio
+async def test_spriter_preview_uses_scml_runtime_renderer(tmp_path):
+    image_path = tmp_path / "body.png"
+    _make_image(image_path, "red", size=(48, 64))
+    scml_path = tmp_path / "hero.scml"
+    scml_path.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<spriter_data scml_version="1.0" generator="BrashMonkey Spriter" generator_version="r11">
+  <folder id="0">
+    <file id="0" name="body.png" width="48" height="64" pivot_x="0.5" pivot_y="0.5"/>
+  </folder>
+  <entity id="0" name="entity_000">
+    <animation id="0" name="idle" length="500" looping="true">
+      <mainline>
+        <key id="0">
+          <object_ref id="0" timeline="0" key="0" z_index="0"/>
+        </key>
+        <key id="1" time="250">
+          <object_ref id="0" timeline="0" key="1" z_index="0"/>
+        </key>
+      </mainline>
+      <timeline id="0" name="body">
+        <key id="0">
+          <object folder="0" file="0" x="-12" y="0" angle="0"/>
+        </key>
+        <key id="1" time="250">
+          <object folder="0" file="0" x="12" y="0" angle="18"/>
+        </key>
+      </timeline>
+    </animation>
+  </entity>
+</spriter_data>
+""",
+        encoding="utf-8",
+    )
+    entity = ResourceProcessingEntity(
+        resource_id="res-spriter",
+        resource_type="spriter",
+        source_directory=str(tmp_path),
+        pack_name="Pack",
+        title="Hero Spriter",
+        resource_path="hero.scml",
+        content_md5="spriter-md5",
+        files=[
+            FileInfo(
+                file_path=str(scml_path),
+                file_name="hero.scml",
+                file_size=scml_path.stat().st_size,
+                file_format="scml",
+                content_md5="scml-md5",
+                is_primary=True,
+            ),
+            FileInfo(
+                file_path=str(image_path),
+                file_name="body.png",
+                file_size=image_path.stat().st_size,
+                file_format="png",
+                content_md5="png-md5",
+            ),
+        ],
+    )
+
+    policy = CrawlerThumbnailPolicy(str(tmp_path / "previews"))
+    previews = await policy.generate_previews(entity)
+    assert len(previews) == 1
+    assert previews[0].mode == "spriter_runtime_actions_gif"
+    assert previews[0].renderer == "spriter-scml-pillow"
+    assert previews[0].format == "gif"
+    assert previews[0].width < 260
+    assert Path(previews[0].path).is_file()
+    assert Path(previews[0].path).parent.name == "spriter"
 
 
 @pytest.mark.asyncio
@@ -311,6 +495,115 @@ async def test_tileset_generates_primary_contact_sheet(tmp_path):
     assert previews[0].strategy.value == "contact_sheet"
     assert previews[0].mode == "packed_tilesheet"
     assert Path(previews[0].path).is_file()
+
+
+@pytest.mark.asyncio
+async def test_tiled_tileset_uses_tileset_preview_path(tmp_path):
+    tsx_path = tmp_path / "terrain.tsx"
+    image_path = tmp_path / "terrain.png"
+    with Image.new("RGB", (32, 32), color=(255, 0, 255)) as image:
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((8, 8, 23, 23), fill="green")
+        image.save(image_path)
+    tsx_path.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<tileset version="1.10" tiledversion="1.10.2" name="Terrain" tilewidth="16" tileheight="16" tilecount="1" columns="1">
+ <image source="terrain.png" trans="ff00ff" width="32" height="32"/>
+</tileset>
+""",
+        encoding="utf-8",
+    )
+    entity = ResourceProcessingEntity(
+        resource_type="tiled_tileset",
+        source_directory=str(tmp_path),
+        title="terrain.tsx",
+        resource_path="terrain.tsx",
+        content_md5="tiled-tileset-md5",
+        files=[
+            FileInfo(
+                file_path=str(tsx_path),
+                file_name=tsx_path.name,
+                file_size=tsx_path.stat().st_size,
+                file_format="tsx",
+                content_md5="tsx-md5",
+                is_primary=True,
+            ),
+            FileInfo(
+                file_path=str(image_path),
+                file_name=image_path.name,
+                file_size=image_path.stat().st_size,
+                file_format="png",
+                content_md5="png-md5",
+            ),
+        ],
+    )
+
+    policy = CrawlerThumbnailPolicy(str(tmp_path / "previews"))
+    previews = await policy.generate_previews(entity)
+
+    assert len(previews) == 1
+    assert previews[0].path is not None
+    assert previews[0].mode != "metadata_only"
+    assert Path(previews[0].path).parent.name == "tiled_tileset"
+    with Image.open(previews[0].path).convert("RGB") as preview:
+        colors = preview.getcolors(maxcolors=preview.width * preview.height) or []
+        assert all(color != (255, 0, 255) for _count, color in colors)
+
+
+@pytest.mark.asyncio
+async def test_tiled_tileset_reflows_extreme_aspect_source(tmp_path):
+    tsx_path = tmp_path / "tile2map.tsx"
+    image_path = tmp_path / "tile2map.png"
+    image = Image.new("RGB", (64, 2048), color=(20, 20, 20))
+    draw = ImageDraw.Draw(image)
+    for row in range(128):
+        for col in range(4):
+            x = col * 16
+            y = row * 16
+            color = ((row * 19 + col * 47) % 256, (row * 37 + col * 23) % 256, (row * 11 + col * 71) % 256)
+            draw.rectangle((x, y, x + 15, y + 15), fill=color)
+    image.save(image_path)
+    tsx_path.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<tileset name="tile2map" tilewidth="16" tileheight="16">
+ <image source="tile2map.png" width="64" height="2048"/>
+</tileset>
+""",
+        encoding="utf-8",
+    )
+    entity = ResourceProcessingEntity(
+        resource_type="tiled_tileset",
+        source_directory=str(tmp_path),
+        title="tile2map.tsx",
+        resource_path="tile2map.tsx",
+        content_md5="tiled-tileset-reflow-md5",
+        files=[
+            FileInfo(
+                file_path=str(tsx_path),
+                file_name=tsx_path.name,
+                file_size=tsx_path.stat().st_size,
+                file_format="tsx",
+                content_md5="tsx-reflow-md5",
+                is_primary=True,
+            ),
+            FileInfo(
+                file_path=str(image_path),
+                file_name=image_path.name,
+                file_size=image_path.stat().st_size,
+                file_format="png",
+                content_md5="png-reflow-md5",
+            ),
+        ],
+    )
+
+    policy = CrawlerThumbnailPolicy(str(tmp_path / "previews"))
+    previews = await policy.generate_previews(entity)
+
+    assert len(previews) == 1
+    assert previews[0].strategy.value == "contact_sheet"
+    assert previews[0].mode == "reflowed_tilesheet"
+    with Image.open(previews[0].path) as preview:
+        assert preview.size == (512, 512)
 
 
 def test_contact_sheet_uses_dense_atlas_layout(tmp_path, monkeypatch):
@@ -1092,8 +1385,8 @@ async def test_pack_generates_collage_preview(tmp_path):
     assert len(previews) == 1
     assert previews[0].strategy.value == "contact_sheet"
     assert previews[0].mode == "composed"
-    assert previews[0].width == 1024
-    assert previews[0].height == 1024
+    assert 64 <= previews[0].width <= 1024
+    assert 64 <= previews[0].height <= 1024
     assert Path(previews[0].path).is_file()
 
 
@@ -1146,8 +1439,144 @@ async def test_pack_prefers_deduped_child_previews(tmp_path):
     assert Path(previews[0].path).is_file()
 
 
+def test_pack_child_resource_dedupe_keeps_distinct_animation_sequences():
+    def animation_record(task_id: int, resource_path: str, coverage: set[str]) -> dict:
+        return {
+            "task_id": task_id,
+            "source_resource_id": f"res-{task_id}",
+            "resource_type": "animation_sequence",
+            "title": resource_path,
+            "resource_path": resource_path,
+            "source_paths": [],
+            "files": [],
+            "priority": 30,
+            "coverage_count": len(coverage),
+            "_coverage_keys": coverage,
+            "_file_keys": {f"{resource_path}/Attack1.png"},
+        }
+
+    shared = {"attack1", "attack1.png", "attack2", "attack2.png", "idle", "idle.png", "walk", "walk.png"}
+    records = [
+        animation_record(1, "1", shared | {"attack3_1", "attack3_1.png"}),
+        animation_record(2, "2", shared | {"projectile", "projectile.png"}),
+        animation_record(3, "3", shared | {"projectile", "projectile.png", "attack4_2", "attack4_2.png"}),
+    ]
+
+    deduped = _dedupe_pack_child_resources(records)
+
+    assert sorted(record["resource_path"] for record in deduped) == ["1", "2", "3"]
+
+
 @pytest.mark.asyncio
-async def test_pack_child_previews_generate_gallery_pages(tmp_path):
+async def test_pack_child_resources_generate_preview_without_child_previews(tmp_path):
+    source_paths = []
+    for idx, color in enumerate(["red", "blue"]):
+        source_path = tmp_path / "source" / f"child_{idx}.png"
+        _make_child_preview(source_path, color)
+        source_paths.append(source_path)
+
+    child_resources = [
+        {
+            "task_id": idx + 1,
+            "resource_type": "single_image",
+            "title": source_path.name,
+            "resource_path": f"PNG/{source_path.name}",
+            "source_paths": [str(source_path)],
+            "files": [
+                {
+                    "file_path": str(source_path),
+                    "file_name": source_path.name,
+                    "file_size": source_path.stat().st_size,
+                    "file_format": "png",
+                    "content_md5": f"source-md5-{idx}",
+                    "file_role": "main",
+                    "is_primary": True,
+                }
+            ],
+            "priority": 70,
+        }
+        for idx, source_path in enumerate(source_paths)
+    ]
+    entity = ResourceProcessingEntity(
+        resource_type="pack",
+        source_directory=str(tmp_path / "source"),
+        pack_name="Source Pack",
+        title="Source Pack",
+        content_md5="source-pack-md5",
+        child_resource_count=len(child_resources),
+        contains_resource_types=["single_image"],
+        auxiliary_metadata={"child_resources": child_resources},
+    )
+
+    records = _pack_child_resource_records(entity)
+    assert len(records) == 2
+    assert {Path(record["preview_path"]).name for record in records} == {"child_0.png", "child_1.png"}
+
+    policy = CrawlerThumbnailPolicy(str(tmp_path / "previews"))
+    previews = await policy.generate_previews(entity)
+
+    assert len(previews) == 1
+    assert previews[0].strategy.value == "contact_sheet"
+    assert previews[0].mode == "child_previews"
+    assert Path(previews[0].path).is_file()
+
+
+@pytest.mark.asyncio
+async def test_pack_single_svg_child_resource_rasterizes_preview(tmp_path):
+    svg_path = tmp_path / "source" / "svg" / "Sample.svg"
+    svg_path.parent.mkdir(parents=True, exist_ok=True)
+    svg_path.write_text(
+        """<svg xmlns="http://www.w3.org/2000/svg" width="128" height="96" viewBox="0 0 128 96">
+<rect width="128" height="96" fill="#55aa66"/>
+<circle cx="64" cy="48" r="28" fill="#ffffff"/>
+</svg>
+""",
+        encoding="utf-8",
+    )
+    child_resources = [
+        {
+            "task_id": 101,
+            "resource_type": "single_image",
+            "title": "Sample.svg",
+            "resource_path": "svg/Sample.svg",
+            "source_paths": [str(svg_path)],
+            "files": [
+                {
+                    "file_path": str(svg_path),
+                    "file_name": svg_path.name,
+                    "file_size": svg_path.stat().st_size,
+                    "file_format": "svg",
+                    "content_md5": "single-svg-child-md5",
+                    "file_role": "main",
+                    "is_primary": True,
+                }
+            ],
+            "priority": 70,
+        }
+    ]
+    entity = ResourceProcessingEntity(
+        resource_type="pack",
+        source_directory=str(tmp_path / "source"),
+        pack_name="SVG Pack",
+        title="SVG Pack",
+        content_md5="svg-pack-md5",
+        child_resource_count=len(child_resources),
+        contains_resource_types=["single_image"],
+        auxiliary_metadata={"child_resources": child_resources},
+    )
+
+    policy = CrawlerThumbnailPolicy(str(tmp_path / "previews"))
+    previews = await policy.generate_previews(entity)
+
+    assert len(previews) == 1
+    assert previews[0].mode == "child_preview"
+    assert Path(previews[0].path).is_file()
+    with Image.open(previews[0].path) as image:
+        assert max(image.size) == 512
+
+
+@pytest.mark.asyncio
+async def test_pack_child_previews_fit_dense_atlas_page_without_fixed_gallery_split(tmp_path):
     child_previews = []
     colors = [
         "red",
@@ -1191,11 +1620,9 @@ async def test_pack_child_previews_generate_gallery_pages(tmp_path):
     policy = CrawlerThumbnailPolicy(str(tmp_path / "previews"))
     previews = await policy.generate_previews(entity)
 
-    assert len(previews) == 2
+    assert len(previews) == 1
     assert previews[0].role == "primary"
     assert previews[0].mode == "child_previews"
-    assert previews[1].role == "gallery"
-    assert previews[1].mode == "child_previews_gallery"
     assert all(Path(preview.path).is_file() for preview in previews)
 
 
@@ -1358,27 +1785,70 @@ async def test_pack_child_preview_collage_preserves_source_size_ratio(tmp_path):
     assert red_pixels > blue_pixels * 20
 
 
-def test_pack_grid_collage_stacks_wide_same_size_items(tmp_path):
+def test_pack_collage_uses_dense_atlas_for_same_size_items(tmp_path, monkeypatch):
     red_path = tmp_path / "wide_red.png"
     blue_path = tmp_path / "wide_blue.png"
     _make_image(red_path, "red", size=(320, 120))
     _make_image(blue_path, "blue", size=(320, 120))
 
+    calls = []
+
+    def render_wrapper(images, output_size, *, layout_size=None, background=None, pad_to_output=True):
+        calls.append(len(images))
+        return _render_dense_atlas_image(
+            images,
+            output_size,
+            layout_size=layout_size,
+            background=background,
+            pad_to_output=pad_to_output,
+        )
+
+    monkeypatch.setattr(
+        "ResourceProcessor.preview.crawler_thumbnail_policy._render_dense_atlas_image",
+        render_wrapper,
+    )
+
     output_path = tmp_path / "wide_pack.webp"
     _save_pack_collage([str(red_path), str(blue_path)], output_path, "Wide Pack", max_items=2)
 
     with Image.open(output_path) as image:
-        rgb = image.convert("RGB")
-        top = rgb.getpixel((256, 124))
-        bottom = rgb.getpixel((256, 348))
-        left_mid = rgb.getpixel((144, 256))
-        right_mid = rgb.getpixel((368, 256))
+        pixels = list(image.convert("RGB").getdata())
 
-    assert top[0] > 160 and top[1] < 80 and top[2] < 80
-    assert bottom[2] > 120 and bottom[0] < 100 and bottom[1] < 120
-    left_is_red = left_mid[0] > 160 and left_mid[1] < 80 and left_mid[2] < 80
-    right_is_blue = right_mid[2] > 120 and right_mid[0] < 100 and right_mid[1] < 120
-    assert not (left_is_red and right_is_blue)
+    red_pixels = sum(1 for r, g, b in pixels if r > 170 and g < 90 and b < 90)
+    blue_pixels = sum(1 for r, g, b in pixels if b > 120 and r < 100 and g < 120)
+    assert calls == [2]
+    assert red_pixels > 0
+    assert blue_pixels > 0
+
+
+def test_pack_collage_does_not_pad_small_atlas_to_square_background(tmp_path):
+    first_path = tmp_path / "asset_page_1.png"
+    second_path = tmp_path / "asset_page_2.png"
+    _make_image(first_path, "red", size=(256, 224))
+    _make_image(second_path, "blue", size=(256, 224))
+
+    output_path = tmp_path / "small_pack.webp"
+    _save_pack_collage([str(first_path), str(second_path)], output_path, "Small Pack", size=1024, max_items=2)
+
+    with Image.open(output_path) as image:
+        assert image.size == (520, 224)
+
+
+def test_pack_collage_crops_sparse_transparent_raster(tmp_path):
+    first_path = tmp_path / "asset_page_1.png"
+    second_path = tmp_path / "asset_page_2.png"
+    _make_image(first_path, "red", size=(256, 224))
+    second_path.parent.mkdir(parents=True, exist_ok=True)
+    with Image.new("RGBA", (256, 224), (0, 0, 0, 0)) as image:
+        image.alpha_composite(Image.new("RGBA", (229, 76), (0, 0, 255, 255)), (15, 13))
+        image.save(second_path)
+
+    output_path = tmp_path / "cropped_pack.webp"
+    _save_pack_collage([str(first_path), str(second_path)], output_path, "Cropped Pack", size=1024, max_items=2)
+
+    with Image.open(output_path) as image:
+        assert image.width < 520
+        assert image.height <= 224
 
 
 def test_pack_collage_converts_sprite_strip_to_keyframes(tmp_path):
@@ -1400,6 +1870,59 @@ def test_pack_collage_converts_sprite_strip_to_keyframes(tmp_path):
 
     assert preview.width < 320
     assert preview.height > 80
+
+
+def test_pack_collage_keeps_short_sprite_strip_as_strip(tmp_path):
+    strip_path = tmp_path / "Attack (64x64).png"
+    with Image.new("RGBA", (256, 64), (0, 0, 0, 0)) as strip:
+        for idx in range(4):
+            color = ((idx * 40) % 255, 80, 220, 255)
+            strip.alpha_composite(Image.new("RGBA", (48, 48), color), (idx * 64 + 8, 8))
+        strip.save(strip_path)
+
+    item = {
+        "resource_type": "single_image",
+        "resource_path": "Characters/Attack (64x64).png",
+        "preview_path": str(strip_path),
+        "source_paths": [str(strip_path)],
+    }
+
+    preview = _open_pack_collage_image(item, prefer_source=True)
+
+    assert preview.width > 200
+    assert preview.height < 80
+
+
+def test_pack_collage_item_sizes_parse_svg_without_rasterizing(tmp_path, monkeypatch):
+    svg_path = tmp_path / "icon.svg"
+    svg_path.write_text(
+        """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 42 24">
+<rect width="42" height="24" fill="red"/>
+</svg>
+""",
+        encoding="utf-8",
+    )
+
+    def fail_rasterize(*args, **kwargs):
+        raise AssertionError("SVG size probing should not rasterize")
+
+    monkeypatch.setattr(
+        "ResourceProcessor.preview.crawler_thumbnail_policy._try_rasterize_svg",
+        fail_rasterize,
+    )
+
+    sizes = _pack_collage_item_sizes(
+        [
+            {
+                "resource_type": "single_image",
+                "resource_path": "icons/icon.svg",
+                "preview_path": str(svg_path),
+                "source_paths": [str(svg_path)],
+            }
+        ]
+    )
+
+    assert sizes == [(42, 24)]
 
 
 @pytest.mark.asyncio
@@ -1491,9 +2014,9 @@ async def test_pack_child_previews_skip_vector_format_when_sheet_covers(tmp_path
 
     policy = CrawlerThumbnailPolicy(str(tmp_path / "previews"))
     previews = await policy.generate_previews(entity)
-    assert len(previews) == 2
+    assert len(previews) == 1
     assert previews[0].mode == "child_previews"
-    assert previews[1].role == "gallery"
+    assert previews[0].role == "primary"
 
 
 def test_pack_child_previews_skip_vector_format_when_raster_covers_same_stems(tmp_path):
@@ -1555,7 +2078,7 @@ def test_pack_child_previews_skip_vector_format_when_raster_covers_same_stems(tm
 
 
 @pytest.mark.asyncio
-async def test_large_icon_pack_uses_dense_gallery_pages(tmp_path):
+async def test_large_icon_pack_uses_sampled_dense_atlas(tmp_path):
     child_previews = []
     for idx in range(501):
         preview_path = tmp_path / "icon_previews" / f"icon_{idx:03d}.webp"
@@ -1584,17 +2107,15 @@ async def test_large_icon_pack_uses_dense_gallery_pages(tmp_path):
     policy = CrawlerThumbnailPolicy(str(tmp_path / "previews"))
     previews = await policy.generate_previews(entity)
 
-    assert len(previews) == 2
+    assert len(previews) >= 1
     assert previews[0].role == "primary"
-    assert previews[1].role == "gallery"
-    assert previews[0].width == 1024
-    assert previews[0].height == 1024
-    assert previews[1].width == 1024
-    assert previews[1].height == 1024
+    assert all(64 <= preview.width <= 1024 for preview in previews)
+    assert all(64 <= preview.height <= 1024 for preview in previews)
+    assert all(preview.role == "gallery" for preview in previews[1:])
 
 
 @pytest.mark.asyncio
-async def test_large_single_image_pack_uses_dense_pages_without_name_hint(tmp_path):
+async def test_large_single_image_pack_uses_sampled_dense_atlas_without_name_hint(tmp_path):
     child_previews = []
     for idx in range(501):
         preview_path = tmp_path / "cursor_previews" / f"cursor_{idx:03d}.webp"
@@ -1623,10 +2144,11 @@ async def test_large_single_image_pack_uses_dense_pages_without_name_hint(tmp_pa
     policy = CrawlerThumbnailPolicy(str(tmp_path / "previews"))
     previews = await policy.generate_previews(entity)
 
-    assert len(previews) == 2
-    assert previews[0].width == 1024
-    assert previews[0].height == 1024
-    assert previews[1].role == "gallery"
+    assert len(previews) >= 1
+    assert previews[0].role == "primary"
+    assert all(64 <= preview.width <= 1024 for preview in previews)
+    assert all(64 <= preview.height <= 1024 for preview in previews)
+    assert all(preview.role == "gallery" for preview in previews[1:])
 
 
 @pytest.mark.asyncio
@@ -1819,3 +2341,97 @@ async def test_pack_preview_handles_mixed_natural_sort_names(tmp_path):
     previews = await policy.generate_previews(entity)
     assert len(previews) == 1
     assert Path(previews[0].path).is_file()
+
+
+def test_pack_direct_image_pages_sample_large_mixed_pack_by_directory():
+    paths = []
+    for idx in range(260):
+        paths.append(f"K:/pack/1 Main Character/Run/Run_{idx:04d}.png")
+    for idx in range(180):
+        paths.append(f"K:/pack/3 Enemies/Alien/Idle_{idx:04d}.png")
+    for idx in range(120):
+        paths.append(f"K:/pack/2 Location/Tiles/tile_{idx:04d}.png")
+    for idx in range(80):
+        paths.append(f"K:/pack/4 GUI/Icons/icon_{idx:04d}.png")
+
+    pages = _pack_direct_image_pages(paths)
+    sampled = [path for page in pages for path in page]
+
+    assert len(sampled) <= 96
+    assert pages
+    assert any("Main Character" in path for path in sampled)
+    assert any("Enemies" in path for path in sampled)
+    assert any("Location" in path for path in sampled)
+    assert any("GUI" in path for path in sampled)
+
+
+def test_pack_direct_image_pages_keep_icon_gallery_capacity():
+    paths = [f"K:/pack/icons/icon_{idx:04d}.png" for idx in range(700)]
+
+    pages = _pack_direct_image_pages(paths)
+    sampled = [path for page in pages for path in page]
+
+    assert len(sampled) <= 96
+    assert pages
+
+
+def test_pack_child_resource_records_sample_large_mixed_pack_before_layout(tmp_path):
+    child_resources = []
+    buckets = [
+        ("1 Main Character", "hero"),
+        ("2 Location/Tiles", "tile"),
+        ("3 Enemies", "enemy"),
+        ("4 Props", "prop"),
+    ]
+    for idx in range(180):
+        bucket, stem = buckets[idx % len(buckets)]
+        source_path = tmp_path / "source" / bucket / f"{stem}_{idx:04d}.png"
+        _make_image(
+            source_path,
+            color=((idx * 31) % 256, (idx * 53) % 256, (idx * 71) % 256),
+            size=(16 + idx % 5, 18 + idx % 7),
+        )
+        resource_type = "tileset" if idx % 45 == 0 else "single_image"
+        child_resources.append(
+            {
+                "task_id": idx + 1,
+                "resource_type": resource_type,
+                "title": source_path.name,
+                "resource_path": f"{bucket}/{source_path.name}",
+                "source_paths": [str(source_path)],
+                "files": [
+                    {
+                        "file_path": str(source_path),
+                        "file_name": source_path.name,
+                        "file_size": source_path.stat().st_size,
+                        "file_format": "png",
+                        "content_md5": f"source-md5-{idx}",
+                        "file_role": "main",
+                        "is_primary": True,
+                    }
+                ],
+                "priority": 20 if resource_type == "tileset" else 70,
+            }
+        )
+
+    entity = ResourceProcessingEntity(
+        resource_type="pack",
+        source_directory=str(tmp_path / "source"),
+        pack_name="Large Mixed Pack",
+        title="Large Mixed Pack",
+        content_md5="large-mixed-pack-md5",
+        child_resource_count=len(child_resources),
+        contains_resource_types=["single_image", "tileset"],
+        auxiliary_metadata={"child_resources": child_resources},
+    )
+
+    records = _pack_child_resource_records(entity)
+    pages = _pack_preview_pages(records, entity)
+    paged_records = [record for page in pages for record in page]
+
+    assert len(records) <= 96
+    assert pages
+    assert {record["task_id"] for record in paged_records} == {record["task_id"] for record in records}
+    assert any("Main Character" in record["resource_path"] for record in records)
+    assert any("Location" in record["resource_path"] for record in records)
+    assert any("Enemies" in record["resource_path"] for record in records)

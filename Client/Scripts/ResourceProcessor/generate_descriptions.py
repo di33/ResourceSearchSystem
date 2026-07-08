@@ -1,4 +1,4 @@
-"""Description generation step of the split pipeline.
+"""Client DB description refresh step of the split pipeline.
 
 Usage:
     python -m ResourceProcessor.generate_descriptions \
@@ -17,12 +17,15 @@ from ResourceProcessor.pipeline_common import (
     Report,
     env,
     make_arg_parser,
-    print_progress,
+)
+from resource_contracts.resource_types import (
+    AUDIO_FILE_RESOURCE_TYPE,
+    is_search_indexable_resource_type,
 )
 
 
 # ---------------------------------------------------------------------------
-# LLM provider registration (must happen before importing generate_resource_description)
+# LLM provider registration (must happen before Tools description generation)
 # ---------------------------------------------------------------------------
 
 try:
@@ -78,6 +81,13 @@ _NON_RETRYABLE_ERROR_MARKERS = (
 )
 
 _TRANSIENT_ERROR_MARKERS = (
+    "code=502",
+    "code=503",
+    "code=504",
+    "bad gateway",
+    "service unavailable",
+    "gateway timeout",
+    "cloud elb",
     "read timed out",
     "connect timed out",
     "connection timed out",
@@ -117,6 +127,10 @@ def _is_retryable_error(exc: Exception) -> bool:
     return _is_rate_limit_error(exc) or _is_transient_error(exc)
 
 
+def _should_generate_description(resource_type: str, *, force_resource_type: str = "") -> bool:
+    return is_search_indexable_resource_type(resource_type)
+
+
 def _retry_reason(exc: Exception) -> str:
     if _is_rate_limit_error(exc):
         return "限流"
@@ -135,10 +149,10 @@ async def _generate_with_retry(
     llm_model: str = "",
 ) -> bool:
     """Generate description with rate-limit retry. Returns True on success."""
-    from ResourceProcessor.crawler.resource_adapter import build_description_input
+    from ResourceProcessor.description.pack_description_builder import build_description_input_for_generation
     from ResourceProcessor.description.description_generator import generate_resource_description_text
 
-    desc_input = build_description_input(entity)
+    desc_input = await build_description_input_for_generation(cache, task_id, entity)
     last_exc: Exception | None = None
 
     for attempt in range(1, max_attempts + 1):
@@ -193,6 +207,49 @@ def _has_existing_description(cache, task_id: int) -> bool:
     )
 
 
+def _description_progress_label(
+    counters: dict,
+    *,
+    skipped_existing: int = 0,
+    skipped_audio: int = 0,
+    skipped_rebuild: int = 0,
+    skipped_non_indexable: int = 0,
+) -> str:
+    """Format progress for a streaming queue whose final total is not known yet."""
+    skipped_existing = skipped_existing or counters.get("skipped_existing", 0)
+    skipped_audio = skipped_audio or counters.get("skipped_audio", 0)
+    skipped_rebuild = skipped_rebuild or counters.get("skipped_rebuild", 0)
+    skipped_non_indexable = skipped_non_indexable or counters.get("skipped_non_indexable", 0)
+    queue = counters.get("queue")
+    try:
+        queue_size = queue.qsize() if queue is not None else 0
+    except Exception:
+        queue_size = 0
+    scan_state = "扫描完成" if counters.get("feeder_done") else "扫描中"
+    return (
+        f"已处理 {counters.get('processed', 0)}, "
+        f"已入队 {counters.get('enqueued', 0)}, {scan_state}, 队列 {queue_size}; "
+        f"描述成功 {counters.get('desc_ok', 0)}, 失败 {counters.get('failed', 0)}, "
+        f"已有描述跳过 {skipped_existing}, 音频跳过 {skipped_audio}, "
+        f"非索引资源跳过 {skipped_non_indexable}, 重建失败 {skipped_rebuild}"
+    )
+
+
+def _run_async_cli(coro, report: Report) -> bool:
+    try:
+        asyncio.run(coro)
+        return True
+    except KeyboardInterrupt:
+        close = getattr(coro, "close", None)
+        if close is not None:
+            close()
+        report.fail(
+            "用户中断",
+            "收到 Ctrl+C，已停止描述生成；可重新运行命令继续增量处理。",
+        )
+        return False
+
+
 async def _process_one(
     task_id, entity, desc_provider, desc_model,
     cache, report, semaphore, counters,
@@ -201,16 +258,19 @@ async def _process_one(
     from ResourceProcessor.preview_metadata import ProcessState
 
     async with semaphore:
+        success_state = ProcessState.DESCRIPTION_READY
         had_existing_description = _has_existing_description(cache, task_id)
         try:
             await _generate_with_retry(
                 cache, task_id, entity, desc_provider, report, llm_model=desc_model,
             )
-            cache.update_task_state(task_id, ProcessState.DESCRIPTION_READY)
+            cache.update_task_state(task_id, success_state)
             counters["desc_ok"] += 1
         except Exception as exc:
+            from ResourceProcessor.description.pack_description_builder import PackChildDescriptionsNotReadyError
+
             label = entity.title or entity.resource_path or entity.content_md5[:12]
-            if had_existing_description:
+            if had_existing_description and not isinstance(exc, PackChildDescriptionsNotReadyError):
                 cache.update_task_state(task_id, ProcessState.DESCRIPTION_READY)
                 counters["fallback_existing"] = counters.get("fallback_existing", 0) + 1
                 report.ok(
@@ -219,7 +279,8 @@ async def _process_one(
                 )
             else:
                 cache.update_task_state(
-                    task_id, ProcessState.DESCRIPTION_FAILED,
+                    task_id,
+                    ProcessState.DESCRIPTION_FAILED,
                     error_code="desc_error",
                     error_message=str(exc)[:500],
                 )
@@ -229,9 +290,8 @@ async def _process_one(
                     str(exc)[:120],
                 )
         counters["processed"] += 1
-        total = counters["processed"]
-        if total % 25 == 0:
-            print_progress(total, total, f"描述成功 {counters['desc_ok']}, 失败 {counters['failed']}")
+        if counters["processed"] % 25 == 0:
+            print(f"    进度: {_description_progress_label(counters)}")
 
 
 _SENTINEL = None  # Signals consumer to stop
@@ -261,43 +321,71 @@ async def _run_normal_mode(
 
     from ResourceProcessor.preview_metadata import ProcessState
 
-    counters = {"processed": 0, "desc_ok": 0, "failed": 0}
+    counters = {
+        "processed": 0,
+        "desc_ok": 0,
+        "failed": 0,
+        "enqueued": 0,
+        "feeder_done": False,
+        "skipped_existing": 0,
+        "skipped_audio": 0,
+        "skipped_rebuild": 0,
+        "skipped_non_indexable": 0,
+    }
     skipped_audio = 0
     skipped_rebuild = 0
     skipped_existing = 0
+    skipped_non_indexable = 0
+    feeder_exception: Exception | None = None
     semaphore = asyncio.Semaphore(args.concurrency)
     queue: asyncio.Queue = asyncio.Queue(maxsize=args.concurrency * 4)
 
     def _feeder():
         """Synchronous DB iteration — runs in a background thread."""
-        nonlocal skipped_audio, skipped_rebuild, skipped_existing
+        nonlocal skipped_audio, skipped_rebuild, skipped_existing, skipped_non_indexable, feeder_exception
         total_seen = 0
         try:
-            for task_id in cache.iter_tasks_by_state(
-                ProcessState.PREVIEW_READY,
-                limit=args.limit,
-                resource_type=args.resource_type,
-                source=args.source_filter,
-            ):
+            task_ids = (
+                cache.iter_tasks(
+                    limit=args.limit,
+                    resource_type=args.resource_type,
+                    source=args.source_filter,
+                )
+                if args.force
+                else cache.iter_tasks_by_state(
+                    ProcessState.PREVIEW_READY,
+                    limit=args.limit,
+                    resource_type=args.resource_type,
+                    source=args.source_filter,
+                )
+            )
+            for task_id in task_ids:
                 total_seen += 1
-                if args.resume and _has_existing_description(cache, task_id):
+                if args.resume and not args.force and _has_existing_description(cache, task_id):
                     cache.update_task_state(task_id, ProcessState.DESCRIPTION_READY)
                     skipped_existing += 1
+                    counters["skipped_existing"] = skipped_existing
                     continue
 
                 entity = cache.rebuild_entity_from_cache(task_id)
                 if entity is None:
                     skipped_rebuild += 1
+                    counters["skipped_rebuild"] = skipped_rebuild
+                    continue
+                if not _should_generate_description(entity.resource_type, force_resource_type=args.resource_type if args.force else ""):
+                    skipped_non_indexable += 1
+                    counters["skipped_non_indexable"] = skipped_non_indexable
                     continue
 
                 # Audio files: keep using audio-capable API-key providers.
-                is_audio = entity.resource_type == "audio_file"
+                is_audio = entity.resource_type == AUDIO_FILE_RESOURCE_TYPE
                 if is_audio:
                     selected = _select_audio_provider(
                         llm_provider, audio_llm_provider, audio_llm_model,
                     )
                     if selected is None:
                         skipped_audio += 1
+                        counters["skipped_audio"] = skipped_audio
                         continue
                     desc_provider, desc_model = selected
                 else:
@@ -310,14 +398,22 @@ async def _run_normal_mode(
                     queue.put((task_id, entity, desc_provider, desc_model)), loop,
                 )
                 fut.result()  # block until item is enqueued
+                counters["enqueued"] += 1
 
                 if total_seen % 1000 == 0:
                     qsize = queue.qsize()
-                    print_progress(
-                        counters["processed"], total_seen,
-                        f"已有描述跳过 {skipped_existing}, 音频跳过 {skipped_audio}, 重建失败 {skipped_rebuild}, 队列 {qsize}",
+                    print(
+                        "    进度: "
+                        f"已扫描 {total_seen}, 已入队 {counters['enqueued']}, "
+                        f"已处理 {counters['processed']}, 队列 {qsize}; "
+                        f"已有描述跳过 {skipped_existing}, 音频跳过 {skipped_audio}, "
+                        f"非索引资源跳过 {skipped_non_indexable}, "
+                        f"重建失败 {skipped_rebuild}"
                     )
+        except Exception as exc:
+            feeder_exception = exc
         finally:
+            counters["feeder_done"] = True
             # Signal all consumers to stop — send one sentinel per consumer.
             # queue.put() blocks until there's room, so no retry needed.
             for _ in range(args.concurrency):
@@ -325,6 +421,7 @@ async def _run_normal_mode(
                 fut.result()
 
     loop = asyncio.get_running_loop()
+    counters["queue"] = queue
     feeder_thread = threading.Thread(target=_feeder, daemon=True)
     feeder_thread.start()
 
@@ -336,28 +433,43 @@ async def _run_normal_mode(
     await asyncio.gather(*consumers)
     feeder_thread.join()
 
+    if feeder_exception is not None:
+        report.fail(
+            "描述扫描线程",
+            f"{type(feeder_exception).__name__}: {str(feeder_exception)[:500]}",
+        )
+        return
+
     report.ok(
         "描述生成",
         f"处理 {counters['processed']}, 跳过(已有描述) {skipped_existing}, "
         f"跳过(音频) {skipped_audio}, 跳过(重建失败) {skipped_rebuild}, "
+        f"跳过(非索引资源) {skipped_non_indexable}, "
         f"沿用已有描述 {counters.get('fallback_existing', 0)}, 失败 {counters['failed']}",
     )
 
 
 def main() -> int:
     parser = make_arg_parser(
-        "生成资源描述文本并写入 SQLite",
+        "从客户端 pipeline.db 读取待处理资源，生成描述并写回 SQLite",
         extra_args=[
             ("--llm-provider", {"default": None, "help": "LLM provider 名称 (默认 CLIENT_LLM_PROVIDER env 或 mock)"}),
             ("--audio-llm-provider", {"default": None, "help": "音频资源 LLM provider (默认 AUDIO_LLM_PROVIDER env，未设置则跳过音频)"}),
             ("--retry-failed", {"action": "store_true", "help": "重试描述生成失败的任务"}),
+            ("--force", {"action": "store_true", "help": "强制刷新匹配资源的描述；必须配合 --resource-type 使用，旧描述不删除，新描述作为最新记录写入"}),
             ("--max-retries", {"type": int, "default": 3, "help": "最大重试次数 (默认 3)"}),
             ("--concurrency", {"type": int, "default": None, "help": "并发请求数 (默认 API=5，Codex=1)"}),
         ],
     )
     args = parser.parse_args()
 
+    if args.force and not args.resource_type:
+        parser.error("--force 必须配合 --resource-type 使用，避免误刷新所有资源类型")
+    if args.force and args.retry_failed:
+        parser.error("--force 不能和 --retry-failed 同时使用")
+
     from ResourceProcessor.cache.local_cache import LocalCacheStore
+    from ResourceProcessor.preview_metadata import ProcessState
 
     db_path = os.path.abspath(args.db_path)
     cache = LocalCacheStore(db_path)
@@ -372,11 +484,11 @@ def main() -> int:
             else env("DESCRIPTION_CONCURRENCY", "5")
         )
 
-    report = Report(label="描述生成")
+    report = Report(label="客户端描述刷新")
     print("=" * 60)
-    print("  描述生成 (generate_descriptions)")
+    print("  客户端描述刷新 (generate_descriptions)")
     print("  输出状态:       description_ready")
-    print("  数据源:         DB-only")
+    print("  数据源:         pipeline.db")
     print(f"  数据库:         {db_path}")
     print(f"  LLM Provider:   {llm_provider}")
     if audio_llm_provider:
@@ -391,70 +503,90 @@ def main() -> int:
     print(f"  并发数:         {args.concurrency}")
     if args.limit:
         print(f"  限制:           {args.limit}")
+    if args.force:
+        print(f"  强制刷新:       {args.resource_type}")
     print("=" * 60)
 
     state_counts = cache.count_tasks_by_state()
     report.ok("当前状态统计", ", ".join(f"{k}={v}" for k, v in state_counts.items()) or "(空)")
 
-    # --retry-failed mode: re-process failed tasks from DB
-    if args.retry_failed:
-        candidates = _get_retry_candidates(cache, args.max_retries)
-        report.ok("重试模式", f"找到 {len(candidates)} 个可重试的失败任务")
+    interrupted = False
+    try:
+        # --retry-failed mode: re-process failed tasks from DB
+        if args.retry_failed:
+            candidates = _get_retry_candidates(cache, args.max_retries)
+            report.ok("重试模式", f"找到 {len(candidates)} 个可重试的失败任务")
 
-        tasks_to_run = []
-        skipped_existing = 0
-        for task in candidates:
-            task_id = task["id"]
-            if args.resume and _has_existing_description(cache, task_id):
-                cache.update_task_state(task_id, ProcessState.DESCRIPTION_READY)
-                skipped_existing += 1
-                continue
-            cache.increment_retry(task_id)
-            entity = cache.rebuild_entity_from_cache(task_id)
-            if entity is None:
-                continue
-            is_audio = entity.resource_type == "audio_file"
-            if is_audio:
-                selected = _select_audio_provider(
-                    llm_provider, audio_llm_provider, audio_llm_model,
-                )
-                if selected is None:
+            tasks_to_run = []
+            skipped_existing = 0
+            for task in candidates:
+                task_id = task["id"]
+                if args.resume and _has_existing_description(cache, task_id):
+                    cache.update_task_state(task_id, ProcessState.DESCRIPTION_READY)
+                    skipped_existing += 1
                     continue
+                cache.increment_retry(task_id)
+                entity = cache.rebuild_entity_from_cache(task_id)
+                if entity is None:
+                    continue
+                if not _should_generate_description(entity.resource_type, force_resource_type=args.resource_type if args.force else ""):
+                    continue
+                is_audio = entity.resource_type == AUDIO_FILE_RESOURCE_TYPE
+                if is_audio:
+                    selected = _select_audio_provider(
+                        llm_provider, audio_llm_provider, audio_llm_model,
+                    )
+                    if selected is None:
+                        continue
+                    else:
+                        desc_provider, desc_model = selected
                 else:
-                    desc_provider, desc_model = selected
-            else:
-                desc_provider, desc_model = llm_provider, ""
-            tasks_to_run.append((task_id, entity, desc_provider, desc_model))
+                    desc_provider, desc_model = llm_provider, ""
+                tasks_to_run.append((task_id, entity, desc_provider, desc_model))
 
-        counters = {"processed": 0, "desc_ok": 0, "failed": 0}
+            counters = {
+                "processed": 0,
+                "desc_ok": 0,
+                "failed": 0,
+                "enqueued": len(tasks_to_run),
+                "feeder_done": True,
+            }
 
-        async def _run_retry():
-            semaphore = asyncio.Semaphore(args.concurrency)
-            await asyncio.gather(*[
-                _process_one(tid, ent, prov, mdl, cache, report, semaphore, counters)
-                for tid, ent, prov, mdl in tasks_to_run
-            ])
+            async def _run_retry():
+                semaphore = asyncio.Semaphore(args.concurrency)
+                await asyncio.gather(*[
+                    _process_one(tid, ent, prov, mdl, cache, report, semaphore, counters)
+                    for tid, ent, prov, mdl in tasks_to_run
+                ])
 
-        asyncio.run(_run_retry())
-        report.ok(
-            "重试完成",
-            f"处理 {counters['processed']}, 成功 {counters['desc_ok']}, "
-            f"跳过(已有描述) {skipped_existing}, "
-            f"沿用已有描述 {counters.get('fallback_existing', 0)}, 失败 {counters['failed']}",
-        )
-    else:
-        # Normal mode: producer-consumer pattern — iterate and process concurrently
-        # so that LLM calls start as soon as the first task is found, not after
-        # rebuilding all eligible DB records.
-        asyncio.run(_run_normal_mode(
-            args, cache, report,
-            llm_provider, audio_llm_provider, audio_llm_model,
-        ))
+            interrupted = not _run_async_cli(_run_retry(), report)
+            if not interrupted:
+                report.ok(
+                    "重试完成",
+                    f"处理 {counters['processed']}, 成功 {counters['desc_ok']}, "
+                    f"跳过(已有描述) {skipped_existing}, "
+                    f"沿用已有描述 {counters.get('fallback_existing', 0)}, 失败 {counters['failed']}",
+                )
+        else:
+            # Normal mode: producer-consumer pattern — iterate and process concurrently
+            # so that LLM calls start as soon as the first task is found, not after
+            # rebuilding all eligible DB records.
+            interrupted = not _run_async_cli(
+                _run_normal_mode(
+                    args, cache, report,
+                    llm_provider, audio_llm_provider, audio_llm_model,
+                ),
+                report,
+            )
 
-    report.ok("最终状态统计", ", ".join(f"{k}={v}" for k, v in cache.count_tasks_by_state().items()))
+        status_label = "中断时状态统计" if interrupted else "最终状态统计"
+        report.ok(status_label, ", ".join(f"{k}={v}" for k, v in cache.count_tasks_by_state().items()))
+    finally:
+        cache.close()
 
-    cache.close()
     ok = report.summary()
+    if interrupted:
+        return 130
     return 0 if ok else 1
 
 

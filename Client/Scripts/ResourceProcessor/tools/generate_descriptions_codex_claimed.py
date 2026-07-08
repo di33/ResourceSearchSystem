@@ -30,7 +30,12 @@ try:
 except Exception:
     pass
 
-from ResourceProcessor.cache.local_cache import LocalCacheStore  # noqa: E402
+from ResourceProcessor.cache.local_cache import (  # noqa: E402
+    CONTENT_HASH_ALGORITHM,
+    LocalCacheStore,
+    description_content_hash,
+    refresh_resource_fingerprint_for_connection,
+)
 from ResourceProcessor.crawler.resource_adapter import build_description_input  # noqa: E402
 from ResourceProcessor.description.description_generator import (  # noqa: E402
     DescriptionResult,
@@ -38,6 +43,7 @@ from ResourceProcessor.description.description_generator import (  # noqa: E402
     generate_resource_description,
 )
 from ResourceProcessor.description.usage_classification import UsageClassification  # noqa: E402
+from resource_contracts.resource_types import AUDIO_FILE_RESOURCE_TYPE  # noqa: E402
 
 LEASE_TABLE = "description_lease"
 
@@ -89,6 +95,8 @@ def _ensure_lease_table(conn: sqlite3.Connection) -> None:
         ("usage_classification_reason", "TEXT NOT NULL DEFAULT ''"),
         ("usage_classification_suggestion", "TEXT NOT NULL DEFAULT '{}'"),
         ("usage_classification_version", "TEXT NOT NULL DEFAULT ''"),
+        ("content_hash", "TEXT NOT NULL DEFAULT ''"),
+        ("content_hash_algorithm", "TEXT NOT NULL DEFAULT 'sha256'"),
     ):
         if col_name not in desc_cols:
             conn.execute(f"ALTER TABLE resource_description ADD COLUMN {col_name} {col_def}")
@@ -135,12 +143,13 @@ def _claim_tasks(
         _ensure_lease_table(conn)
         now = _now()
         until = _future(lease_seconds)
-        state_sql, params = _states_clause(retry_failed)
+        state_sql, state_params = _states_clause(retry_failed)
         if retry_failed:
-            params.append(max_retries)
+            state_params.append(max_retries)
+        params: list[Any] = [AUDIO_FILE_RESOURCE_TYPE, *state_params]
 
         where = [
-            "t.resource_type <> 'audio_file'",
+            "t.resource_type <> ?",
             state_sql,
             f"l.task_id IS NULL",
             "NOT EXISTS (SELECT 1 FROM resource_description d WHERE d.task_id = t.id)",
@@ -196,6 +205,19 @@ def _release_success(
     try:
         now = _now()
         full = result.full_description or f"Main: {result.main_content}\nDetail: {result.detail_content}"
+        content_hash = description_content_hash(
+            main_content=result.main_content,
+            detail_content=result.detail_content,
+            full_description=full,
+            prompt_version=result.prompt_version,
+            quality_score=result.description_quality_score,
+            usage_space=result.usage_space,
+            usage_category=result.usage_category,
+            usage_subcategories=result.usage_subcategories,
+            usage_classification_reason=result.usage_classification_reason,
+            usage_classification_suggestion=result.usage_classification_suggestion,
+            usage_classification_version=result.usage_classification_version,
+        )
         conn.execute("BEGIN IMMEDIATE")
         lease = conn.execute(
             f"SELECT owner FROM {LEASE_TABLE} WHERE task_id = ?", (task_id,)
@@ -215,8 +237,8 @@ def _release_success(
                      prompt_version, quality_score, usage_space, usage_category,
                      usage_subcategories, usage_classification_reason,
                      usage_classification_suggestion, usage_classification_version,
-                     created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     content_hash, content_hash_algorithm, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -231,6 +253,8 @@ def _release_success(
                     result.usage_classification_reason,
                     json.dumps(result.usage_classification_suggestion or {}, ensure_ascii=False),
                     result.usage_classification_version,
+                    content_hash,
+                    CONTENT_HASH_ALGORITHM,
                     now,
                 ),
             )
@@ -246,6 +270,7 @@ def _release_success(
             (now, task_id),
         )
         conn.execute(f"DELETE FROM {LEASE_TABLE} WHERE task_id = ?", (task_id,))
+        refresh_resource_fingerprint_for_connection(conn, task_id, now=now)
         conn.commit()
         return True
     except Exception:
@@ -318,11 +343,12 @@ def _remaining_counts(db_path: str) -> dict[str, int]:
             """
             SELECT
                 SUM(CASE WHEN process_state = 'description_ready' THEN 1 ELSE 0 END) AS ready,
-                SUM(CASE WHEN process_state = 'preview_ready' AND resource_type <> 'audio_file' THEN 1 ELSE 0 END) AS pending,
-                SUM(CASE WHEN process_state = 'description_failed' AND resource_type <> 'audio_file' THEN 1 ELSE 0 END) AS failed,
-                SUM(CASE WHEN process_state = 'preview_ready' AND resource_type = 'audio_file' THEN 1 ELSE 0 END) AS audio_pending
+                SUM(CASE WHEN process_state = 'preview_ready' AND resource_type <> ? THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN process_state = 'description_failed' AND resource_type <> ? THEN 1 ELSE 0 END) AS failed,
+                SUM(CASE WHEN process_state = 'preview_ready' AND resource_type = ? THEN 1 ELSE 0 END) AS audio_pending
             FROM resource_task
-            """
+            """,
+            (AUDIO_FILE_RESOURCE_TYPE, AUDIO_FILE_RESOURCE_TYPE, AUDIO_FILE_RESOURCE_TYPE),
         ).fetchone()
         leased = conn.execute(f"SELECT COUNT(*) FROM {LEASE_TABLE}").fetchone()[0]
         return {

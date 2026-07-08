@@ -1,0 +1,39 @@
+services:
+  resource-processor:
+    build:
+      context: ..
+      dockerfile: resource_processing_server/Dockerfile
+      args:
+        INSTALL_BLENDER: ${INSTALL_BLENDER:-false}
+        RP_APT_VENDOR_MODE: ${RP_APT_VENDOR_MODE:-auto}
+        RP_EXTRA_APT_PACKAGES: ${RP_EXTRA_APT_PACKAGES:-}
+    image: resource-upload/resource-processing-server:dev
+    ports:
+      - "${RP_BIND_HOST:-0.0.0.0}:${RP_PORT:-8100}:8100"
+    env_file:
+      - path: .env
+        required: false
+      - path: .env.local
+        required: false
+    environment:
+      RP_SEARCH_SERVER_URL: ${RP_SEARCH_SERVER_URL:-http://host.docker.internal:8000}
+      RP_WORK_DIR: /app/data/resource_processing_server
+      RP_SNAPSHOT_DB_PATH: /app/data/resource_processing_server/snapshots.db
+      RP_SHARED_RESOURCE_PROCESSOR_PATH: /app/Tools
+      RP_PREVIEW_RENDERER_URL: ${RP_PREVIEW_RENDERER_URL:-http://host.docker.internal:8200}
+    volumes:
+      - ../data/resource_processing_server:/app/data/resource_processing_server
+      - ./storage_profiles.jsonc:/app/resource_processing_server/storage_profiles.jsonc:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8100/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"

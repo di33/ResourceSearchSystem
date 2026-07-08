@@ -8,6 +8,7 @@ import ntpath
 import re
 import shutil
 import sqlite3
+import sys
 import xml.etree.ElementTree as ET
 import zlib
 from collections import Counter, defaultdict
@@ -15,13 +16,29 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from resource_contracts.resource_types import (  # noqa: E402
+    ANIMATION_SEQUENCE_RESOURCE_TYPE,
+    ATLAS_RESOURCE_TYPE,
+    AUDIO_FILE_RESOURCE_TYPE,
+    EXCLUDED_REPORT_RESOURCE_TYPES,
+    FONT_FILE_RESOURCE_TYPE,
+    PACK_RESOURCE_TYPE,
+    RESOURCE_TYPE_DISPLAY_NAMES_ZH,
+    SINGLE_IMAGE_RESOURCE_TYPE,
+    TILED_MAP_RESOURCE_TYPE,
+    TILESET_RESOURCE_TYPE,
+)
+
 try:
     from fontTools.ttLib import TTFont
 except Exception:  # pragma: no cover - optional runtime dependency
     TTFont = None
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = REPO_ROOT / "data" / "databases" / "pipeline.db"
 OUT_PATH = REPO_ROOT / "data" / "reports" / "client_resource_summary.md"
 ASSET_DIR = REPO_ROOT / "data" / "reports" / "client_resource_summary_assets"
@@ -29,28 +46,19 @@ WORKSPACE = REPO_ROOT
 RASTER_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
 FONT_EXTS = {".ttf", ".otf"}
 SAMPLES_PER_TYPE = 5
-EXCLUDED_RESOURCE_TYPES = {"tiled_tileset"}
+EXCLUDED_RESOURCE_TYPES = tuple(EXCLUDED_REPORT_RESOURCE_TYPES)
 
-DISPLAY_NAMES = {
-    "single_image": "单图",
-    "audio_file": "音频文件",
-    "animation_sequence": "动画序列",
-    "tileset": "瓦片集",
-    "pack": "资源包",
-    "atlas": "图集",
-    "tiled_map": "Tiled 地图",
-    "font_file": "字体文件",
-}
+DISPLAY_NAMES = dict(RESOURCE_TYPE_DISPLAY_NAMES_ZH)
 
 STRUCTURES = {
-    "single_image": "一个资源任务对应一张主图片；主文件在 resource_file 中以 is_primary=1 标记。",
-    "audio_file": "一个资源任务对应一个音频主文件；预览通常是说明型卡片图。",
-    "animation_sequence": "一个资源任务包含多张连续帧图片；文件角色通常是 frame/main，预览通常为抽帧 GIF。",
-    "tileset": "一个资源任务包含一组瓦片图片；预览优先复用同包已有的 tilemap/tilesheet/spritesheet 总览图，找不到时回退到 contact_sheet 拼贴图。",
-    "pack": "一个资源任务代表完整素材包；resource_path 常为 __pack__，下挂大量主文件和附件。",
-    "atlas": "一个资源任务包含图集图片和索引/描述文件，常见组合为 PNG + XML。",
-    "tiled_map": "一个资源任务以 TMX 地图为核心，并关联地图使用的图片素材；预览优先按 TMX 渲染，没有 TMX 时才使用图片文件预览。",
-    "font_file": "一个资源任务对应一个字体文件，通常为 TTF 或 OTF。",
+    SINGLE_IMAGE_RESOURCE_TYPE: "一个资源任务对应一张主图片；主文件在 resource_file 中以 is_primary=1 标记。",
+    AUDIO_FILE_RESOURCE_TYPE: "一个资源任务对应一个音频主文件；预览通常是说明型卡片图。",
+    ANIMATION_SEQUENCE_RESOURCE_TYPE: "一个资源任务包含多张连续帧图片；文件角色通常是 frame/main，预览通常为抽帧 GIF。",
+    TILESET_RESOURCE_TYPE: "一个资源任务包含一组瓦片图片；预览优先复用同包已有的 tilemap/tilesheet/spritesheet 总览图，找不到时回退到 contact_sheet 拼贴图。",
+    PACK_RESOURCE_TYPE: "一个资源任务代表完整素材包；resource_path 常为 __pack__，下挂大量主文件和附件。",
+    ATLAS_RESOURCE_TYPE: "一个资源任务包含图集图片和索引/描述文件，常见组合为 PNG + XML。",
+    TILED_MAP_RESOURCE_TYPE: "一个资源任务以 TMX 地图为核心，并关联地图使用的图片素材；预览优先按 TMX 渲染，没有 TMX 时才使用图片文件预览。",
+    FONT_FILE_RESOURCE_TYPE: "一个资源任务对应一个字体文件，通常为 TTF 或 OTF。",
 }
 
 ROLE_NAMES = {
@@ -1159,11 +1167,11 @@ def get_related_overview_from_db(conn: sqlite3.Connection, sample: dict, raster_
           FROM resource_preview
           WHERE task_id=rt.id AND role='primary' AND path IS NOT NULL AND path<>''
         )
-        WHERE rt.source=? AND rt.pack_name=? AND rt.resource_type='single_image'
+        WHERE rt.source=? AND rt.pack_name=? AND rt.resource_type=?
           AND ({where_patterns})
         LIMIT 100
         """,
-        (sample.get("source") or "", sample.get("pack_name") or "", *patterns),
+        (sample.get("source") or "", sample.get("pack_name") or "", SINGLE_IMAGE_RESOURCE_TYPE, *patterns),
     )
 
     usable = []
@@ -1247,7 +1255,7 @@ def is_sequence_like_tileset(files: list[dict]) -> bool:
 
 
 def sample_family_key(resource_type: str, sample: dict) -> str:
-    if resource_type == "tileset":
+    if resource_type == TILESET_RESOURCE_TYPE:
         source = clean(sample.get("source", ""), 200).lower()
         pack = clean(sample.get("pack_name", ""), 200).lower()
         if pack:
@@ -1261,7 +1269,7 @@ def sample_family_key(resource_type: str, sample: dict) -> str:
 def can_build_preview(resource_type: str, files: list[dict], sample: dict | None = None) -> bool:
     if not files:
         return False
-    if resource_type == "tileset" and is_sequence_like_tileset(files):
+    if resource_type == TILESET_RESOURCE_TYPE and is_sequence_like_tileset(files):
         return False
     existing = [row for row in files if Path(row["file_path"]).exists()]
     if not existing:
@@ -1270,26 +1278,26 @@ def can_build_preview(resource_type: str, files: list[dict], sample: dict | None
     primary_ext = Path(primary["file_path"]).suffix.lower()
     raster_count = sum(1 for row in existing if Path(row["file_path"]).suffix.lower() in RASTER_EXTS)
 
-    if resource_type == "single_image":
+    if resource_type == SINGLE_IMAGE_RESOURCE_TYPE:
         return primary_ext in RASTER_EXTS or primary_ext == ".svg"
-    if resource_type == "animation_sequence":
+    if resource_type == ANIMATION_SEQUENCE_RESOURCE_TYPE:
         return raster_count >= 2
-    if resource_type == "tiled_map" and sample is not None:
+    if resource_type == TILED_MAP_RESOURCE_TYPE and sample is not None:
         tmx_paths = [
             row["file_path"]
             for row in existing
             if Path(row["file_path"]).suffix.lower() == ".tmx"
         ]
         return bool(tmx_paths) and any(tmx_has_nonzero_tiles(path) for path in tmx_paths)
-    if resource_type == "atlas":
+    if resource_type == ATLAS_RESOURCE_TYPE:
         xml_paths = [row["file_path"] for row in existing if Path(row["file_path"]).suffix.lower() == ".xml"]
         raster_paths = [row["file_path"] for row in existing if Path(row["file_path"]).suffix.lower() in RASTER_EXTS]
         return any(atlas_source_image_path(xml_path, raster_paths) for xml_path in xml_paths)
-    if resource_type in {"tileset", "pack", "tiled_map"}:
+    if resource_type in {TILESET_RESOURCE_TYPE, PACK_RESOURCE_TYPE, TILED_MAP_RESOURCE_TYPE}:
         return raster_count >= 1
-    if resource_type == "font_file":
+    if resource_type == FONT_FILE_RESOURCE_TYPE:
         return primary_ext in FONT_EXTS
-    if resource_type == "audio_file":
+    if resource_type == AUDIO_FILE_RESOURCE_TYPE:
         return True
     return True
 
@@ -1298,7 +1306,7 @@ def cached_preview_usable(resource_type: str, cached_preview: dict) -> bool:
     path = cached_preview.get("preview_path") or ""
     if not path or not Path(path).exists():
         return False
-    if resource_type != "audio_file" and "_metadata" in Path(path).stem.lower():
+    if resource_type != AUDIO_FILE_RESOURCE_TYPE and "_metadata" in Path(path).stem.lower():
         return False
     if cached_preview.get("fail_reason"):
         return False
@@ -1435,7 +1443,7 @@ def pick_samples(conn: sqlite3.Connection, resource_type: str, limit: int = SAMP
             if family_key in picked_families:
                 continue
             sample["files"] = get_files(conn, sample["id"])
-            if resource_type == "tileset" and is_sequence_like_tileset(sample["files"]):
+            if resource_type == TILESET_RESOURCE_TYPE and is_sequence_like_tileset(sample["files"]):
                 continue
             cached_preview = get_best_cached_preview(conn, sample["id"])
             if not can_build_preview(resource_type, sample["files"], sample):
@@ -1461,30 +1469,33 @@ def collect() -> dict:
     conn.row_factory = sqlite3.Row
 
     data: dict = {}
+    excluded_placeholders = ",".join("?" for _ in EXCLUDED_RESOURCE_TYPES)
     data["type_counts"] = rows(
         conn,
-        """
+        f"""
         SELECT resource_type, COUNT(*) AS resource_count
         FROM resource_task
-        WHERE resource_type NOT IN ('tiled_tileset')
+        WHERE resource_type NOT IN ({excluded_placeholders})
         GROUP BY resource_type
         ORDER BY resource_count DESC, resource_type
         """,
+        EXCLUDED_RESOURCE_TYPES,
     )
     data["total"] = sum(row["resource_count"] for row in data["type_counts"])
 
     format_rows = rows(
         conn,
-        """
+        f"""
         SELECT rt.resource_type, lower(rf.file_format) AS file_format,
                COUNT(*) AS file_count,
                COUNT(DISTINCT rf.task_id) AS resource_count
         FROM resource_file rf
         JOIN resource_task rt ON rt.id = rf.task_id
-        WHERE rt.resource_type NOT IN ('tiled_tileset')
+        WHERE rt.resource_type NOT IN ({excluded_placeholders})
         GROUP BY rt.resource_type, lower(rf.file_format)
         ORDER BY rt.resource_type, file_count DESC, file_format
         """,
+        EXCLUDED_RESOURCE_TYPES,
     )
     data["formats_by_type"] = defaultdict(list)
     for row in format_rows:
@@ -1494,12 +1505,12 @@ def collect() -> dict:
         row["resource_type"]: row
         for row in rows(
             conn,
-            """
+            f"""
             WITH c AS (
               SELECT rt.id, rt.resource_type, COUNT(rf.id) AS file_count
               FROM resource_task rt
               LEFT JOIN resource_file rf ON rf.task_id = rt.id
-              WHERE rt.resource_type NOT IN ('tiled_tileset')
+              WHERE rt.resource_type NOT IN ({excluded_placeholders})
               GROUP BY rt.id, rt.resource_type
             )
             SELECT resource_type,
@@ -1509,6 +1520,7 @@ def collect() -> dict:
             FROM c
             GROUP BY resource_type
             """,
+            EXCLUDED_RESOURCE_TYPES,
         )
     }
 
@@ -1518,22 +1530,23 @@ def collect() -> dict:
         SELECT lower(rf.file_format) AS file_format, COUNT(*) AS file_count
         FROM resource_file rf
         JOIN resource_task rt ON rt.id = rf.task_id
-        WHERE rt.resource_type='single_image' AND rf.is_primary=1
+        WHERE rt.resource_type=? AND rf.is_primary=1
         GROUP BY lower(rf.file_format)
         ORDER BY file_count DESC, file_format
         """,
+        (SINGLE_IMAGE_RESOURCE_TYPE,),
     )
 
     samples = []
     for row in data["single_formats"]:
         fmt = row["file_format"]
-        for index, sample in enumerate(pick_samples(conn, "single_image", file_format=fmt), start=1):
+        for index, sample in enumerate(pick_samples(conn, SINGLE_IMAGE_RESOURCE_TYPE, file_format=fmt), start=1):
             sample["sample_label"] = f"单图 {fmt} 示例 {index}"
             samples.append(sample)
 
     for type_row in data["type_counts"]:
         typ = type_row["resource_type"]
-        if typ == "single_image":
+        if typ == SINGLE_IMAGE_RESOURCE_TYPE:
             continue
         for index, sample in enumerate(pick_samples(conn, typ), start=1):
             sample["sample_label"] = f"{DISPLAY_NAMES.get(typ, typ)} 示例 {index}"
@@ -1595,7 +1608,7 @@ def build_markdown(data: dict) -> str:
     for sample in data["samples"]:
         typ = sample["resource_type"]
         title = sample["title"] or sample["resource_path"] or sample["source_resource_id"]
-        display_files = atlas_display_files(sample["files"]) if typ == "atlas" else sample["files"]
+        display_files = atlas_display_files(sample["files"]) if typ == ATLAS_RESOURCE_TYPE else sample["files"]
         lines.append(f"### {sample['sample_label']}")
         lines.append("")
         lines.append(f"- 资源类型：{type_title(typ)}")
@@ -1603,7 +1616,7 @@ def build_markdown(data: dict) -> str:
         lines.append(f"- 来源：`{sample['source']}`")
         lines.append(f"- 标题/路径：{clean(title, 140)}")
         lines.append(f"- 所属包：{clean(sample['pack_name'] or '-', 140)}")
-        lines.append(f"- 文件数：{fmt_int(len(display_files) if typ == 'atlas' else sample['file_count'])}")
+        lines.append(f"- 文件数：{fmt_int(len(display_files) if typ == ATLAS_RESOURCE_TYPE else sample['file_count'])}")
         description = sample.get("description_full") or sample.get("description_main") or "暂无描述"
         lines.append(f"- 描述：{clean(description, 180)}")
         preview_format = sample["preview_format"] or Path(sample["preview_path"]).suffix.lstrip(".") or "未记录"

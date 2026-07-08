@@ -2,6 +2,8 @@
 
 import asyncio
 import os
+import threading
+import time
 from unittest.mock import patch
 
 import pytest
@@ -21,6 +23,7 @@ from ResourceProcessor.description.ksyun_llm_provider import (  # noqa: E402
     _build_user_content,
     _prepare_audio_input,
     _parse_response,
+    _run_in_daemon_thread,
 )
 
 
@@ -234,6 +237,33 @@ def test_generate_description_success():
     assert result.usage_subcategories == ["人物"]
     desc_call.assert_called_once()
     class_call.assert_called_once()
+
+
+def test_daemon_thread_bridge_cancels_without_waiting():
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_call():
+        started.set()
+        release.wait(5)
+        return "late-result"
+
+    async def scenario():
+        task = asyncio.create_task(_run_in_daemon_thread(blocked_call))
+        for _ in range(100):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert started.is_set()
+
+        task.cancel()
+        began = time.perf_counter()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert time.perf_counter() - began < 0.2
+        release.set()
+
+    _run(scenario())
 
 
 def test_generate_via_convenience_function():

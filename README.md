@@ -1,6 +1,6 @@
 # 通用数字资源语义检索系统
 
-本地端 + 云端分离架构。本地完成资源预览、描述、向量的生成与缓存，云端负责注册、上传、提交、检索与下载。
+客户端 + 预览渲染器 + 资源加工服务器 + 搜索服务器分离架构。客户端或其他资源生产方先把资源上传到对象存储，并用 `storage_profile_id + object_key` 形成资源清单；资源加工服务器消费清单、补齐预览/描述并 upsert 到搜索服务器；搜索服务器负责入库、向量化、检索与下载。包文件不再作为资源入库，只作为资源 manifest 的 `package_object`，搜索命中资源后可选择下载对应包。
 
 ---
 
@@ -12,12 +12,11 @@ ResourceUpload/
 ├── client/                          # 本地客户端
 │   ├── Scripts/
 │   │   ├── run_resource_pipeline.py # CLI 入口：筛选 → 预览 → 索引
-│   │   └── ResourceProcessor/       # 客户端 Python 包
+│   │   └── ResourceProcessor/       # 客户端 DB/命令实现，调用 Tools 的纯生成能力
 │   │       ├── preview_metadata.py  # 公共数据模型 (ProcessState, PreviewInfo, RPE)
 │   │       ├── preview/             # 预览生成
 │   │       │   ├── thumbnail_generator.py
 │   │       │   ├── pipeline_incremental.py
-│   │       │   └── blender_render_fbx_frames.py
 │   │       ├── description/         # LLM 描述生成 & 校验
 │   │       │   ├── description_generator.py
 │   │       │   └── description_validator.py
@@ -39,16 +38,24 @@ ResourceUpload/
 │   │       └── core/
 │   └── resource_types.json          # 支持的文件扩展名配置
 │
-├── server/                          # 云端服务
-│   ├── Scripts/
-│   │   └── CloudService/            # 云端 Python 包
-│   │       ├── cloud_client.py      # 注册/上传/提交 API 合约 & Mock
-│   │       ├── search_client.py     # 检索/下载 API 合约 & Mock & Agent 工具
-│   │       ├── download_service.py  # 下载服务层
-│   │       ├── upload_orchestrator.py # 上传编排
-│   │       └── acceptance.py        # 验收清单 & 交付计划
-│   └── Test/
-│       └── CloudService/
+├── SearchServer/                    # 搜索服务器
+├── resource_processing_server/      # 资源加工服务器
+├── preview_renderer/                # 统一预览渲染服务器
+├── Tools/                           # 共享工具包
+│   ├── ResourceProcessor/           # 纯预览/描述/适配工具，不访问客户端、服务器或数据库
+│   │   ├── crawler/
+│   │   └── preview/
+│   │       ├── thumbnail_generator.py
+│   │       └── runtime/
+│   │           └── helper/
+│   │               └── blender_render_fbx_frames.py
+│   ├── spine_preview/
+│   │   ├── runtime_preview.py
+│   │   └── runtime/
+│   │       └── helper/
+│   │           ├── postprocess_frames.py
+│   │           └── render_actions_cli.mjs
+│   └── requirements.txt             # 共享工具依赖
 │
 ├── data/                            # 数据库、日志、预览、报告和运行 workdir
 │   ├── databases/
@@ -61,11 +68,13 @@ ResourceUpload/
 ├── Design/                          # 设计文档
 ├── specs/                           # Spec 文档与实施清单
 │   └── specs.md                     # 12 个 Spec 实施清单
+├── manage_servers.py                # 跨平台构建/启动/停止三台服务器
 ├── pytest.ini                       # pytest 配置
 ├── conftest.py                      # 测试路径初始化
 ├── run_tests.py                     # unittest 运行脚本（备选）
-├── client/requirements.txt          # 客户端依赖
-└── server/requirements.txt          # 服务端依赖
+├── Tools/requirements.txt           # 预览/描述/上传工具依赖
+├── client/requirements.txt          # 客户端依赖（引用 Tools 依赖）
+└── SearchServer/requirements.txt    # 搜索服务器依赖
 ```
 
 ---
@@ -84,13 +93,46 @@ ResourceUpload/
 
 ## 快速开始
 
-> 常用运维命令请见 `client/OPERATIONS_GUIDE.md` 和 `server/OPERATIONS_GUIDE.md`。
+> 常用运维命令请见 `client/OPERATIONS_GUIDE.md` 和 `SearchServer/OPERATIONS_GUIDE.md`。
+
+### 0. 一键管理三台服务器
+
+`manage_servers.py` 会在仓库根目录统一管理 `SearchServer`、`preview_renderer`、`resource_processing_server` 三个 Docker Compose 项目，Windows 和 Linux 使用同一套命令逻辑。
+
+Windows：
+
+```powershell
+.\.venv\Scripts\python.exe .\manage_servers.py start         # 启动三台服务器，等待健康检查
+.\.venv\Scripts\python.exe .\manage_servers.py start --build # 构建后启动
+.\.venv\Scripts\python.exe .\manage_servers.py build         # 只构建镜像，也可用 compile
+.\.venv\Scripts\python.exe .\manage_servers.py stop          # 停止三台服务器，不删除数据卷
+.\.venv\Scripts\python.exe .\manage_servers.py status        # 查看 compose 状态
+```
+
+Linux：
+
+```bash
+python3 manage_servers.py start
+python3 manage_servers.py start --build
+python3 manage_servers.py build
+python3 manage_servers.py stop
+python3 manage_servers.py status
+```
+
+常用参数：
+
+- `--build`：启动或重启前先构建镜像；默认不构建，直接 `docker compose up -d --no-build`。
+- `--no-wait`：启动后不等待 `/health`。
+- `--timeout 600`：把每个服务的健康检查等待时间改为 600 秒。
+- `--volumes`：停止或重启时同时删除 compose 数据卷，会清空服务端持久化数据，谨慎使用。
+- `search` / `renderer` / `processor`：只操作指定服务组，例如 `python3 manage_servers.py restart renderer processor`。
 
 ### 1. 安装依赖
 
 ```bash
 pip install -r client/requirements.txt
-pip install -r server/requirements.txt
+pip install -r resource_processing_server/requirements.txt
+pip install -r SearchServer/requirements.txt
 ```
 
 ### 2. 运行全部测试
@@ -141,52 +183,29 @@ python client/Scripts/run_resource_pipeline.py --source ... --work-dir ...
 
 未找到 Blender 时自动退化为占位 GIF（512×512 灰底 + 文件名标注）。
 
-### 5. 运行 ResourceCrawler 资源级流水线
+### 5. 运行 ResourceCrawler 资源加工链路
 
-当输入不是“本地原始目录”，而是 `ResourceCrawler` 的 `crawler_state.db` 与 `output/assets/...` 时，使用专用入口：
+ResourceCrawler 来源使用拆分命令，不再使用旧的 `run_crawler_resource_pipeline.py`。推荐顺序：
 
-```bash
-python client/Scripts/run_crawler_resource_pipeline.py \
-    --crawler-state-db G:/ResourceCrawler/data/crawler_state.db \
-    --crawler-output G:/ResourceCrawler/output \
-    --work-dir G:/ResourceUpload/data/workdirs/test_workdir_crawler
+```powershell
+cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts;G:\ResourceUpload\Tools"; .\.venv\Scripts\python.exe -m ResourceProcessor.tools.sync_pipeline_from_crawler_state --crawler-state-db "G:\ResourceCrawler\data\crawler_state.db" --crawler-output "K:\ResourceCrawler\output" --db-path "G:\ResourceUpload\data\databases\pipeline.db"
+cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts;G:\ResourceUpload\Tools"; .\.venv\Scripts\python.exe -m ResourceProcessor.upload_objects_to_storage --db-path "G:\ResourceUpload\data\databases\pipeline.db" --client-id "resource-crawler" --storage-profile-id "<profile-id>" --no-previews --missing-manifest-only --workers 8
+cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts;G:\ResourceUpload\Tools"; .\.venv\Scripts\python.exe -m ResourceProcessor.generate_previews --db-path "G:\ResourceUpload\data\databases\pipeline.db" --work-dir "G:\ResourceUpload\data" --resume --preview-mode renderer --preview-renderer "http://localhost:8200" --client-id "resource-crawler" --skip-missing-object-manifest
+cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts;G:\ResourceUpload\Tools"; .\.venv\Scripts\python.exe -m ResourceProcessor.generate_descriptions --db-path "G:\ResourceUpload\data\databases\pipeline.db" --resume
+cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts;G:\ResourceUpload\Tools"; .\.venv\Scripts\python.exe -m ResourceProcessor.upload_resources --db-path "G:\ResourceUpload\data\databases\pipeline.db" --client-id "resource-crawler" --storage-profile-id "<profile-id>" --processing-server "http://localhost:8100" --include-descriptions --manifest-out "G:\ResourceUpload\data\manifests\processing_manifest.jsonl" --workers 8
 ```
 
-这条流水线会执行：
-- 读取 `crawler_state.db.resource_index` 作为资源级入口
-- 结合 `crawler_state.db.assets` 和包级 JSON 补全 `pack_name`、`resource_path`、`tags`、`description` 等上下文
-- 按 `resource_type` 生成缩略图
-- 用缩略图和结构化元数据生成 LLM 描述
-- 复用现有上传接口完成 `register -> upload-batch -> previews -> commit`
-- 对多文件资源和 `pack` 资源在上传前预打包 ZIP，并将 ZIP 作为主下载对象
-- 保存 `source_resource_id` 与父子资源关系，搜索结果可直接返回 `parent_download_url`
+这条链路会执行：
+- 从 `crawler_state.db` 同步资源级记录到本地 `pipeline.db`。
+- 客户端先上传源对象到对象存储，并把 `storage_profile_id + object_key` manifest 保存到本地 DB。
+- `preview_renderer` 只接收调用方传入的对象读取 URL，返回预览数据；调用方负责保存和上传预览。
+- `upload_resources` 把资源 manifest、可选描述、可选预览、可选 `package_object` 提交给资源加工服务器。
+- `pack` 只上传到对象存储并作为对应资源 manifest 的 `package_object`；不生成预览/描述，也不提交到加工服务器。
 
-常用参数：
-
-| 参数 | 必填 | 说明 |
-|------|------|------|
-| `--crawler-state-db` | 否 | `ResourceCrawler/data/crawler_state.db` 路径 |
-| `--crawler-output` | 是 | `ResourceCrawler/output` 根目录 |
-| `--work-dir` | 否 | 工作输出目录，默认 `data/workdirs/test_workdir_crawler` |
-| `--resource-type` | 否 | 只处理某一类资源，如 `single_image` / `tileset` / `audio_file` |
-| `--source-filter` | 否 | 只处理某个来源，如 `kenney` |
-| `--limit` | 否 | 最多处理多少条资源 |
-| `--llm-provider` | 否 | 描述生成 provider，默认读 `.env` / `.env.local` 的 `CLIENT_LLM_PROVIDER` |
-| `--no-previews` | 否 | 跳过预览生成 |
-| `--no-upload` | 否 | 仅本地处理，不上传 |
-| `--server` | 否 | 指定服务端地址 |
-
-产出：
-- `{work-dir}/crawler_resources.jsonl` — 资源级映射结果明细，便于断点续跑与字段核对
-- `{work-dir}/test_results.jsonl` — 逐条描述/上传结果明细
-- `{work-dir}/previews/` — 资源级缩略图
-- `{work-dir}/test_results.json` — 汇总摘要与步骤日志
-
-当前已落地的缩略图策略：
+当前已落地的资源预览策略（不含 `pack`）：
 - `single_image`：位图直接缩略，`svg` 优先栅格化，失败时退化为 metadata card
 - `tileset`：生成拼贴网格主预览，并附带单 tile gallery 预览
 - `animation_sequence`：按顺序抽样帧生成 GIF
-- `pack`：优先使用子资源图片生成整包拼贴图，缺少可视素材时退化为 metadata card
 - `audio_file` / `font_file` / `structured_resource`：优先生成说明型卡片图，降低对原始文件可视性的依赖
 
 上传策略说明：
@@ -197,6 +216,27 @@ python client/Scripts/run_crawler_resource_pipeline.py \
 ---
 
 ## 配置文件
+
+### Tools/.env
+
+生成预览、生成描述、用途分类和包描述聚合相关配置位于 `Tools/.env`。私有 API Key 放在 `Tools/.env.local`，不要提交到 Git。
+
+### 服务安全配置
+
+资源加工服务器和 preview-renderer 不再把 `X-Client-Id` 当作身份凭证。生产环境至少配置：
+
+```env
+RP_CLIENT_API_KEYS=resource-crawler:<processing-api-key>
+PR_CLIENT_API_KEYS=resource-crawler:<renderer-api-key>
+RP_PREVIEW_RENDERER_API_KEY=<renderer-api-key>
+PR_ALLOWED_SOURCE_URL_HOSTS=assets.example.com,*.cdn.example.com
+SEARCH_READ_API_KEYS=<frontend-or-search-api-key>
+SEARCH_INGEST_API_KEYS=<processing-server-to-search-api-key>
+```
+
+客户端脚本通过 `--api-key` 或 `RP_PROCESSING_SERVER_API_KEY` / `PR_PREVIEW_RENDERER_API_KEY` 发送 key。客户端不需要 SearchServer 写 key；资源加工服务器通过 `RP_SEARCH_SERVER_API_KEY` 使用 `SEARCH_INGEST_API_KEYS` 调用 SearchServer 写接口。renderer 仍只接收 `ObjectRef + source_object_url` 并返回预览文件，不保存或登记预览；但 `source_object_url` 的 host 必须落在 `PR_ALLOWED_SOURCE_URL_HOSTS` 白名单内。
+
+SearchServer 读接口使用 `SEARCH_READ_API_KEYS` / JWT；写入口使用 `SEARCH_INGEST_API_KEYS`，或带 `ingest` / `admin` / `search:ingest` / `resources:write` 授权的 JWT。向量同步失败会写入 `vector_sync_job`，可调用 `POST /resources/vector-sync/retry` 重试。
 
 ### resource_types.json
 
@@ -229,21 +269,33 @@ python client/Scripts/run_crawler_resource_pipeline.py \
 | `preview_metadata` | `ProcessState` 状态机、`PreviewInfo`、`ResourceProcessingEntity` |
 | `description/description_generator` | LLM 描述接口抽象、Mock 实现、`LLMFactory` |
 | `description/description_validator` | 格式/字数/关键词校验、重试、主备模型切换 |
-| `embedding/embedding_generator` | Embedding 接口抽象、Mock 实现、维度校验、重试 |
 | `cache/local_cache` | SQLite 持久化：6 张表、按 content_md5 查询、断点恢复 |
 | `cache/dedup_strategy` | 去重判定：全量复用 / 重跑描述 / 重跑向量 / 恢复中断 |
 | `core/resource_filter` | 文件筛选、分类拷贝、完整性校验、资源索引 |
-| `core/upload_pipeline` | 共享上传编排，复用于目录扫描流程和 crawler 资源级流程 |
+| `core/processing_manifest` | 构造资源加工服务器 manifest，包含 source/previews/description/package_object |
+| `ObjectStorageUpload` | 客户端对象存储上传、读取 URL 生成、manifest 写入 |
 | `core/task_manager` | 并发任务管理、性能指标 |
+
+### Tools — 纯工具能力
+
+Tools 只提供可被客户端或服务端调用的预览/描述生成能力，不提供面向用户的操作命令，也不访问客户端、服务器或数据库。调用者负责读取/写入各自的数据源，并把输入数据传给 Tools。
+
+| 模块 | 功能 |
+|------|------|
+| `ResourceProcessor/description/description_generator` | 根据调用者传入的描述输入调用 LLM，返回生成结果 |
+| `ResourceProcessor/preview` | 生成缩略图、资源级预览和可复用的预览 metadata |
+| `ResourceProcessor/crawler/records` | crawler 资源/资产记录的轻量数据结构，不读取 crawler DB |
+| `spine_preview/runtime_preview` | Spine 预览运行时封装 |
+| `spine_preview/runtime/helper`、`ResourceProcessor/preview/runtime/helper` | 只供运行时调用的 helper 脚本 |
 
 ### Server — 云端服务
 
 | 模块 | 功能 |
 |------|------|
-| `cloud_client` | `register` / `upload_file` / `upload_preview` / `commit` API 合约 + Mock |
+| `resource_processing_server` | `POST /processing-jobs`、`POST /processed-resources/delete`、快照回放 |
+| `SearchServer /resources` | 加工服务器内部调用的 `upsert` / `delete` 入库接口 |
 | `search_client` | `search` / `get_download_link` API 合约 + Mock + Agent 工具入参出参 |
 | `download_service` | 下载链接生成、有效期控制、小文件 Base64、Agent 适配器 |
-| `upload_orchestrator` | 注册 → 上传 → 提交全流程编排，本地状态同步 |
 | `acceptance` | 17 项验收清单（安全/容错/性能/质量/集成）+ 6 阶段交付计划 |
 
 ---
@@ -251,11 +303,9 @@ python client/Scripts/run_crawler_resource_pipeline.py \
 ## 处理状态机
 
 ```
-discovered → preview_ready → description_ready → embedding_ready → package_ready
-     ↓              ↓                ↓                  ↓
-preview_failed  description_failed  embedding_failed   ...
-                                                        ↓
-                                              registered → uploaded → committed → synced
+客户端本地：discovered → preview_ready → description_ready → object_manifest_ready → submitted
+加工服务器：queued → validating → previewing → describing → submitting → completed
+搜索服务器：upserted/committed → searchable
 ```
 
 每个阶段失败不会阻塞其他资源，会记录错误码并在下次运行时自动恢复。
@@ -463,24 +513,34 @@ EmbeddingFactory.register("openai", MyEmbeddingProvider)
 
 ---
 
-## 云端 API 替换
+## 服务 API 接入
 
-当前 `MockCloudClient` 和 `MockSearchClient` 模拟云端行为。接入真实后端：
+客户端不再直接调用 SearchServer 的注册/上传/提交接口。资源生产方应先写对象存储，再提交加工 manifest；SearchServer 的写接口只由资源加工服务器调用：
 
 ```python
-from CloudService.cloud_client import BaseCloudClient
+import requests
 
-class RealCloudClient(BaseCloudClient):
-    async def register(self, request):
-        # POST /resources/register
-        ...
-    async def upload_file(self, resource_id, file_path, file_size):
-        ...
-    async def upload_preview(self, resource_id, preview_path):
-        ...
-    async def commit(self, request):
-        # POST /resources/commit
-        ...
+manifest = {
+    "client_resource_id": "asset-1",
+    "resource_type": "single_image",
+    "source_object": {
+        "storage_profile_id": "default",
+        "object_key": "resource-crawler/files/asset-1/source.png",
+        "file_name": "source.png",
+    },
+    "source_files": [{"file_name": "source.png", "is_primary": True}],
+    "package_object": {
+        "storage_profile_id": "default",
+        "object_key": "resource-crawler/files/pack-1/source.zip",
+    },
+}
+
+requests.post(
+    "http://localhost:8100/processing-jobs",
+    json=manifest,
+    headers={"X-Client-Id": "resource-crawler"},
+    timeout=30,
+).raise_for_status()
 ```
 
 ---
@@ -526,7 +586,7 @@ class RealCloudClient(BaseCloudClient):
 
 ```bash
 python -m pytest client/Test/ResourceProcessor/preview/ -v     # 预览模块
-python -m pytest server/Test/CloudService/ -v                   # 云端模块
+python -m pytest SearchServer/Test/CloudService/ -v             # 搜索服务模块
 python -m pytest -k "test_dedup" -v                             # 按名称匹配
 ```
 

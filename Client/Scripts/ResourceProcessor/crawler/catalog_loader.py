@@ -259,7 +259,7 @@ class CrawlerCatalog:
         self._pack_cache: dict[tuple[str, str], dict[str, Any]] = {}
 
     def _open_conn(self):
-        uri = f"file:{self._crawler_state_db}?mode=ro"
+        uri = f"{Path(self._crawler_state_db).resolve().as_uri()}?mode=ro"
         conn = sqlite3.connect(uri, uri=True, timeout=300)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=300000")

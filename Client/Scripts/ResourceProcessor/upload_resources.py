@@ -1,273 +1,130 @@
-"""Upload step of the split pipeline.
+"""Client upload command: save object manifests and submit processing jobs.
 
-Usage:
-    python -m ResourceProcessor.upload_resources \
-        --db-path pipeline.db --limit 100
+The resource processing server receives storage manifests, not local files.
 """
 
 from __future__ import annotations
 
-import asyncio
-import os
+import json
 
-from ResourceProcessor.pipeline_common import (
-    Report,
-    env,
-    make_arg_parser,
-    print_progress,
-    state_ge,
-    state_lt,
-)
+import requests
+
+from ResourceProcessor.cache.local_cache import LocalCacheStore
+from ResourceProcessor.pipeline_common import Report, env, make_arg_parser
+from ResourceProcessor.submit_processing_manifest import submit_processing_job, wait_processing_job
+from ObjectStorageUpload.resource_manifest import build_manifests_from_cache, write_manifest_records
 
 
-async def _upload_one(task_id, item, server, session, report, semaphore, counters):
-    """Upload a single resource with concurrency control."""
-    from ResourceProcessor.core.upload_pipeline import upload_enriched_resources
-    from ResourceProcessor.preview_metadata import ProcessState
-
-    last_error: dict[str, str] = {}
-
-    def _report_cb(status, step, detail):
-        if status == "OK":
-            report.ok(step, detail)
-        else:
-            last_error["message"] = f"{step}: {detail}"[:2000]
-            report.fail(step, detail)
-
-    async with semaphore:
-        summary = await asyncio.to_thread(
-            upload_enriched_resources,
-            [item], server,
-            reporter=_report_cb,
-            session=session, health_checked=True,
-        )
-        if summary.success_count > 0:
-            counters["success"] += 1
-            counters["cache"].update_task_state(task_id, ProcessState.COMMITTED)
-        elif summary.skipped_no_files > 0:
-            counters["skipped_desc"] += 1
-        elif summary.skipped_count > 0:
-            counters["skipped_desc"] += 1
-        else:
-            counters["failed"] += 1
-            error_message = last_error.get("message")
-            if not error_message:
-                error_message = f"success={summary.success_count} failed={summary.failed_count}"
-            counters["cache"].record_task_error(
-                task_id,
-                error_code="upload_error",
-                error_message=error_message,
-            )
-        counters["processed"] += 1
-        total = counters["processed"]
-        if total % 25 == 0:
-            print_progress(total, total, f"上传成功 {counters['success']}, 失败 {counters['failed']}")
-
-
-_SENTINEL = None  # Queue poison pill
-
-
-def _iter_upload_task_ids(cache, process_state, *, limit, resource_type, source_filter):
-    """Yield uploadable task ids from both description and classify-ready states."""
-    yielded = 0
-    states = [process_state.DESCRIPTION_READY, process_state.CLASSIFY_READY]
-    for state in states:
-        remaining = None if limit is None else max(limit - yielded, 0)
-        if remaining == 0:
-            break
-        for task_id in cache.iter_tasks_by_state(
-            state,
-            limit=remaining,
-            resource_type=resource_type,
-            source=source_filter,
-        ):
-            yield task_id
-            yielded += 1
-            if limit is not None and yielded >= limit:
-                return
-
-
-async def _upload_worker(queue, server, session, report, semaphore, counters):
-    """Consume items from queue and upload them."""
-    while True:
-        item = await queue.get()
-        if item is _SENTINEL:
-            queue.task_done()
-            break
-        task_id, upload_item = item
-        await _upload_one(task_id, upload_item, server, session, report, semaphore, counters)
-        queue.task_done()
+def _split_resource_type_values(values) -> list[str]:
+    resource_types: list[str] = []
+    for value in values or []:
+        for part in str(value or "").replace(";", ",").split(","):
+            text = part.strip()
+            if text:
+                resource_types.append(text)
+    return list(dict.fromkeys(resource_types))
 
 
 def main() -> int:
     parser = make_arg_parser(
-        "上传资源到服务端",
+        "上传资源到资源加工服务器",
         extra_args=[
-            ("--server", {"default": None, "help": "服务端地址 (默认 TEST_SERVER_URL env 或 localhost:8000)"}),
-            ("--dry-run", {"action": "store_true", "help": "只统计，不实际上传"}),
-            ("--force", {"action": "store_true", "help": "重置已提交资源，重新上传（服务端清库或换地址时使用）"}),
-            ("--retry-failed", {"action": "store_true", "help": "仅重置上传失败的资源（last_error_code=upload_error），重新上传"}),
-            ("--concurrency", {"type": int, "default": 5, "help": "并发上传数 (默认 5)"}),
+            ("--processing-server", {"default": None, "help": "资源加工服务器地址，默认 RP_PROCESSING_SERVER_URL 或 http://localhost:8100"}),
+            ("--client-id", {"default": None, "help": "客户端 ID，会作为资源 ID 命名空间"}),
+            ("--api-key", {"default": None, "help": "资源加工服务器 API key，默认 RP_PROCESSING_SERVER_API_KEY/RP_API_KEY"}),
+            ("--storage-profile-id", {"default": None, "help": "对象存储 profile ID，默认 STORAGE_PROFILE_ID/OBJECT_STORAGE_PROFILE_ID"}),
+            ("--key-prefix", {"default": "", "help": "可选对象 key 根前缀；默认空，生成 {client_id}/files 和 {client_id}/previews"}),
+            ("--no-previews", {"action": "store_true", "help": "不上传本地已有预览"}),
+            ("--include-descriptions", {"action": "store_true", "help": "manifest 中携带本地已有描述，服务端将跳过描述生成"}),
+            ("--manifest-out", {"default": "", "help": "可选：导出 JSONL manifest 文件"}),
+            ("--dry-run", {"action": "store_true", "help": "只构造 manifest，不上传、不提交"}),
+            ("--no-wait", {"action": "store_true", "help": "只提交到加工服务器并记录 queued，不等待加工完成"}),
+            ("--poll-interval", {"type": float, "default": 2.0, "help": "等待加工完成时的轮询间隔秒数，默认 2"}),
+            ("--wait-timeout", {"type": float, "default": float(env("RP_PROCESSING_JOB_TIMEOUT", "3600")), "help": "等待加工完成的超时秒数；0 表示不超时"}),
+            ("--force", {"action": "store_true", "help": "强制重新上传匹配资源；如已有 manifest，先删除旧源文件对象和旧 manifest"}),
+            ("--resource-types", {"action": "append", "default": [], "help": "只上传指定资源类型；支持逗号分隔或重复传入，例如 atlas,tileset"}),
+            ("--workers", {"type": int, "default": int(env("OBJECT_STORAGE_UPLOAD_WORKERS", "8")), "help": "并发上传 worker 数，默认 8；传 1 使用单线程"}),
         ],
     )
     args = parser.parse_args()
+    if args.force and args.resume:
+        parser.error("--force 不能和 --resume 同时使用")
+    resource_types = _split_resource_type_values([args.resource_type, *args.resource_types])
+    if args.force and not resource_types:
+        parser.error("--force 必须配合 --resource-type 或 --resource-types，避免误重传所有资源类型")
 
-    from ResourceProcessor.cache.local_cache import LocalCacheStore
-    from ResourceProcessor.preview_metadata import ProcessState
+    report = Report(label="对象存储上传并提交加工")
+    processing_server = args.processing_server or env("RP_PROCESSING_SERVER_URL", "http://localhost:8100")
+    client_id = args.client_id or env("CLIENT_ID", "client")
+    api_key = args.api_key or env("RP_PROCESSING_SERVER_API_KEY", env("RP_API_KEY", ""))
+    cache = LocalCacheStore(args.db_path)
 
-    db_path = os.path.abspath(args.db_path)
-    cache = LocalCacheStore(db_path)
+    uploaded: list[tuple[int, dict]] = []
+    for task_id, manifest in build_manifests_from_cache(
+        db_path=args.db_path,
+        client_id=client_id,
+        storage_profile_id=args.storage_profile_id or "",
+        include_previews=not args.no_previews,
+        key_prefix=args.key_prefix,
+        include_descriptions=args.include_descriptions,
+        dry_run=args.dry_run,
+        resume=not args.force,
+        force=args.force,
+        workers=args.workers,
+        limit=args.limit,
+        resource_types=resource_types,
+        source_filter=args.source_filter,
+        report=report,
+    ):
+        uploaded.append((task_id, manifest))
 
-    server = args.server or env("TEST_SERVER_URL", "http://localhost:8000")
+    if args.manifest_out:
+        write_manifest_records((manifest for _, manifest in uploaded), args.manifest_out)
 
-    report = Report(label="上传")
-    print("=" * 60)
-    print("  上传资源 (upload_resources)")
-    print("  数据源:         DB-only")
-    print(f"  数据库:         {db_path}")
-    print(f"  服务端:         {server}")
-    print(f"  并发数:         {args.concurrency}")
+    submitted = 0
+    failed = 0
     if args.dry_run:
-        print("  模式:           dry-run (仅统计)")
-    if args.limit:
-        print(f"  限制:           {args.limit}")
-    print("=" * 60)
-
-    state_counts = cache.count_tasks_by_state()
-    report.ok("当前状态统计", ", ".join(f"{k}={v}" for k, v in state_counts.items()) or "(空)")
-
-    if args.force:
-        import sqlite3
-        conn = sqlite3.connect(db_path, timeout=300)
-        conn.execute("PRAGMA journal_mode=WAL")
-        rows = conn.execute(
-            "UPDATE resource_task SET process_state = 'description_ready', "
-            "last_error_code = NULL, last_error_message = NULL "
-            "WHERE process_state = 'committed'"
-        ).rowcount
-        conn.commit()
-        conn.close()
-        report.ok("重置完成", f"committed -> description_ready: {rows} 个资源")
-        state_counts = cache.count_tasks_by_state()
-        report.ok("重置后状态", ", ".join(f"{k}={v}" for k, v in state_counts.items()))
-
-    if args.retry_failed:
-        import sqlite3
-        conn = sqlite3.connect(db_path, timeout=300)
-        conn.execute("PRAGMA journal_mode=WAL")
-        rows = conn.execute(
-            "UPDATE resource_task SET process_state = 'description_ready', "
-            "last_error_code = NULL, last_error_message = NULL "
-            "WHERE process_state = 'committed' AND last_error_code = 'upload_error'"
-        ).rowcount
-        conn.commit()
-        conn.close()
-        report.ok("重置失败资源", f"committed -> description_ready: {rows} 个资源")
-        state_counts = cache.count_tasks_by_state()
-        report.ok("重置后状态", ", ".join(f"{k}={v}" for k, v in state_counts.items()))
-
-    # Create shared session for connection reuse
-    import requests as _requests
-    session = _requests.Session()
-
-    # Health check once
-    try:
-        health_resp = session.get(f"{server}/health", timeout=5)
-        health = health_resp.json()
-        if health.get("status") != "ok":
-            report.fail("服务端健康检查", f"状态: {health.get('status')}")
-            cache.close()
-            return 1
-        report.ok("服务端健康检查", "所有组件正常")
-    except Exception as exc:
-        report.fail("服务端健康检查", f"无法连接: {exc}")
-        cache.close()
-        return 1
-
-    def _build_item(task_id: int) -> dict | None:
-        """从 cache 重建 entity 并构建上传 item；状态不满足则返回 None。"""
-        task = cache.get_task_by_id(task_id)
-        current_state = ProcessState(task["process_state"]) if task else ProcessState.DISCOVERED
-        if state_lt(current_state.value, ProcessState.DESCRIPTION_READY.value):
-            return None
-        if state_ge(current_state.value, ProcessState.COMMITTED.value):
-            return None
-        cached_entity = cache.rebuild_entity_from_cache(task_id)
-        if cached_entity is None:
-            return None
-        return {
-            "resource": cached_entity,
-            "resource_type": cached_entity.resource_type,
-            "description": {
-                "main": cached_entity.description_main,
-                "detail": cached_entity.description_detail,
-                "full": cached_entity.description_full,
-                "usage_space": cached_entity.usage_space,
-                "usage_category": cached_entity.usage_category,
-                "usage_subcategories": cached_entity.usage_subcategories,
-                "usage_classification_reason": cached_entity.usage_classification_reason,
-                "usage_classification_suggestion": cached_entity.usage_classification_suggestion,
-                "usage_classification_version": cached_entity.usage_classification_version,
-            },
-        }
-
-    async def _stream_and_upload_db():
-        """DB-only：从 resource_task 表直接遍历 description_ready 的记录。"""
-        counters = {"processed": 0, "success": 0, "failed": 0, "skipped_desc": 0, "cache": cache}
-        semaphore = asyncio.Semaphore(args.concurrency)
-        queue: asyncio.Queue = asyncio.Queue(maxsize=args.concurrency * 4)
-        loop = asyncio.get_running_loop()
-
-        workers = [
-            asyncio.create_task(_upload_worker(queue, server, session, report, semaphore, counters))
-            for _ in range(args.concurrency)
-        ]
-
-        def _feed_queue():
-            for task_id in _iter_upload_task_ids(
-                cache,
-                ProcessState,
-                limit=args.limit,
-                resource_type=args.resource_type,
-                source_filter=args.source_filter,
-            ):
-                item = _build_item(task_id)
-                if item is None:
-                    continue
-                asyncio.run_coroutine_threadsafe(queue.put((task_id, item)), loop).result()
-
-            for _ in workers:
-                asyncio.run_coroutine_threadsafe(queue.put(_SENTINEL), loop).result()
-
-        await loop.run_in_executor(None, _feed_queue)
-        await asyncio.gather(*workers)
-        return counters
-
-    if args.dry_run:
-        dry_run_count = 0
-        skipped_desc = 0
-        for task_id in _iter_upload_task_ids(
-            cache,
-            ProcessState,
-            limit=args.limit,
-            resource_type=args.resource_type,
-            source_filter=args.source_filter,
-        ):
-            cached_entity = cache.rebuild_entity_from_cache(task_id)
-            if cached_entity is None:
-                skipped_desc += 1
-                continue
-            dry_run_count += 1
-        report.ok("dry-run 完成", f"可上传 {dry_run_count} 个资源 (跳过无描述 {skipped_desc})")
+        for _, manifest in uploaded:
+            print(json.dumps(manifest, ensure_ascii=False))
     else:
-        counters = asyncio.run(_stream_and_upload_db())
-        report.ok("上传完成", f"处理 {counters['processed']}, 成功 {counters['success']}, 失败 {counters['failed']}")
-
-    report.ok("最终状态统计", ", ".join(f"{k}={v}" for k, v in cache.count_tasks_by_state().items()))
+        with requests.Session() as session:
+            for task_id, manifest in uploaded:
+                try:
+                    created = submit_processing_job(
+                        manifest,
+                        processing_server=processing_server,
+                        client_id=client_id,
+                        api_key=api_key,
+                        session=session,
+                    )
+                    if args.no_wait:
+                        result = created
+                        cache.mark_object_manifest_queued(task_id, result)
+                    else:
+                        result = {
+                            **created,
+                            **wait_processing_job(
+                                str(created.get("job_id") or ""),
+                                processing_server=processing_server,
+                                client_id=client_id,
+                                api_key=api_key,
+                                poll_interval=args.poll_interval,
+                                timeout_seconds=args.wait_timeout,
+                                session=session,
+                            ),
+                        }
+                        cache.mark_object_manifest_submitted(task_id, result)
+                    cache.add_log(task_id, "processing_job_submitted", json.dumps(result, ensure_ascii=False))
+                    submitted += 1
+                except Exception as exc:
+                    failed += 1
+                    cache.mark_object_manifest_submit_failed(task_id, str(exc))
+                    cache.record_task_error(task_id, "processing_submit_error", str(exc)[:1000])
+                    report.fail("提交失败", f"task_id={task_id}: {str(exc)[:160]}")
 
     cache.close()
-    ok = report.summary()
-    return 0 if ok else 1
+    report.ok("完成", f"生成 manifest {len(uploaded)}, 提交 {submitted}, 失败 {failed}")
+    return 0 if report.summary() else 1
 
 
 if __name__ == "__main__":

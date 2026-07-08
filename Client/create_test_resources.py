@@ -102,8 +102,7 @@ def main():
     print(f"\n完成！")
     print(f"  散文件: 3 个独立资源")
     print(f"  文件夹: 2 个多文件资源 (character_model, ui_assets)")
-    print(f"  共 5 个资源。使用方法：")
-    print(f"  python test_pipeline.py --source {output}")
+    print(f"  共 5 个资源。后续处理命令见 client/OPERATIONS_GUIDE.md")
 
 
 if __name__ == "__main__":

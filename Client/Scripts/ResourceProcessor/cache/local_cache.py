@@ -5,9 +5,11 @@ and error tracking across processing sessions.
 """
 
 import datetime
+import hashlib
 import json
 import sqlite3
-from typing import Any, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Iterable, List, Optional, Tuple
 
 from ResourceProcessor.preview_metadata import (
     PreviewInfo,
@@ -15,6 +17,239 @@ from ResourceProcessor.preview_metadata import (
     ProcessState,
     ResourceProcessingEntity,
 )
+from resource_contracts.resource_types import PACK_RESOURCE_TYPE
+
+
+RESOURCE_FINGERPRINT_VERSION = "client-resource-fingerprint-v1"
+CONTENT_HASH_ALGORITHM = "sha256"
+
+
+def _stable_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _stable_hash(value: Any) -> str:
+    return hashlib.sha256(_stable_json(value).encode("utf-8")).hexdigest()
+
+
+def file_content_hash(path: str | Path | None) -> str:
+    """Return a sha256 content hash for a generated artifact."""
+    if not path:
+        return ""
+    try:
+        file_path = Path(path)
+        if not file_path.is_file():
+            return ""
+        digest = hashlib.sha256()
+        with file_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return ""
+
+
+def description_content_hash(
+    *,
+    main_content: str = "",
+    detail_content: str = "",
+    full_description: str = "",
+    prompt_version: str = "",
+    quality_score: Optional[float] = None,
+    usage_space: str = "",
+    usage_category: str = "",
+    usage_subcategories: Optional[list[str]] = None,
+    usage_classification_reason: str = "",
+    usage_classification_suggestion: Optional[dict] = None,
+    usage_classification_version: str = "",
+) -> str:
+    return _stable_hash(
+        {
+            "algorithm": CONTENT_HASH_ALGORITHM,
+            "main_content": main_content or "",
+            "detail_content": detail_content or "",
+            "full_description": full_description or "",
+            "prompt_version": prompt_version or "",
+            "quality_score": quality_score,
+            "usage_space": usage_space or "",
+            "usage_category": usage_category or "",
+            "usage_subcategories": usage_subcategories or [],
+            "usage_classification_reason": usage_classification_reason or "",
+            "usage_classification_suggestion": usage_classification_suggestion or {},
+            "usage_classification_version": usage_classification_version or "",
+        }
+    )
+
+
+def _json_loads_value(value: Any, fallback):
+    if value in (None, ""):
+        return fallback
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return fallback
+    return parsed
+
+
+def _row_to_dict(row: Any, description: Any = None) -> Optional[dict[str, Any]]:
+    if row is None:
+        return None
+    if isinstance(row, sqlite3.Row):
+        return dict(row)
+    if description is None:
+        return dict(row)
+    return {description[index][0]: row[index] for index in range(len(description))}
+
+
+def _fetchone_dict(conn: sqlite3.Connection, sql: str, params=()) -> Optional[dict[str, Any]]:
+    cur = conn.execute(sql, params)
+    return _row_to_dict(cur.fetchone(), cur.description)
+
+
+def _fetchall_dicts(conn: sqlite3.Connection, sql: str, params=()) -> list[dict[str, Any]]:
+    cur = conn.execute(sql, params)
+    return [_row_to_dict(row, cur.description) or {} for row in cur.fetchall()]
+
+
+def _latest_active_preview_rows(conn: sqlite3.Connection, task_id: int) -> list[dict[str, Any]]:
+    rows = _fetchall_dicts(
+        conn,
+        "SELECT * FROM resource_preview WHERE task_id = ? ORDER BY id",
+        (task_id,),
+    )
+    latest_primary_id = max((int(row["id"]) for row in rows if row.get("role") == "primary"), default=None)
+    if latest_primary_id is None:
+        return rows
+    return [
+        row
+        for row in rows
+        if int(row.get("id") or 0) >= latest_primary_id and row.get("role") in {"primary", "gallery"}
+    ]
+
+
+def _resource_fingerprint_parts(conn: sqlite3.Connection, task_id: int) -> dict[str, Any]:
+    task = _fetchone_dict(conn, "SELECT * FROM resource_task WHERE id = ?", (task_id,))
+    if not task:
+        return {"version": RESOURCE_FINGERPRINT_VERSION, "missing_task": task_id}
+
+    files = _fetchall_dicts(
+        conn,
+        """SELECT file_path, file_name, file_size, file_format, content_md5,
+                  file_role, ks3_key, is_primary
+           FROM resource_file
+           WHERE task_id = ?
+           ORDER BY is_primary DESC, id""",
+        (task_id,),
+    )
+    previews = _latest_active_preview_rows(conn, task_id)
+    description = _fetchone_dict(
+        conn,
+        "SELECT * FROM resource_description WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    )
+
+    desc_parts: dict[str, Any] = {}
+    if description:
+        desc_parts = {
+            "content_hash": description.get("content_hash") or "",
+            "prompt_version": description.get("prompt_version") or "",
+            "quality_score": description.get("quality_score"),
+            "usage_space": description.get("usage_space") or "",
+            "usage_category": description.get("usage_category") or "",
+            "usage_subcategories": _json_loads_value(description.get("usage_subcategories"), []),
+            "usage_classification_version": description.get("usage_classification_version") or "",
+        }
+
+    return {
+        "version": RESOURCE_FINGERPRINT_VERSION,
+        "task": {
+            "content_md5": task.get("content_md5") or "",
+            "resource_type": task.get("resource_type") or "",
+            "source_directory": task.get("source_directory") or "",
+            "source_resource_id": task.get("source_resource_id") or "",
+            "title": task.get("title") or "",
+            "pack_id": task.get("pack_id") or "",
+            "pack_name": task.get("pack_name") or "",
+            "source": task.get("source") or "",
+            "resource_path": task.get("resource_path") or "",
+            "parent_resource_id": task.get("parent_resource_id") or "",
+            "child_resource_ids": _json_loads_value(task.get("child_resource_ids"), []),
+            "child_resource_count": int(task.get("child_resource_count") or 0),
+            "contains_resource_types": _json_loads_value(task.get("contains_resource_types"), []),
+            "source_url": task.get("source_url") or "",
+            "download_url": task.get("download_url") or "",
+            "category": task.get("category") or "",
+            "tags": _json_loads_value(task.get("tags"), []),
+            "license_name": task.get("license_name") or "",
+            "source_description": task.get("source_description") or "",
+            "member_count": int(task.get("member_count") or 0),
+            "missing_files": _json_loads_value(task.get("missing_files"), []),
+            "auxiliary_metadata": _json_loads_value(task.get("auxiliary_metadata"), {}),
+        },
+        "files": [
+            {
+                "file_path": row.get("file_path") or "",
+                "file_name": row.get("file_name") or "",
+                "file_size": int(row.get("file_size") or 0),
+                "file_format": row.get("file_format") or "",
+                "content_md5": row.get("content_md5") or "",
+                "file_role": row.get("file_role") or "",
+                "ks3_key": row.get("ks3_key") or "",
+                "is_primary": bool(row.get("is_primary")),
+            }
+            for row in files
+        ],
+        "previews": [
+            {
+                "role": row.get("role") or "primary",
+                "strategy": row.get("strategy") or "",
+                "path": row.get("path") or "",
+                "format": row.get("format") or "",
+                "width": row.get("width"),
+                "height": row.get("height"),
+                "size": row.get("size"),
+                "renderer": row.get("renderer") or "",
+                "used_placeholder": bool(row.get("used_placeholder")),
+                "fail_reason": row.get("fail_reason") or "",
+                "content_hash": row.get("content_hash") or "",
+            }
+            for row in previews
+        ],
+        "description": desc_parts,
+    }
+
+
+def compute_resource_fingerprint_for_connection(
+    conn: sqlite3.Connection,
+    task_id: int,
+) -> tuple[str, dict[str, Any]]:
+    parts = _resource_fingerprint_parts(conn, task_id)
+    return _stable_hash(parts), parts
+
+
+def refresh_resource_fingerprint_for_connection(
+    conn: sqlite3.Connection,
+    task_id: int,
+    *,
+    now: str | None = None,
+) -> str:
+    fingerprint, parts = compute_resource_fingerprint_for_connection(conn, task_id)
+    conn.execute(
+        """UPDATE resource_task
+           SET resource_fingerprint = ?,
+               fingerprint_parts_json = ?,
+               fingerprint_version = ?,
+               updated_at = COALESCE(?, updated_at)
+           WHERE id = ?""",
+        (
+            fingerprint,
+            json.dumps(parts, ensure_ascii=False, sort_keys=True),
+            RESOURCE_FINGERPRINT_VERSION,
+            now,
+            task_id,
+        ),
+    )
+    return fingerprint
 
 
 class LocalCacheStore:
@@ -54,6 +289,9 @@ class LocalCacheStore:
                 retry_count INTEGER DEFAULT 0,
                 last_error_code TEXT DEFAULT '',
                 last_error_message TEXT DEFAULT '',
+                resource_fingerprint TEXT NOT NULL DEFAULT '',
+                fingerprint_parts_json TEXT NOT NULL DEFAULT '{}',
+                fingerprint_version TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -89,6 +327,8 @@ class LocalCacheStore:
                 renderer TEXT,
                 used_placeholder INTEGER DEFAULT 0,
                 fail_reason TEXT,
+                content_hash TEXT NOT NULL DEFAULT '',
+                content_hash_algorithm TEXT NOT NULL DEFAULT 'sha256',
                 created_at TEXT NOT NULL
             )
         """)
@@ -108,6 +348,8 @@ class LocalCacheStore:
                 usage_classification_reason TEXT NOT NULL DEFAULT '',
                 usage_classification_suggestion TEXT NOT NULL DEFAULT '{}',
                 usage_classification_version TEXT NOT NULL DEFAULT '',
+                content_hash TEXT NOT NULL DEFAULT '',
+                content_hash_algorithm TEXT NOT NULL DEFAULT 'sha256',
                 created_at TEXT NOT NULL
             )
         """)
@@ -135,6 +377,45 @@ class LocalCacheStore:
         """)
 
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS resource_object_manifest (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL REFERENCES resource_task(id),
+                manifest_json TEXT NOT NULL,
+                upload_state TEXT NOT NULL DEFAULT 'uploaded',
+                submit_state TEXT NOT NULL DEFAULT 'pending',
+                resource_fingerprint TEXT NOT NULL DEFAULT '',
+                object_fingerprint TEXT NOT NULL DEFAULT '',
+                committed_fingerprint TEXT NOT NULL DEFAULT '',
+                upload_options_json TEXT NOT NULL DEFAULT '{}',
+                processing_job_id TEXT NOT NULL DEFAULT '',
+                processing_result_json TEXT NOT NULL DEFAULT '{}',
+                error_message TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS resource_object_delete_job (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_resource_id TEXT NOT NULL DEFAULT '',
+                source_resource_id TEXT NOT NULL DEFAULT '',
+                task_id_snapshot INTEGER,
+                storage_profile_id TEXT NOT NULL DEFAULT '',
+                object_keys_json TEXT NOT NULL DEFAULT '[]',
+                object_refs_json TEXT NOT NULL DEFAULT '[]',
+                manifest_json_snapshot TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
+            )
+        """)
+
+        cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_resource_task_md5
             ON resource_task(content_md5)
         """)
@@ -144,6 +425,59 @@ class LocalCacheStore:
             ON resource_file(content_md5)
         """)
 
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_object_manifest_task
+            ON resource_object_manifest(task_id)
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_resource_file_task_id
+            ON resource_file(task_id)
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_resource_preview_task_id
+            ON resource_preview(task_id)
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_resource_description_task_id
+            ON resource_description(task_id)
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_resource_upload_job_task_id
+            ON resource_upload_job(task_id)
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_process_log_task_id
+            ON process_log(task_id)
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_resource_task_state_id
+            ON resource_task(process_state, id)
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_resource_object_delete_job_status
+            ON resource_object_delete_job(status, updated_at)
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_resource_object_delete_job_client_resource
+            ON resource_object_delete_job(client_resource_id)
+        """)
+
+        try:
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_description_lease_task_id
+                ON description_lease(task_id)
+            """)
+        except sqlite3.OperationalError:
+            pass
+
         # Migrate old schema: add missing columns if they don't exist
         cur.execute("PRAGMA table_info(resource_task)")
         task_cols = {row["name"] for row in cur.fetchall()}
@@ -151,11 +485,24 @@ class LocalCacheStore:
             cur.execute("ALTER TABLE resource_task ADD COLUMN source_directory TEXT NOT NULL DEFAULT ''")
         if "source_path" in task_cols:
             pass  # keep old column for backward compat, it will be ignored going forward
+        for col_name, col_def in (
+            ("resource_fingerprint", "TEXT NOT NULL DEFAULT ''"),
+            ("fingerprint_parts_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("fingerprint_version", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if col_name not in task_cols:
+                cur.execute(f"ALTER TABLE resource_task ADD COLUMN {col_name} {col_def}")
 
         cur.execute("PRAGMA table_info(resource_preview)")
         preview_cols = {row["name"] for row in cur.fetchall()}
         if "role" not in preview_cols:
             cur.execute("ALTER TABLE resource_preview ADD COLUMN role TEXT NOT NULL DEFAULT 'primary'")
+        for col_name, col_def in (
+            ("content_hash", "TEXT NOT NULL DEFAULT ''"),
+            ("content_hash_algorithm", "TEXT NOT NULL DEFAULT 'sha256'"),
+        ):
+            if col_name not in preview_cols:
+                cur.execute(f"ALTER TABLE resource_preview ADD COLUMN {col_name} {col_def}")
 
         cur.execute("PRAGMA table_info(resource_description)")
         desc_cols = {row["name"] for row in cur.fetchall()}
@@ -166,9 +513,22 @@ class LocalCacheStore:
             ("usage_classification_reason", "TEXT NOT NULL DEFAULT ''"),
             ("usage_classification_suggestion", "TEXT NOT NULL DEFAULT '{}'"),
             ("usage_classification_version", "TEXT NOT NULL DEFAULT ''"),
+            ("content_hash", "TEXT NOT NULL DEFAULT ''"),
+            ("content_hash_algorithm", "TEXT NOT NULL DEFAULT 'sha256'"),
         ):
             if col_name not in desc_cols:
                 cur.execute(f"ALTER TABLE resource_description ADD COLUMN {col_name} {col_def}")
+
+        cur.execute("PRAGMA table_info(resource_object_manifest)")
+        manifest_cols = {row["name"] for row in cur.fetchall()}
+        for col_name, col_def in (
+            ("resource_fingerprint", "TEXT NOT NULL DEFAULT ''"),
+            ("object_fingerprint", "TEXT NOT NULL DEFAULT ''"),
+            ("committed_fingerprint", "TEXT NOT NULL DEFAULT ''"),
+            ("upload_options_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ):
+            if col_name not in manifest_cols:
+                cur.execute(f"ALTER TABLE resource_object_manifest ADD COLUMN {col_name} {col_def}")
 
         # Schema migration: add new resource_task columns for pipeline split
         cur.execute("PRAGMA table_info(resource_task)")
@@ -202,6 +562,20 @@ class LocalCacheStore:
             ON resource_task(source_resource_id)
         """)
 
+        now = self._now()
+        cur.execute(
+            """UPDATE resource_task
+               SET process_state = 'preview_ready', updated_at = ?
+               WHERE process_state = 'refresh_ready'""",
+            (now,),
+        )
+        cur.execute(
+            """UPDATE resource_task
+               SET process_state = 'description_failed', updated_at = ?
+               WHERE process_state = 'refresh_failed'""",
+            (now,),
+        )
+
         self._conn.commit()
 
     def _now(self) -> str:
@@ -219,12 +593,25 @@ class LocalCacheStore:
             return fallback
         return parsed
 
+    def refresh_resource_fingerprint(self, task_id: int) -> str:
+        now = self._now()
+        conn = sqlite3.connect(self.db_path, timeout=300)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            fingerprint = refresh_resource_fingerprint_for_connection(conn, task_id, now=now)
+            conn.commit()
+            return fingerprint
+        finally:
+            conn.close()
+
     # ---- CRUD for resource_task ----
 
     def insert_task(self, entity: ResourceProcessingEntity) -> int:
         """Insert a new resource task. Returns the auto-generated task id. Also inserts associated files."""
         now = self._now()
         conn = sqlite3.connect(self.db_path, timeout=300)
+        conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             cur = conn.execute(
@@ -286,6 +673,7 @@ class LocalCacheStore:
                     ),
                 )
 
+            refresh_resource_fingerprint_for_connection(conn, int(task_id), now=now)
             conn.commit()
         finally:
             conn.close()
@@ -342,12 +730,21 @@ class LocalCacheStore:
 
     def update_file_md5(self, task_id: int, file_name: str, content_md5: str) -> None:
         """Update content_md5 for a specific file in resource_file."""
-        self._write(
-            """UPDATE resource_file
-               SET content_md5 = ?
-               WHERE task_id = ? AND file_name = ?""",
-            (content_md5, task_id, file_name),
-        )
+        now = self._now()
+        conn = sqlite3.connect(self.db_path, timeout=300)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            conn.execute(
+                """UPDATE resource_file
+                   SET content_md5 = ?
+                   WHERE task_id = ? AND file_name = ?""",
+                (content_md5, task_id, file_name),
+            )
+            refresh_resource_fingerprint_for_connection(conn, task_id, now=now)
+            conn.commit()
+        finally:
+            conn.close()
 
     def increment_retry(self, task_id: int) -> None:
         self._write(
@@ -361,6 +758,7 @@ class LocalCacheStore:
         """Insert a file associated with a task."""
         now = self._now()
         conn = sqlite3.connect(self.db_path, timeout=300)
+        conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             cur = conn.execute(
@@ -374,6 +772,7 @@ class LocalCacheStore:
                     None, 1 if file_info.is_primary else 0, now,
                 ),
             )
+            refresh_resource_fingerprint_for_connection(conn, task_id, now=now)
             conn.commit()
             return cur.lastrowid
         finally:
@@ -389,20 +788,30 @@ class LocalCacheStore:
 
     def update_file_ks3_key(self, file_id: int, ks3_key: str) -> None:
         """Update the KS3 storage key for a file."""
-        self._write(
-            "UPDATE resource_file SET ks3_key = ? WHERE id = ?",
-            (ks3_key, file_id),
-        )
+        now = self._now()
+        conn = sqlite3.connect(self.db_path, timeout=300)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            row = conn.execute("SELECT task_id FROM resource_file WHERE id = ?", (file_id,)).fetchone()
+            conn.execute("UPDATE resource_file SET ks3_key = ? WHERE id = ?", (ks3_key, file_id))
+            if row:
+                refresh_resource_fingerprint_for_connection(conn, int(row["task_id"]), now=now)
+            conn.commit()
+        finally:
+            conn.close()
 
     # ---- CRUD for resource_preview ----
 
     def delete_previews_by_task(self, task_id: int) -> int:
         """Delete all preview rows for a task and return the affected row count."""
         conn = sqlite3.connect(self.db_path, timeout=300)
+        conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=300000")
         try:
             cur = conn.execute("DELETE FROM resource_preview WHERE task_id = ?", (task_id,))
+            refresh_resource_fingerprint_for_connection(conn, task_id, now=self._now())
             conn.commit()
             return int(cur.rowcount or 0)
         finally:
@@ -410,13 +819,17 @@ class LocalCacheStore:
 
     def insert_preview(self, task_id: int, preview: PreviewInfo) -> int:
         conn = sqlite3.connect(self.db_path, timeout=300)
+        conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         try:
+            content_hash = preview.content_hash or file_content_hash(preview.path)
+            now = self._now()
             cur = conn.execute(
                 """INSERT INTO resource_preview
                    (task_id, strategy, role, path, format, width, height, size,
-                    renderer, used_placeholder, fail_reason, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    renderer, used_placeholder, fail_reason, content_hash,
+                    content_hash_algorithm, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     task_id,
                     preview.strategy.value,
@@ -429,9 +842,12 @@ class LocalCacheStore:
                     preview.renderer,
                     1 if preview.used_placeholder else 0,
                     preview.fail_reason,
-                    self._now(),
+                    content_hash,
+                    CONTENT_HASH_ALGORITHM,
+                    now,
                 ),
             )
+            refresh_resource_fingerprint_for_connection(conn, task_id, now=now)
             conn.commit()
             return cur.lastrowid
         finally:
@@ -482,16 +898,32 @@ class LocalCacheStore:
         usage_classification_version: str = "",
     ) -> int:
         conn = sqlite3.connect(self.db_path, timeout=300)
+        conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         try:
+            now = self._now()
+            content_hash = description_content_hash(
+                main_content=main_content,
+                detail_content=detail_content,
+                full_description=full_description,
+                prompt_version=prompt_version,
+                quality_score=quality_score,
+                usage_space=usage_space,
+                usage_category=usage_category,
+                usage_subcategories=usage_subcategories,
+                usage_classification_reason=usage_classification_reason,
+                usage_classification_suggestion=usage_classification_suggestion,
+                usage_classification_version=usage_classification_version,
+            )
             cur = conn.execute(
                 """INSERT INTO resource_description
                    (task_id, main_content, detail_content, full_description,
                     prompt_version, quality_score, usage_space, usage_category,
                     usage_subcategories, usage_classification_reason,
                     usage_classification_suggestion, usage_classification_version,
+                    content_hash, content_hash_algorithm,
                     created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     task_id,
                     main_content,
@@ -505,9 +937,12 @@ class LocalCacheStore:
                     usage_classification_reason,
                     json.dumps(usage_classification_suggestion or {}, ensure_ascii=False),
                     usage_classification_version,
-                    self._now(),
+                    content_hash,
+                    CONTENT_HASH_ALGORITHM,
+                    now,
                 ),
             )
+            refresh_resource_fingerprint_for_connection(conn, task_id, now=now)
             conn.commit()
             return cur.lastrowid
         finally:
@@ -519,6 +954,72 @@ class LocalCacheStore:
             (task_id,),
         ).fetchone()
         return dict(row) if row else None
+
+    def get_pack_child_description_rows(
+        self,
+        pack_task_id: int,
+        *,
+        pack_source_resource_id: str = "",
+        child_source_ids: Optional[list[str]] = None,
+    ) -> List[dict]:
+        """Return latest child descriptions for a pack task.
+
+        Children are matched by parent_resource_id first, then by explicit
+        child_source_ids. Results are de-duplicated by task id.
+        """
+
+        rows_by_task_id: dict[int, dict] = {}
+
+        def add_rows(where_sql: str, params: list[Any]) -> None:
+            sql = f"""
+                SELECT
+                    rt.id AS task_id,
+                    rt.source_resource_id,
+                    rt.parent_resource_id,
+                    rt.resource_type,
+                    rt.title,
+                    rt.resource_path,
+                    rd.main_content,
+                    rd.detail_content,
+                    rd.full_description,
+                    rd.prompt_version,
+                    rd.quality_score
+                FROM resource_task rt
+                JOIN resource_description rd
+                  ON rd.id = (
+                    SELECT d2.id
+                    FROM resource_description d2
+                    WHERE d2.task_id = rt.id
+                    ORDER BY d2.id DESC
+                    LIMIT 1
+                  )
+                WHERE rt.id <> ?
+                  AND rt.resource_type <> ?
+                  AND {where_sql}
+                ORDER BY rt.id
+            """
+            for row in self._conn.execute(sql, [pack_task_id, PACK_RESOURCE_TYPE, *params]).fetchall():
+                rows_by_task_id[int(row["task_id"])] = dict(row)
+
+        if pack_source_resource_id:
+            add_rows("rt.parent_resource_id = ?", [pack_source_resource_id])
+
+        ids = [str(value) for value in (child_source_ids or []) if str(value).strip()]
+        for start in range(0, len(ids), 900):
+            chunk = ids[start:start + 900]
+            if not chunk:
+                continue
+            placeholders = ",".join("?" for _ in chunk)
+            add_rows(f"rt.source_resource_id IN ({placeholders})", chunk)
+
+        order = {source_id: index for index, source_id in enumerate(ids)}
+        return sorted(
+            rows_by_task_id.values(),
+            key=lambda row: (
+                order.get(str(row.get("source_resource_id") or ""), len(order)),
+                int(row.get("task_id") or 0),
+            ),
+        )
 
     # ---- process_log ----
 
@@ -534,6 +1035,156 @@ class LocalCacheStore:
             "SELECT * FROM process_log WHERE task_id = ? ORDER BY id", (task_id,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # ---- object-storage processing manifest ----
+
+    def upsert_object_manifest(
+        self,
+        task_id: int,
+        manifest: dict,
+        *,
+        upload_state: str = "uploaded",
+        submit_state: str = "pending",
+        resource_fingerprint: str = "",
+        object_fingerprint: str = "",
+        upload_options: Optional[dict] = None,
+    ) -> None:
+        now = self._now()
+        manifest_json = json.dumps(manifest, ensure_ascii=False)
+        upload_options_json = json.dumps(upload_options or {}, ensure_ascii=False, sort_keys=True)
+        self._write(
+            """INSERT INTO resource_object_manifest
+               (task_id, manifest_json, upload_state, submit_state,
+                resource_fingerprint, object_fingerprint, committed_fingerprint,
+                upload_options_json,
+                processing_job_id, processing_result_json, error_message,
+                created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, '', ?, '', '{}', '', ?, ?)
+               ON CONFLICT(task_id) DO UPDATE SET
+                   manifest_json = excluded.manifest_json,
+                   upload_state = excluded.upload_state,
+                   submit_state = excluded.submit_state,
+                   resource_fingerprint = excluded.resource_fingerprint,
+                   object_fingerprint = excluded.object_fingerprint,
+                   upload_options_json = excluded.upload_options_json,
+                   processing_job_id = '',
+                   processing_result_json = '{}',
+                   error_message = '',
+                   updated_at = excluded.updated_at""",
+            (
+                task_id,
+                manifest_json,
+                upload_state,
+                submit_state,
+                resource_fingerprint,
+                object_fingerprint,
+                upload_options_json,
+                now,
+                now,
+            ),
+        )
+        self._write(
+            """UPDATE resource_task
+               SET last_error_code = '', last_error_message = '', updated_at = ?
+               WHERE id = ? AND last_error_code = 'object_storage_upload_error'""",
+            (now, task_id),
+        )
+
+    def get_object_manifest(self, task_id: int) -> Optional[dict]:
+        row = self._conn.execute(
+            "SELECT * FROM resource_object_manifest WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        data["manifest"] = self._json_loads(data.get("manifest_json"), {})
+        data["processing_result"] = self._json_loads(data.get("processing_result_json"), {})
+        data["upload_options"] = self._json_loads(data.get("upload_options_json"), {})
+        return data
+
+    def delete_object_manifest(self, task_id: int) -> int:
+        conn = sqlite3.connect(self.db_path, timeout=300)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=300000")
+        try:
+            cur = conn.execute("DELETE FROM resource_object_manifest WHERE task_id = ?", (task_id,))
+            conn.commit()
+            return int(cur.rowcount or 0)
+        finally:
+            conn.close()
+
+    def iter_object_manifests(
+        self,
+        *,
+        limit: int | None = None,
+        resource_type: str = "",
+        source: str = "",
+        submit_state: str = "",
+    ):
+        sql = """
+            SELECT rom.*, rt.resource_type, rt.source
+            FROM resource_object_manifest rom
+            JOIN resource_task rt ON rt.id = rom.task_id
+            WHERE rom.upload_state = 'uploaded'
+        """
+        params: list[Any] = []
+        if submit_state:
+            sql += " AND rom.submit_state = ?"
+            params.append(submit_state)
+        if resource_type:
+            sql += " AND rt.resource_type = ?"
+            params.append(resource_type)
+        if source:
+            sql += " AND rt.source = ?"
+            params.append(source)
+        sql += " ORDER BY rom.id"
+        if limit:
+            sql += " LIMIT ?"
+            params.append(limit)
+        for row in self._conn.execute(sql, params).fetchall():
+            data = dict(row)
+            data["manifest"] = self._json_loads(data.get("manifest_json"), {})
+            data["processing_result"] = self._json_loads(data.get("processing_result_json"), {})
+            data["upload_options"] = self._json_loads(data.get("upload_options_json"), {})
+            yield data
+
+    def mark_object_manifest_submitted(self, task_id: int, result: dict) -> None:
+        job_id = str(result.get("job_id") or "")
+        self._write(
+            """UPDATE resource_object_manifest
+               SET submit_state = 'submitted',
+                   processing_job_id = ?,
+                   processing_result_json = ?,
+                   committed_fingerprint = resource_fingerprint,
+                   error_message = '',
+                   updated_at = ?
+               WHERE task_id = ?""",
+            (job_id, json.dumps(result, ensure_ascii=False), self._now(), task_id),
+        )
+
+    def mark_object_manifest_queued(self, task_id: int, result: dict) -> None:
+        job_id = str(result.get("job_id") or "")
+        self._write(
+            """UPDATE resource_object_manifest
+               SET submit_state = 'queued',
+                   processing_job_id = ?,
+                   processing_result_json = ?,
+                   error_message = '',
+                   updated_at = ?
+               WHERE task_id = ?""",
+            (job_id, json.dumps(result, ensure_ascii=False), self._now(), task_id),
+        )
+
+    def mark_object_manifest_submit_failed(self, task_id: int, error_message: str) -> None:
+        self._write(
+            """UPDATE resource_object_manifest
+               SET submit_state = 'submit_failed',
+                   error_message = ?,
+                   updated_at = ?
+               WHERE task_id = ?""",
+            (error_message[:1000], self._now(), task_id),
+        )
 
     # ---- Resumption helpers ----
 
@@ -638,6 +1289,7 @@ class LocalCacheStore:
                         wconn.commit()
                     finally:
                         wconn.close()
+            self.refresh_resource_fingerprint(task_id)
             return task_id, True
         return self.insert_task(entity), False
 
@@ -678,6 +1330,7 @@ class LocalCacheStore:
                 renderer=r["renderer"],
                 used_placeholder=bool(r["used_placeholder"]),
                 fail_reason=r["fail_reason"],
+                content_hash=r.get("content_hash") or "",
             )
             for r in preview_rows
         ]
@@ -746,6 +1399,96 @@ class LocalCacheStore:
         if source:
             sql += " AND source = ?"
             params.append(source)
+        if limit:
+            sql += " LIMIT ?"
+            params.append(limit)
+        for row in self._conn.execute(sql, params).fetchall():
+            yield row["id"]
+
+    def iter_tasks(
+        self,
+        *,
+        limit: int | None = None,
+        resource_type: str = "",
+        resource_types: Iterable[str] | None = None,
+        process_state: str = "",
+        process_states: Iterable[str] | None = None,
+        min_task_id: int | None = None,
+        max_task_id: int | None = None,
+        preview_created_after: str = "",
+        source: str = "",
+        exclude_uploaded_object_manifest: bool = False,
+    ):
+        """按筛选条件遍历 resource_task，逐行 yield task_id。"""
+        if exclude_uploaded_object_manifest:
+            sql = (
+                "SELECT rt.id FROM resource_task rt "
+                "LEFT JOIN resource_object_manifest rom "
+                "ON rom.task_id = rt.id AND rom.upload_state = 'uploaded' "
+                "WHERE rom.task_id IS NULL"
+            )
+        else:
+            sql = "SELECT rt.id FROM resource_task rt WHERE 1 = 1"
+        params: list = []
+        resource_type_items: list[str] = []
+        if resource_type:
+            resource_type_items.append(resource_type)
+        if isinstance(resource_types, str):
+            resource_type_items.append(resource_types)
+        else:
+            resource_type_items.extend(resource_types or [])
+        resource_type_values = []
+        for value in resource_type_items:
+            text = str(value or "").strip()
+            if text:
+                resource_type_values.append(text)
+        resource_type_values = list(dict.fromkeys(resource_type_values))
+        if len(resource_type_values) == 1:
+            sql += " AND rt.resource_type = ?"
+            params.append(resource_type_values[0])
+        elif resource_type_values:
+            placeholders = ",".join("?" for _ in resource_type_values)
+            sql += f" AND rt.resource_type IN ({placeholders})"
+            params.extend(resource_type_values)
+        process_state_items: list[str] = []
+        if process_state:
+            process_state_items.append(process_state)
+        if isinstance(process_states, str):
+            process_state_items.append(process_states)
+        else:
+            process_state_items.extend(process_states or [])
+        process_state_values = []
+        for value in process_state_items:
+            text = str(value or "").strip()
+            if text:
+                process_state_values.append(text)
+        process_state_values = list(dict.fromkeys(process_state_values))
+        if len(process_state_values) == 1:
+            sql += " AND rt.process_state = ?"
+            params.append(process_state_values[0])
+        elif process_state_values:
+            placeholders = ",".join("?" for _ in process_state_values)
+            sql += f" AND rt.process_state IN ({placeholders})"
+            params.extend(process_state_values)
+        if min_task_id is not None:
+            sql += " AND rt.id >= ?"
+            params.append(int(min_task_id))
+        if max_task_id is not None:
+            sql += " AND rt.id <= ?"
+            params.append(int(max_task_id))
+        if preview_created_after:
+            sql += """
+                AND EXISTS (
+                    SELECT 1 FROM resource_preview rp
+                    WHERE rp.task_id = rt.id
+                      AND rp.created_at >= ?
+                )
+            """
+            params.append(preview_created_after)
+        if source:
+            sql += " AND rt.source = ?"
+            params.append(source)
+        sql += " ORDER BY rt.id"
         if limit:
             sql += " LIMIT ?"
             params.append(limit)

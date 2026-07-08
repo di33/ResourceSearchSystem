@@ -11,6 +11,13 @@ from typing import Any
 from ResourceProcessor.crawler.catalog_loader import CrawlerAssetRecord, CrawlerResourceRecord
 from ResourceProcessor.description.description_generator import DescriptionInput
 from ResourceProcessor.preview_metadata import FileInfo, ResourceProcessingEntity
+from resource_contracts.resource_types import (
+    ANIMATION_SEQUENCE_RESOURCE_TYPE,
+    AUDIO_FILE_RESOURCE_TYPE,
+    FONT_FILE_RESOURCE_TYPE,
+    PACK_RESOURCE_TYPE,
+    TILESET_RESOURCE_TYPE,
+)
 
 AUDIO_EXTS = {".ogg", ".wav", ".mp3", ".flac"}
 MAX_AUDIO_DESCRIPTION_SAMPLES = 8
@@ -92,12 +99,12 @@ def _prefer_primary_relative_path(record: CrawlerResourceRecord) -> str:
 def _build_file_role(record: CrawlerResourceRecord, abs_path: str) -> tuple[str, bool]:
     ext = Path(abs_path).suffix.lower()
     is_first = bool(record.resolved_files) and abs_path == record.resolved_files[0]
-    if record.resource_type == "audio_file":
+    if record.resource_type == AUDIO_FILE_RESOURCE_TYPE:
         return "audio", is_first
-    if record.resource_type == "font_file":
+    if record.resource_type == FONT_FILE_RESOURCE_TYPE:
         return "font", is_first
-    if record.resource_type in {"tileset", "animation_sequence"}:
-        return ("tile" if record.resource_type == "tileset" else "frame"), is_first
+    if record.resource_type in {TILESET_RESOURCE_TYPE, ANIMATION_SEQUENCE_RESOURCE_TYPE}:
+        return ("tile" if record.resource_type == TILESET_RESOURCE_TYPE else "frame"), is_first
     if ext in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".svg"}:
         preferred_name = Path(_prefer_primary_relative_path(record)).name.lower()
         is_primary = Path(abs_path).name.lower() == preferred_name if preferred_name else is_first
@@ -149,7 +156,7 @@ def _natural_description_key(value: str) -> list[tuple[int, object]]:
 
 
 def _is_pure_audio_pack(entity: ResourceProcessingEntity) -> bool:
-    return entity.resource_type == "pack" and set(entity.contains_resource_types or []) == {"audio_file"}
+    return entity.resource_type == PACK_RESOURCE_TYPE and set(entity.contains_resource_types or []) == {AUDIO_FILE_RESOURCE_TYPE}
 
 
 def _representative_audio_paths(entity: ResourceProcessingEntity, limit: int = MAX_AUDIO_DESCRIPTION_SAMPLES) -> tuple[list[str], dict[str, int]]:
@@ -265,7 +272,7 @@ def build_description_input(entity: ResourceProcessingEntity) -> DescriptionInpu
     llm_input_paths: list[str] = []
     audio_groups: dict[str, int] = {}
     llm_input_type = "image"
-    if entity.resource_type == "audio_file" and primary_file and primary_file.file_path:
+    if entity.resource_type == AUDIO_FILE_RESOURCE_TYPE and primary_file and primary_file.file_path:
         llm_input_path = primary_file.file_path
         llm_input_paths = [primary_file.file_path]
         llm_input_type = "audio"

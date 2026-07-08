@@ -1,0 +1,52 @@
+{
+  // Default profile used by client upload, resource_processing_server,
+  // and SearchServer URL generation when no storage_profile_id is provided.
+  "default_profile_id": "game-ai-studio-resource-1252100362",
+  "aliases": {
+    "default": "game-ai-studio-resource-1252100362",
+  },
+  "profiles": {
+    "game-ai-studio-resource-1252100362": {
+      //存储桶名
+      "bucket": "game-ai-studio-resource-1252100362",
+      // Client upload / resource_processing_server download need endpoint;
+      // SearchServer CDN URL generation does not use it.
+      "endpoint": "https://cos.ap-guangzhou.myqcloud.com",
+      //所属地区
+      "region": "ap-guangzhou",
+      "signature_version": "s3v4",
+      "addressing_style": "virtual",
+
+      // Secrets are read from each process' .env.local or environment.
+      "access_key_env": "OBJECT_STORAGE_ACCESS_KEY",
+      "secret_key_env": "OBJECT_STORAGE_SECRET_KEY",
+
+      // cdn
+      "cdn_endpoint": "https://gameai-studio.seasungame.com",
+      "url_mode": "cdn_type_a",
+
+      // 鉴权模式
+      "cdn_auth_type": "A",
+      // 鉴权算法
+      "cdn_auth_algorithm": "md5",
+      // 鉴权签名参数
+      "cdn_auth_sign_param": "sign",
+      // 有效时间(s)
+      "cdn_auth_expires": 86400,
+      // 时间格式
+      "cdn_auth_time_format": "unix_decimal",//十进制（Unix 时间戳）
+      // 鉴权范围
+      "cdn_auth_scope": "file_suffix",//指定文件后缀鉴权
+      // 鉴权文件后缀
+      "cdn_auth_file_suffixes": ["*"],//所有文件
+      // 鉴权密钥
+      "cdn_auth_key_env": [
+        "OBJECT_STORAGE_CDN_AUTH_KEY_PRIMARY",
+        "OBJECT_STORAGE_CDN_AUTH_KEY_SECONDARY",
+      ],
+
+      //文件对象 key 的安全白名单
+      "allowed_prefixes": ["resource-crawler/"],
+    },
+  },
+}

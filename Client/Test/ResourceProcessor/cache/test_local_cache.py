@@ -1,8 +1,9 @@
 """Tests for ResourceProcessor.local_cache – SQLite local cache module."""
 
+import hashlib
 import sqlite3
 
-from ResourceProcessor.cache.local_cache import LocalCacheStore
+from ResourceProcessor.cache.local_cache import LocalCacheStore, description_content_hash
 from ResourceProcessor.preview_metadata import (
     FileInfo,
     PreviewInfo,
@@ -52,6 +53,8 @@ def test_create_tables(tmp_path):
             "resource_description",
             "resource_upload_job",
             "process_log",
+            "resource_object_manifest",
+            "resource_object_delete_job",
         ])
         assert tables == expected
     finally:
@@ -246,6 +249,50 @@ def test_insert_and_get_description(tmp_path):
         assert entity.usage_space == "2D"
         assert entity.usage_category == "环境"
         assert entity.usage_subcategories == ["场景背景"]
+    finally:
+        store.close()
+
+
+def test_preview_and_description_content_hash_refresh_resource_fingerprint(tmp_path):
+    preview_path = tmp_path / "preview.webp"
+    preview_path.write_bytes(b"preview-bytes")
+    store = LocalCacheStore(str(tmp_path / "test.db"))
+    try:
+        task_id = store.insert_task(_make_entity())
+        initial = store.get_task_by_id(task_id)["resource_fingerprint"]
+
+        store.insert_preview(
+            task_id,
+            PreviewInfo(
+                strategy=PreviewStrategy.STATIC,
+                path=str(preview_path),
+                format="webp",
+                size=preview_path.stat().st_size,
+            ),
+        )
+        preview = store.get_preview_by_task(task_id)
+        assert preview["content_hash"] == hashlib.sha256(b"preview-bytes").hexdigest()
+        after_preview = store.get_task_by_id(task_id)["resource_fingerprint"]
+        assert after_preview and after_preview != initial
+
+        store.insert_description(
+            task_id,
+            main_content="main",
+            detail_content="detail",
+            full_description="full",
+            prompt_version="v1",
+            usage_subcategories=["ui"],
+        )
+        desc = store.get_description_by_task(task_id)
+        assert desc["content_hash"] == description_content_hash(
+            main_content="main",
+            detail_content="detail",
+            full_description="full",
+            prompt_version="v1",
+            usage_subcategories=["ui"],
+        )
+        after_desc = store.get_task_by_id(task_id)["resource_fingerprint"]
+        assert after_desc and after_desc != after_preview
     finally:
         store.close()
 
@@ -549,5 +596,75 @@ def test_task_with_no_files(tmp_path):
         task_id = store.insert_task(entity)
         files = store.get_files_by_task(task_id)
         assert files == []
+    finally:
+        store.close()
+
+
+def test_get_pack_child_description_rows_returns_latest_child_descriptions(tmp_path):
+    store = LocalCacheStore(str(tmp_path / "test.db"))
+    try:
+        pack_id = store.insert_task(
+            _make_entity(
+                content_md5="pack",
+                resource_type="pack",
+                source_resource_id="pack-src",
+                child_resource_ids=["child-a", "child-b", "child-missing"],
+                child_resource_count=3,
+            )
+        )
+        child_a = store.insert_task(
+            _make_entity(
+                content_md5="child-a-md5",
+                source_resource_id="child-a",
+                parent_resource_id="pack-src",
+                title="a.png",
+            )
+        )
+        child_b = store.insert_task(
+            _make_entity(
+                content_md5="child-b-md5",
+                source_resource_id="child-b",
+                parent_resource_id="pack-src",
+                title="b.png",
+            )
+        )
+        store.insert_task(
+            _make_entity(
+                content_md5="child-missing-md5",
+                source_resource_id="child-missing",
+                parent_resource_id="pack-src",
+            )
+        )
+        store.insert_description(
+            child_a,
+            main_content="old",
+            detail_content="old detail",
+            full_description="old full",
+            prompt_version="v1",
+        )
+        store.insert_description(
+            child_a,
+            main_content="new",
+            detail_content="new detail",
+            full_description="new full",
+            prompt_version="v2",
+        )
+        store.insert_description(
+            child_b,
+            main_content="child b",
+            detail_content="child b detail",
+            full_description="child b full",
+            prompt_version="v1",
+        )
+
+        rows = store.get_pack_child_description_rows(
+            pack_id,
+            pack_source_resource_id="pack-src",
+            child_source_ids=["child-a", "child-b", "child-missing"],
+        )
+
+        assert [row["source_resource_id"] for row in rows] == ["child-a", "child-b"]
+        assert rows[0]["main_content"] == "new"
+        assert rows[0]["prompt_version"] == "v2"
     finally:
         store.close()

@@ -1,0 +1,197 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: SearchServer/Dockerfile
+      target: dev
+      args:
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-https://deb.debian.org/debian}
+        DEBIAN_SECURITY_MIRROR: ${DEBIAN_SECURITY_MIRROR:-https://deb.debian.org/debian-security}
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - ../resource_contracts:/app/resource_contracts:ro
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://resource:resource@postgres:5432/resource_upload
+      MILVUS_HOST: milvus
+      MILVUS_PORT: "19530"
+      SERVER_EMBEDDING_PROVIDER: ksyun
+      SERVER_EMBEDDING_MODEL: qwen3-embedding-8b
+      SERVER_EMBEDDING_DIMENSION: "4096"
+      SERVER_EMBEDDING_BASE_URL: https://kspmas.ksyun.com/v1
+      RERANKER_URL: http://reranker:8100
+      DEBUG: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+      reranker:
+        condition: service_healthy
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0 --port 8000 --reload
+      --reload-dir /app
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  postgres:
+    build:
+      context: ./docker/postgres
+      dockerfile: Dockerfile
+      args:
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-https://deb.debian.org/debian}
+        DEBIAN_SECURITY_MIRROR: ${DEBIAN_SECURITY_MIRROR:-https://deb.debian.org/debian-security}
+        POSTGRES_APT_MIRROR: ${POSTGRES_APT_MIRROR:-https://apt.postgresql.org/pub/repos/apt}
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: resource
+      POSTGRES_PASSWORD: resource
+      POSTGRES_DB: resource_upload
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init-pg-jieba.sql:/docker-entrypoint-initdb.d/init-pg-jieba.sql:ro
+      - ./sql/chinese_stopwords.stop:/usr/share/postgresql/16/tsearch_data/chinese_stopwords.stop:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U resource -d resource_upload"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    volumes:
+      - etcddata:/etcd
+    command: >
+      etcd
+      --advertise-client-urls=http://0.0.0.0:2379
+      --listen-client-urls=http://0.0.0.0:2379
+      --data-dir=/etcd
+    # 👇 只加了这一段健康检查，其他完全不动
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  milvus:
+    image: milvusdb/milvus:v2.5.6
+    command: ["milvus", "run", "standalone"]
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    volumes:
+      - milvusdata:/var/lib/milvus
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # Milvus standalone internal object store only. This is not the resource
+  # file bucket and is intentionally not published to the host.
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - miniodata:/data
+    command: minio server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  reranker:
+    build:
+      context: ./docker/reranker
+      dockerfile: Dockerfile
+      args:
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-https://deb.debian.org/debian}
+        DEBIAN_SECURITY_MIRROR: ${DEBIAN_SECURITY_MIRROR:-https://deb.debian.org/debian-security}
+        DOWNLOAD_MODEL: ${DOWNLOAD_RERANKER_MODEL:-false}
+        RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+    # Internal-only service. The API container reaches it via http://reranker:8100.
+    # Do not publish host port 8100; it is reserved for resource_processing_server.
+    environment:
+      RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+      RERANKER_MODEL_PATH: ${RERANKER_MODEL_PATH:-}
+      MODELSCOPE_MODEL_PATH: ${MODELSCOPE_MODEL_PATH:-/root/.cache/huggingface/modelscope/models/BAAI--bge-reranker-v2-m3/snapshots/master}
+      MODELSCOPE_CACHE: /root/.cache/huggingface/modelscope
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+      HF_HOME: /root/.cache/huggingface
+    volumes:
+      - ${HF_CACHE_DIR:-../models/huggingface}:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8100/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        # GPU 部署时取消注释:
+        # reservations:
+        #   devices:
+        #     - driver: nvidia
+        #       count: 1
+        #       capabilities: [gpu]
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+volumes:
+  pgdata:
+  etcddata:
+  milvusdata:
+  miniodata:

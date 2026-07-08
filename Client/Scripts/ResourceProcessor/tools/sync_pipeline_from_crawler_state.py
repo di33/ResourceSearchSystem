@@ -28,10 +28,16 @@ from pathlib import Path
 from typing import Any, Iterable
 
 _CLIENT_SCRIPTS = Path(__file__).resolve().parents[2]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_CLIENT_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_CLIENT_SCRIPTS))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from ResourceProcessor.cache.local_cache import LocalCacheStore  # noqa: E402
+from ResourceProcessor.cache.local_cache import (  # noqa: E402
+    LocalCacheStore,
+    refresh_resource_fingerprint_for_connection,
+)
 from ResourceProcessor.crawler.catalog_loader import (  # noqa: E402
     DEFAULT_CRAWLER_OUTPUT,
     DEFAULT_CRAWLER_STATE_DB,
@@ -80,6 +86,8 @@ RESOURCE_CHILD_TABLES = (
     "process_log",
 )
 
+OBJECT_DELETE_JOB_TABLE = "resource_object_delete_job"
+
 
 @dataclass
 class SyncStats:
@@ -97,6 +105,9 @@ class SyncStats:
     preview_files_planned: int = 0
     preview_files_deleted: int = 0
     preview_files_skipped: int = 0
+    object_delete_jobs_planned: int = 0
+    object_delete_jobs_inserted: int = 0
+    object_delete_keys_planned: int = 0
     failures: int = 0
     failure_examples: list[str] = field(default_factory=list)
 
@@ -229,6 +240,7 @@ def _insert_entity(conn: sqlite3.Connection, entity) -> tuple[int, int]:
     )
     task_id = int(cur.lastrowid)
     file_count = _insert_resource_files(conn, task_id, entity.files, now)
+    refresh_resource_fingerprint_for_connection(conn, task_id, now=now)
     return task_id, file_count
 
 
@@ -282,7 +294,9 @@ def _update_task_with_entity(
         (*values, task_id),
     )
     conn.execute("DELETE FROM resource_file WHERE task_id = ?", (task_id,))
-    return _insert_resource_files(conn, task_id, entity.files, now)
+    file_count = _insert_resource_files(conn, task_id, entity.files, now)
+    refresh_resource_fingerprint_for_connection(conn, task_id, now=now)
+    return file_count
 
 
 def _update_task_description_metadata(
@@ -315,6 +329,7 @@ def _update_task_description_metadata(
             task_id,
         ),
     )
+    refresh_resource_fingerprint_for_connection(conn, task_id, now=now)
 
 
 def _source_record_from_entry(
@@ -322,6 +337,8 @@ def _source_record_from_entry(
     entry: dict[str, Any],
     *,
     include_assets: bool,
+    check_files: bool = True,
+    previous_missing_files: list[str] | None = None,
 ) -> CrawlerResourceRecord:
     pack_metadata = catalog.get_pack_metadata(
         str(entry.get("source", "")),
@@ -329,17 +346,19 @@ def _source_record_from_entry(
     )
     file_paths = [str(value) for value in entry.get("file_paths", []) or []]
     resolved_files: list[str] = []
-    missing_files: list[str] = []
-    for file_path in file_paths:
-        abs_path = catalog.resolve_asset_file(
-            str(entry.get("source", "")),
-            str(entry.get("pack_name", "")),
-            file_path,
-        )
-        if os.path.isfile(abs_path):
-            resolved_files.append(abs_path)
-        else:
-            missing_files.append(file_path)
+    missing_files: list[str] = list(previous_missing_files or [])
+    if check_files:
+        missing_files = []
+        for file_path in file_paths:
+            abs_path = catalog.resolve_asset_file(
+                str(entry.get("source", "")),
+                str(entry.get("pack_name", "")),
+                file_path,
+            )
+            if os.path.isfile(abs_path):
+                resolved_files.append(abs_path)
+            else:
+                missing_files.append(file_path)
 
     return CrawlerResourceRecord(
         raw=entry,
@@ -377,6 +396,32 @@ def _load_source_entry_by_id(
         (source_resource_id,),
     ).fetchone()
     return catalog._entry_from_resource_row(row) if row else None
+
+
+def _load_source_entries_by_ids(
+    source_conn: sqlite3.Connection,
+    catalog: CrawlerCatalog,
+    source_resource_ids: Iterable[str],
+) -> dict[str, dict[str, Any]]:
+    ids = [str(value) for value in source_resource_ids if str(value or "").strip()]
+    if not ids:
+        return {}
+    entries: dict[str, dict[str, Any]] = {}
+    for chunk in _chunks(list(dict.fromkeys(ids))):
+        placeholders = ",".join("?" for _ in chunk)
+        rows = source_conn.execute(
+            f"""SELECT {RESOURCE_COLUMNS}
+                FROM resource_index
+                WHERE id IN ({placeholders})
+                ORDER BY row_id""",
+            chunk,
+        ).fetchall()
+        for row in rows:
+            entry = catalog._entry_from_resource_row(row)
+            rid = str(entry.get("id", ""))
+            if rid and rid not in entries:
+                entries[rid] = entry
+    return entries
 
 
 def _load_target_tasks(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
@@ -568,12 +613,146 @@ def _delete_by_task_id(
     return count
 
 
+def _append_object_ref(
+    refs: list[dict[str, str]],
+    seen: set[tuple[str, str]],
+    value: Any,
+    *,
+    kind: str,
+    fallback_storage_profile_id: str = "",
+) -> None:
+    if not isinstance(value, dict):
+        return
+    object_key = str(value.get("object_key") or "").strip()
+    if not object_key:
+        return
+    storage_profile_id = str(value.get("storage_profile_id") or fallback_storage_profile_id or "").strip()
+    unique = (storage_profile_id, object_key)
+    if unique in seen:
+        return
+    seen.add(unique)
+    refs.append(
+        {
+            "storage_profile_id": storage_profile_id,
+            "object_key": object_key,
+            "kind": kind,
+        }
+    )
+
+
+def _object_refs_from_manifest(manifest: dict[str, Any]) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    source_object = manifest.get("source_object")
+    source_storage_profile_id = ""
+    if isinstance(source_object, dict):
+        source_storage_profile_id = str(source_object.get("storage_profile_id") or "").strip()
+    _append_object_ref(
+        refs,
+        seen,
+        source_object,
+        kind="source_object",
+    )
+    for item in manifest.get("source_files") or []:
+        _append_object_ref(
+            refs,
+            seen,
+            item,
+            kind="source_file",
+            fallback_storage_profile_id=source_storage_profile_id,
+        )
+    for item in manifest.get("provided_previews") or []:
+        _append_object_ref(
+            refs,
+            seen,
+            item,
+            kind="provided_preview",
+            fallback_storage_profile_id=source_storage_profile_id,
+        )
+    return refs
+
+
+def _manifest_rows_by_task_id(
+    conn: sqlite3.Connection,
+    task_ids: list[int],
+) -> Iterable[sqlite3.Row]:
+    if not task_ids or not _table_exists(conn, "resource_object_manifest"):
+        return []
+    rows: list[sqlite3.Row] = []
+    for chunk in _chunks(task_ids):
+        placeholders = ",".join("?" for _ in chunk)
+        rows.extend(
+            conn.execute(
+                f"""SELECT * FROM resource_object_manifest
+                    WHERE task_id IN ({placeholders})
+                      AND upload_state = 'uploaded'""",
+                chunk,
+            ).fetchall()
+        )
+    return rows
+
+
+def _enqueue_object_delete_jobs(
+    conn: sqlite3.Connection,
+    tasks: list[dict[str, Any]],
+    stats: SyncStats,
+    *,
+    reason: str,
+    dry_run: bool,
+) -> None:
+    if not tasks or not _table_exists(conn, OBJECT_DELETE_JOB_TABLE):
+        return
+    task_by_id = {int(task["id"]): task for task in tasks}
+    task_ids = list(task_by_id)
+    now = _now()
+    for row in _manifest_rows_by_task_id(conn, task_ids):
+        task_id = int(row["task_id"])
+        task = task_by_id.get(task_id, {})
+        manifest = _json_dict(row["manifest_json"])
+        refs = _object_refs_from_manifest(manifest)
+        if not refs:
+            continue
+        object_keys = [ref["object_key"] for ref in refs]
+        storage_profiles = sorted({ref["storage_profile_id"] for ref in refs if ref["storage_profile_id"]})
+        storage_profile_id = storage_profiles[0] if len(storage_profiles) == 1 else ""
+        client_resource_id = _norm_text(manifest.get("client_resource_id")) or _norm_text(task.get("source_resource_id"))
+        if not client_resource_id:
+            client_resource_id = f"task:{task_id}"
+
+        stats.object_delete_jobs_planned += 1
+        stats.object_delete_keys_planned += len(refs)
+        if dry_run:
+            continue
+        conn.execute(
+            """INSERT INTO resource_object_delete_job
+               (client_resource_id, source_resource_id, task_id_snapshot,
+                storage_profile_id, object_keys_json, object_refs_json,
+                manifest_json_snapshot, status, attempt_count, last_error,
+                reason, created_at, updated_at, deleted_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, '', ?, ?, ?, NULL)""",
+            (
+                client_resource_id,
+                _norm_text(task.get("source_resource_id")),
+                task_id,
+                storage_profile_id,
+                _json_dumps(object_keys),
+                _json_dumps(refs),
+                json.dumps(manifest, ensure_ascii=False),
+                reason,
+                now,
+                now,
+            ),
+        )
+        stats.object_delete_jobs_inserted += 1
+
+
 def _clear_downstream(
     conn: sqlite3.Connection,
     task_ids: list[int],
     *,
     include_previews: bool,
     include_files: bool,
+    include_object_manifests: bool = False,
     dry_run: bool,
 ) -> tuple[int, list[str]]:
     preview_paths = _select_preview_paths(conn, task_ids) if include_previews else []
@@ -584,6 +763,8 @@ def _clear_downstream(
         preview_rows = _delete_by_task_id(conn, "resource_preview", task_ids, dry_run=dry_run)
     if include_files:
         _delete_by_task_id(conn, "resource_file", task_ids, dry_run=dry_run)
+    if include_object_manifests:
+        _delete_by_task_id(conn, "resource_object_manifest", task_ids, dry_run=dry_run)
     return preview_rows, preview_paths
 
 
@@ -660,7 +841,7 @@ def _backup_db(db_path: str, report: Report) -> str | None:
         return None
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_path = f"{db_path}.bak_sync_{stamp}"
-    source = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=300)
+    source = sqlite3.connect(f"{Path(db_path).resolve().as_uri()}?mode=ro", uri=True, timeout=300)
     dest = sqlite3.connect(backup_path, timeout=300)
     try:
         source.backup(dest)
@@ -681,14 +862,26 @@ def _remove_sqlite_files(db_path: str) -> None:
 def _clear_current_cache(
     conn: sqlite3.Connection,
     *,
+    stats: SyncStats,
+    record_object_delete_jobs: bool,
     dry_run: bool,
 ) -> tuple[int, list[str]]:
-    task_ids = [int(row["id"]) for row in conn.execute("SELECT id FROM resource_task").fetchall()]
+    tasks = [dict(row) for row in conn.execute("SELECT * FROM resource_task").fetchall()]
+    task_ids = [int(task["id"]) for task in tasks]
+    if record_object_delete_jobs:
+        _enqueue_object_delete_jobs(
+            conn,
+            tasks,
+            stats,
+            reason="clear_first",
+            dry_run=dry_run,
+        )
     preview_rows, preview_paths = _clear_downstream(
         conn,
         task_ids,
         include_previews=True,
         include_files=True,
+        include_object_manifests=True,
         dry_run=dry_run,
     )
     _delete_resource_tasks(conn, task_ids, dry_run=dry_run)
@@ -752,6 +945,7 @@ def _sync_resources(
     catalog: CrawlerCatalog,
     stats: SyncStats,
     *,
+    record_object_delete_jobs: bool,
     dry_run: bool,
     commit_every: int,
 ) -> list[str]:
@@ -765,13 +959,21 @@ def _sync_resources(
     description_changed_source_ids: set[str] = set()
     impacted_parent_ids: set[str] = set()
     processed = 0
+    scanned = 0
     t0 = time.time()
 
     for entry in _iter_source_entries(source_conn, catalog):
+        scanned += 1
         source_resource_id = str(entry.get("id", ""))
         processed_source_ids.add(source_resource_id)
         task = target_by_source.pop(source_resource_id, None)
-        record = _source_record_from_entry(catalog, entry, include_assets=False)
+        record = _source_record_from_entry(
+            catalog,
+            entry,
+            include_assets=False,
+            check_files=False,
+            previous_missing_files=_json_list(task.get("missing_files")) if task else [],
+        )
 
         if task is None:
             stats.resources_added += 1
@@ -779,7 +981,12 @@ def _sync_resources(
             if record.parent_resource_id:
                 impacted_parent_ids.add(record.parent_resource_id)
             if not dry_run:
-                record.assets = catalog._resolve_assets(entry)
+                record = _source_record_from_entry(
+                    catalog,
+                    entry,
+                    include_assets=True,
+                    check_files=True,
+                )
                 try:
                     entity = build_processing_entity(record, file_md5_cache=md5_cache)
                     _, file_count = _insert_entity(conn, entity)
@@ -795,7 +1002,12 @@ def _sync_resources(
                 if record.parent_resource_id:
                     impacted_parent_ids.add(record.parent_resource_id)
                 if not dry_run:
-                    record.assets = catalog._resolve_assets(entry)
+                    record = _source_record_from_entry(
+                        catalog,
+                        entry,
+                        include_assets=True,
+                        check_files=True,
+                    )
                 try:
                     preview_paths_to_delete.extend(
                         _process_preview_changed_resource(
@@ -822,13 +1034,18 @@ def _sync_resources(
                 else:
                     stats.resources_unchanged += 1
 
-        if not dry_run and commit_every and processed and processed % commit_every == 0:
-            conn.commit()
+        if commit_every and scanned and scanned % commit_every == 0:
+            if not dry_run:
+                conn.commit()
             elapsed = time.time() - t0
             print_progress(
-                processed,
-                processed + stats.resources_unchanged,
-                f"新增 {stats.resources_added:,}, 变更 {stats.resources_preview_changed + stats.resources_description_changed:,}, {elapsed:.1f}s",
+                scanned,
+                scanned + len(target_by_source),
+                (
+                    f"新增 {stats.resources_added:,}, 变更 "
+                    f"{stats.resources_preview_changed + stats.resources_description_changed:,}, "
+                    f"未变 {stats.resources_unchanged:,}, {elapsed:.1f}s"
+                ),
             )
 
     removed_tasks = list(target_by_source.values())
@@ -838,11 +1055,20 @@ def _sync_resources(
             impacted_parent_ids.add(parent_id)
     if removed_tasks:
         removed_task_ids = [int(task["id"]) for task in removed_tasks]
+        if record_object_delete_jobs:
+            _enqueue_object_delete_jobs(
+                conn,
+                removed_tasks,
+                stats,
+                reason="crawler_removed",
+                dry_run=dry_run,
+            )
         preview_rows, preview_paths = _clear_downstream(
             conn,
             removed_task_ids,
             include_previews=True,
             include_files=True,
+            include_object_manifests=True,
             dry_run=dry_run,
         )
         stats.preview_rows_deleted += preview_rows
@@ -852,6 +1078,7 @@ def _sync_resources(
 
     invalidated_pack_ids: set[str] = set()
     already_invalidated = new_source_ids | preview_changed_source_ids | set(target_by_source)
+    parent_ids_to_invalidate: list[str] = []
     for parent_id in sorted(impacted_parent_ids):
         if (
             not parent_id
@@ -862,10 +1089,23 @@ def _sync_resources(
         task = all_targets.get(parent_id)
         if task is None or parent_id not in processed_source_ids:
             continue
-        entry = _load_source_entry_by_id(source_conn, catalog, parent_id)
+        parent_ids_to_invalidate.append(parent_id)
+
+    parent_entries = _load_source_entries_by_ids(source_conn, catalog, parent_ids_to_invalidate)
+    for parent_id in parent_ids_to_invalidate:
+        task = all_targets.get(parent_id)
+        if task is None:
+            continue
+        entry = parent_entries.get(parent_id)
         if entry is None:
             continue
-        record = _source_record_from_entry(catalog, entry, include_assets=not dry_run)
+        record = _source_record_from_entry(
+            catalog,
+            entry,
+            include_assets=not dry_run,
+            check_files=not dry_run,
+            previous_missing_files=_json_list(task.get("missing_files")),
+        )
         try:
             preview_paths_to_delete.extend(
                 _process_preview_changed_resource(
@@ -886,7 +1126,7 @@ def _sync_resources(
 
 
 def _open_source(crawler_state_db: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(f"file:{crawler_state_db}?mode=ro", uri=True, timeout=300)
+    conn = sqlite3.connect(f"{Path(crawler_state_db).resolve().as_uri()}?mode=ro", uri=True, timeout=300)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=300000")
     return conn
@@ -944,6 +1184,7 @@ def sync(args: argparse.Namespace) -> int:
 
     stats = SyncStats()
     preview_paths_to_delete: list[str] = []
+    record_object_delete_jobs = not getattr(args, "no_object_delete_jobs", False)
     t0 = time.time()
     try:
         if args.dry_run:
@@ -954,7 +1195,12 @@ def sync(args: argparse.Namespace) -> int:
         _ensure_asset_index(conn)
 
         if args.clear_first:
-            preview_rows, preview_paths = _clear_current_cache(conn, dry_run=args.dry_run)
+            preview_rows, preview_paths = _clear_current_cache(
+                conn,
+                stats=stats,
+                record_object_delete_jobs=record_object_delete_jobs,
+                dry_run=args.dry_run,
+            )
             stats.preview_rows_deleted += preview_rows
             preview_paths_to_delete.extend(preview_paths)
             report.ok("清空当前缓存", "resource_task/resource_file/resource_preview/resource_description/asset_index")
@@ -977,6 +1223,7 @@ def sync(args: argparse.Namespace) -> int:
                 source_conn,
                 catalog,
                 stats,
+                record_object_delete_jobs=record_object_delete_jobs,
                 dry_run=args.dry_run,
                 commit_every=args.commit_every,
             )
@@ -1014,6 +1261,12 @@ def sync(args: argparse.Namespace) -> int:
         f"DB 预览行 {stats.preview_rows_deleted:,}, 文件计划 {stats.preview_files_planned:,}, "
         f"删除 {stats.preview_files_deleted:,}, 跳过 {stats.preview_files_skipped:,}",
     )
+    report.ok(
+        "对象删除队列",
+        f"任务计划 {stats.object_delete_jobs_planned:,}, 写入 {stats.object_delete_jobs_inserted:,}, "
+        f"对象 key {stats.object_delete_keys_planned:,}"
+        + (" (disabled)" if not record_object_delete_jobs else ""),
+    )
     if not args.dry_run:
         check_conn = sqlite3.connect(db_path, timeout=300)
         try:
@@ -1042,6 +1295,11 @@ def main() -> int:
     parser.add_argument("--replace-db-file", action="store_true", help="clear-first 时直接删除旧 SQLite 文件后重建")
     parser.add_argument("--no-backup", action="store_true", help="apply 前不备份目标数据库")
     parser.add_argument("--keep-preview-files", action="store_true", help="只删 resource_preview 记录，不删除预览文件")
+    parser.add_argument(
+        "--no-object-delete-jobs",
+        action="store_true",
+        help="删除本地资源时不记录对象存储删除任务；默认会写入 resource_object_delete_job",
+    )
     parser.add_argument(
         "--preview-dir",
         action="append",

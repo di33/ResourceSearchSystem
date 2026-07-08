@@ -7,6 +7,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from resource_contracts.resource_types import SINGLE_IMAGE_RESOURCE_TYPE  # noqa: E402
+
 
 SOURCE = Path(r"G:\ResourceCrawler\tmp\refresh_missing_previews.py")
 
@@ -149,7 +155,7 @@ def _svg_placeholder_preview(
 
 
 def _try_fast_single_image_preview_reuse(cache, task, previews_dir, **kwargs):
-    if task.get("resource_type") != "single_image":
+    if task.get("resource_type") != SINGLE_IMAGE_RESOURCE_TYPE:
         return None
 
     task_id = int(task["id"])
@@ -166,7 +172,7 @@ def _try_fast_single_image_preview_reuse(cache, task, previews_dir, **kwargs):
         return None
 
     ext = Path(file_path).suffix.lower()
-    output_dir = Path(previews_dir) / "single_image"
+    output_dir = Path(previews_dir) / SINGLE_IMAGE_RESOURCE_TYPE
     preview_strategy_cls = kwargs["preview_strategy_cls"]
     preview_info_cls = kwargs["preview_info_cls"]
     validate_preview = kwargs["validate_preview"]

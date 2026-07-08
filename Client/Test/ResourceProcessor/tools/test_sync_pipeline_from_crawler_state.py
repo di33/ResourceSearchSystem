@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from ResourceProcessor.cache.local_cache import LocalCacheStore
 from ResourceProcessor.preview_metadata import PreviewInfo, PreviewStrategy, ProcessState
+from ResourceProcessor.tools import flush_object_delete_jobs as flush_jobs
 from ResourceProcessor.tools import sync_pipeline_from_crawler_state as sync_tool
 
 
@@ -163,6 +164,38 @@ def _add_generated_outputs(db_path, preview_dir, *, task_id: int, name: str = "p
     return preview_path
 
 
+def _add_object_manifest(db_path, *, task_id: int, client_resource_id: str):
+    store = LocalCacheStore(str(db_path))
+    try:
+        store.upsert_object_manifest(
+            task_id,
+            {
+                "client_resource_id": client_resource_id,
+                "source_object": {
+                    "storage_profile_id": "default",
+                    "object_key": f"resource-crawler/client/files/{client_resource_id}/source.png",
+                },
+                "source_files": [
+                    {
+                        "object_key": f"resource-crawler/client/files/{client_resource_id}/legacy-extra.png",
+                    }
+                ],
+                "provided_previews": [
+                    {
+                        "storage_profile_id": "default",
+                        "object_key": f"resource-crawler/client/previews/{client_resource_id}/primary.webp",
+                    }
+                ],
+                "package_object": {
+                    "storage_profile_id": "default",
+                    "object_key": "resource-crawler/client/files/shared-pack/source.zip",
+                },
+            },
+        )
+    finally:
+        store.close()
+
+
 def _task_id(db_path) -> int:
     conn = sqlite3.connect(str(db_path))
     try:
@@ -220,13 +253,101 @@ def test_sync_preserves_invalidates_and_deletes_downstream_outputs(tmp_path):
         store.close()
 
     preview_path = _add_generated_outputs(db_path, preview_dir, task_id=task_id, name="preview3.webp")
+    _add_object_manifest(db_path, task_id=task_id, client_resource_id="src-1")
     crawler_db, output_root = _write_crawler_db(tmp_path, [])
     assert sync_tool.sync(_args(tmp_path, crawler_db, output_root, db_path, preview_dir)) == 0
     conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
     try:
         assert conn.execute("SELECT COUNT(*) FROM resource_task").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM resource_preview").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM resource_description").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM resource_object_manifest").fetchone()[0] == 0
+        job = conn.execute("SELECT * FROM resource_object_delete_job").fetchone()
+        assert job["client_resource_id"] == "src-1"
+        assert job["source_resource_id"] == "src-1"
+        assert job["status"] == "pending"
+        object_keys = json.loads(job["object_keys_json"])
+        assert object_keys == [
+            "resource-crawler/client/files/src-1/source.png",
+            "resource-crawler/client/files/src-1/legacy-extra.png",
+            "resource-crawler/client/previews/src-1/primary.webp",
+        ]
+        assert "shared-pack/source.zip" not in "\n".join(object_keys)
     finally:
         conn.close()
     assert not preview_path.exists()
+
+
+def test_flush_object_delete_jobs_retries_failed_jobs(tmp_path, monkeypatch):
+    db_path = tmp_path / "pipeline.db"
+    LocalCacheStore(str(db_path)).close()
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            """INSERT INTO resource_object_delete_job
+               (client_resource_id, source_resource_id, task_id_snapshot,
+                storage_profile_id, object_keys_json, object_refs_json,
+                manifest_json_snapshot, status, attempt_count, last_error,
+                reason, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, '{}', 'pending', 0, '', 'test', 'now', 'now')""",
+            (
+                "asset-1",
+                "asset-1",
+                1,
+                "default",
+                json.dumps(["resource-crawler/client/files/asset-1/source.png"]),
+                json.dumps([
+                    {
+                        "storage_profile_id": "default",
+                        "object_key": "resource-crawler/client/files/asset-1/source.png",
+                    }
+                ]),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    class FailingUploader:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def delete_objects(self, object_keys):
+            raise RuntimeError("offline")
+
+    monkeypatch.setattr(flush_jobs, "ObjectStorageUploader", FailingUploader)
+    args = SimpleNamespace(db_path=str(db_path), limit=None, max_attempts=10, dry_run=False)
+    assert flush_jobs.flush(args) == 1
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        failed = conn.execute("SELECT * FROM resource_object_delete_job").fetchone()
+        assert failed["status"] == "failed"
+        assert failed["attempt_count"] == 1
+    finally:
+        conn.close()
+
+    deleted_keys = []
+
+    class SuccessfulUploader:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def delete_objects(self, object_keys):
+            deleted_keys.extend(object_keys)
+            return len(object_keys)
+
+    monkeypatch.setattr(flush_jobs, "ObjectStorageUploader", SuccessfulUploader)
+    assert flush_jobs.flush(args) == 0
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        done = conn.execute("SELECT * FROM resource_object_delete_job").fetchone()
+        assert done["status"] == "deleted"
+        assert deleted_keys == ["resource-crawler/client/files/asset-1/source.png"]
+    finally:
+        conn.close()

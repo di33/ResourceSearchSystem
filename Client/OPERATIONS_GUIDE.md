@@ -1,388 +1,239 @@
-# ResourceUpload 客户端操作指南
+# ResourceUpload 客户端命令指南
 
-除特别说明外，命令都在仓库根目录执行。Windows 使用 PowerShell，Linux 使用 Bash。下面的命令都尽量写成单行，复制整行即可运行。
+本文只介绍这 5 个客户端命令：
 
-Windows 进入仓库并设置 `PYTHONPATH`：
+- `sync_pipeline_from_crawler_state`
+- `upload_objects_to_storage`
+- `generate_previews`
+- `generate_descriptions`
+- `upload_resources`
 
-```powershell
-cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"
-```
-
-Linux 进入仓库并设置 `PYTHONPATH`：
-
-```bash
-cd /path/to/ResourceUpload && export PYTHONPATH=/path/to/ResourceUpload/client/Scripts
-```
-
-Windows 下不要直接使用裸 `python`：它可能命中 WindowsApps 的 Python shim。下面的 PowerShell 示例都显式使用仓库里的 `.\.venv\Scripts\python.exe`。运行 `ResourceProcessor` 模块命令时，示例会把 `$env:PYTHONPATH` 放在同一行里。
-
-## 1. 准备
-
-安装依赖：
+每个新 PowerShell 窗口先执行一次初始化：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -r client\requirements.txt
+cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts;G:\ResourceUpload\Tools"; $py = ".\.venv\Scripts\python.exe"
 ```
 
-公开配置保留在 `client/.env`（可提交），私有密钥放在 `client/.env.local`（已被 Git 忽略）。确认两份文件至少包含：
+下面示例都省略默认参数。命令默认读取 `Tools\.env`、`Tools\.env.local`、`client\.env`、`client\.env.local`。
 
-```env
-# .env
-CLIENT_LLM_PROVIDER=ksyun
-CLIENT_LLM_BASE_URL=https://kspmas.ksyun.com/v1
-KSPMAS_LLM_MODEL=qwen3-vl-235b-a22b-instruct
+## 1. sync_pipeline_from_crawler_state
 
-# .env.local
-KSPMAS_API_KEY=你的金山云APIKey
-```
+从 ResourceCrawler 的 `crawler_state.db` 同步到本地 `pipeline.db`。
 
-如果图片描述走 Codex，音频继续走 API provider：
-
-```env
-# .env
-CLIENT_LLM_PROVIDER=codex
-AUDIO_LLM_PROVIDER=ksyun
-AUDIO_LLM_MODEL=mimo-v2.5
-CODEX_MODEL=gpt-5.5
-CODEX_CONCURRENCY=1
-
-# .env.local
-KSPMAS_API_KEY=你的金山云APIKey
-```
-
-## 2. 服务端连接
-
-客户端只需要知道服务端 API 地址。服务端启动、停止、Docker 日志和向量重建命令见 `server/OPERATIONS_GUIDE.md`。
-
-默认地址写在 `client/.env`：
-
-```env
-TEST_SERVER_URL=http://localhost:8000
-```
-
-确认服务端健康：
+示例：
 
 ```powershell
-$server = "http://localhost:8000"; Invoke-RestMethod -Uri "$server/health" -Method Get
+& $py -m ResourceProcessor.tools.sync_pipeline_from_crawler_state
 ```
 
-查看服务端统计：
+dry-run 看差异：
 
 ```powershell
-$server = "http://localhost:8000"; Invoke-RestMethod -Uri "$server/stats" -Method Get
+& $py -m ResourceProcessor.tools.sync_pipeline_from_crawler_state --dry-run
 ```
 
-查看资源列表：
+全量重建：
 
 ```powershell
-$server = "http://localhost:8000"; Invoke-RestMethod -Uri "$server/resources?page=1&page_size=20" -Method Get
+& $py -m ResourceProcessor.tools.sync_pipeline_from_crawler_state --clear-first
 ```
 
-参数说明：
+参数：
 
-- `$server`：服务端 API 地址，应与 `TEST_SERVER_URL` 一致。
-- `/health`：检查 API、Postgres、Milvus、S3、reranker 健康状态。
-- `/stats`：查看资源总数、状态分布、向量数量等汇总信息。
-- `/resources`：分页查看已上传资源列表。
+- `--crawler-state-db`：ResourceCrawler 状态库。默认 `G:\ResourceCrawler\data\crawler_state.db`。
+- `--crawler-output`：ResourceCrawler 输出目录。默认 `K:\ResourceCrawler\output`。
+- `--db-path`：目标 pipeline SQLite。默认 `G:\ResourceUpload\data\databases\pipeline.db`。
+- `--dry-run`：只统计差异，不写库、不删文件。默认关闭。
+- `--clear-first`：同步前清空当前 pipeline 表。默认关闭。
+- `--replace-db-file`：配合 `--clear-first`，直接删除旧 SQLite 文件后重建。默认关闭。
+- `--no-backup`：执行前不备份目标数据库。默认关闭，即默认会备份。
+- `--keep-preview-files`：只删 `resource_preview` 记录，不删磁盘预览文件。默认关闭。
+- `--no-object-delete-jobs`：删除本地资源时不写入对象存储删除队列。默认关闭，即默认会写入删除队列。
+- `--preview-dir`：允许清理预览文件的目录，可重复传。默认自动推断常见 `previews` 目录。
+- `--commit-every`：每处理 N 条新增或变更资源提交一次。默认 `1000`。
+- `--asset-batch-size`：同步 `asset_index` 的批大小。默认 `10000`。
 
-## 3. 推荐资源流水线
+## 2. upload_objects_to_storage
 
-推荐使用 SQLite 拆分流水线：
+把本地资源文件上传到对象存储，并把对象 manifest 保存到 `pipeline.db`。它不提交加工服务器。推荐在远程生成预览前先跑这一步。
 
-```text
-crawler_state.db -> pipeline.db -> 预览 -> 描述 -> 上传
-```
-
-关键边界：
-
-- 只有“同步本地库”读取 `G:\ResourceCrawler\data\crawler_state.db`。
-- 预览、描述、上传只读取当前 `pipeline.db`。
-- 原始资源文件路径已经记录在 `resource_file`，后续步骤仍会读取这些原始文件。
-
-### 3.1 同步本地库
-
-增量同步：
+先 dry-run：
 
 ```powershell
-$env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.tools.sync_pipeline_from_crawler_state --crawler-state-db "G:\ResourceCrawler\data\crawler_state.db" --crawler-output "K:\ResourceCrawler\output" --db-path "G:\ResourceUpload\data\databases\pipeline.db"
+& $py -m ResourceProcessor.upload_objects_to_storage --no-previews --missing-manifest-only --dry-run --limit 5
 ```
 
-默认是增量同步：未变更资源保留已有预览和描述；变更资源会清理对应预览/描述并回到待处理状态；已删除资源会清理本地 DB 记录和预览文件。
-
-全量同步：
+正式上传源对象：
 
 ```powershell
-$env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.tools.sync_pipeline_from_crawler_state --crawler-state-db "G:\ResourceCrawler\data\crawler_state.db" --crawler-output "K:\ResourceCrawler\output" --db-path "G:\ResourceUpload\data\databases\pipeline.db" --clear-first
+& $py -m ResourceProcessor.upload_objects_to_storage --no-previews --missing-manifest-only
 ```
 
-只演练，不写库、不删文件：
+只补传指定资源类型：
 
 ```powershell
-$env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.tools.sync_pipeline_from_crawler_state --crawler-state-db "G:\ResourceCrawler\data\crawler_state.db" --crawler-output "K:\ResourceCrawler\output" --db-path "G:\ResourceUpload\data\databases\pipeline.db" --dry-run
+& $py -m ResourceProcessor.upload_objects_to_storage --no-previews --missing-manifest-only --resource-types "atlas,tileset,spine_skeleton"
 ```
 
-指定预览目录并跳过备份：
+参数：
+
+- `--db-path`：本地 pipeline SQLite。默认 `G:\ResourceUpload\data\databases\pipeline.db`。
+- `--limit`：最多处理多少个资源。默认不限制。
+- `--resource-type`：只处理一个资源类型。默认空，即不按单个类型过滤。
+- `--resource-types`：只处理多个资源类型，支持逗号分隔或重复传入。默认空，即不按多个类型过滤。
+- `--source-filter`：只处理指定来源站点。默认空，即不过滤来源。
+- `--resume`：通用断点续跑参数。默认关闭；该命令在未使用 `--force` 时本身会复用或跳过已有 manifest。
+- `--client-id`：客户端命名空间。默认读取 `CLIENT_ID`，未配置则 `client`。
+- `--storage-profile-id`：对象存储 profile ID。默认读取 `STORAGE_PROFILE_ID` / `OBJECT_STORAGE_PROFILE_ID`，未配置则使用 `client\storage_profiles.jsonc` 的默认 profile。
+- `--key-prefix`：对象 key 根前缀。默认空。
+- `--no-previews`：不上传本地已有预览。默认关闭，即默认会上传已有预览。
+- `--include-descriptions`：manifest 中携带本地已有描述。默认关闭。
+- `--manifest-out`：导出 JSONL manifest 文件。默认空；真实上传未传则只写 DB，dry-run 未传则输出到 stdout。
+- `--dry-run`：只构造计划 manifest，不上传对象、不写 DB。默认关闭。
+- `--force`：强制重新上传匹配资源；必须配合 `--resource-type` 或 `--resource-types`。默认关闭。
+- `--process-states`：只上传指定任务状态，支持逗号分隔或重复传入。默认空，即不过滤状态。
+- `--min-task-id`：只处理 id 大于等于该值的任务。默认不限制。
+- `--max-task-id`：只处理 id 小于等于该值的任务。默认不限制。
+- `--preview-created-after`：只处理该时间之后生成过预览的任务。默认空。
+- `--missing-manifest-only`：只处理尚未保存 uploaded manifest 的任务。默认关闭。
+- `--defer-replaced-object-cleanup`：替换 manifest 后把旧对象写入删除队列，稍后统一清理。默认关闭。
+- `--workers`：并发上传 worker 数。默认读取 `OBJECT_STORAGE_UPLOAD_WORKERS`，未配置则 `8`。
+
+说明：`pack` 任务只上传包对象并保存 manifest，不会提交加工服务器。
+
+## 3. generate_previews
+
+生成预览并写回 `pipeline.db`。默认使用 renderer 模式，因此需要先有对象存储 manifest。
+
+断点生成：
 
 ```powershell
-$env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.tools.sync_pipeline_from_crawler_state --crawler-state-db "G:\ResourceCrawler\data\crawler_state.db" --crawler-output "K:\ResourceCrawler\output" --db-path "G:\ResourceUpload\data\databases\pipeline.db" --preview-dir "G:\ResourceUpload\data\workdirs\test_workdir_rebuilt_20260608_150207\previews" --no-backup
+& $py -m ResourceProcessor.generate_previews --skip-missing-object-manifest
 ```
 
-参数说明：
-
-- `--crawler-state-db`：ResourceCrawler 生成的 `crawler_state.db` 路径，是同步的源数据库。
-- `--crawler-output`：ResourceCrawler 的 `output` 根目录，用来定位原始资源文件。
-- `--db-path`：目标 `pipeline.db` 路径，预览、描述、上传都会读取这个库。
-- `--clear-first`：同步前清空当前 pipeline 表，相当于全量重建。
-- `--dry-run`：只统计差异，不写数据库，也不删除预览文件。
-- `--preview-dir`：允许清理旧预览文件的目录，可重复传入。未传时会推断常见 `previews` 目录。
-- `--no-backup`：执行同步前不备份目标数据库。
-- `--keep-preview-files`：只删除 `resource_preview` 记录，不删除磁盘上的预览文件。
-- `--replace-db-file`：配合 `--clear-first` 使用，直接删除旧 SQLite 文件后重建。
-- `--commit-every`：每处理 N 条新增或变更资源提交一次事务，默认 `1000`。
-- `--asset-batch-size`：同步 `asset_index` 的批处理大小，默认 `10000`。
-
-### 3.2 生成预览
-
-断点续跑生成预览：
+强制重建某类资源：
 
 ```powershell
-$env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.generate_previews --db-path "G:\ResourceUpload\data\databases\pipeline.db" --work-dir "G:\ResourceUpload\data\workdirs\test_workdir_rebuilt" --resume
+& $py -m ResourceProcessor.generate_previews --resource-type single_image --force --skip-missing-object-manifest
 ```
 
-强制重建指定资源类型的预览：
+只处理指定 task：
 
 ```powershell
-$env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.generate_previews --db-path "G:\ResourceUpload\data\databases\pipeline.db" --work-dir "G:\ResourceUpload\data\workdirs\test_workdir_rebuilt" --resource-type single_image --force
+& $py -m ResourceProcessor.generate_previews --task-id 12345
 ```
 
-参数说明：
+参数：
 
-- `--db-path`：读取和写入的 pipeline SQLite 数据库。
-- `--work-dir`：预览输出工作目录，实际图片会写到 `<work-dir>\previews\<resource_type>\`。
-- `--resume`：跳过已经达到预览完成状态的资源，用于断点续跑。
-- `--force`：强制重新生成匹配资源的预览，成功后清除旧预览记录和旧预览文件。
-- `--limit`：最多处理多少个资源。
-- `--resource-type`：只处理指定资源类型，例如 `single_image`、`atlas`、`spine_skeleton`。
-- `--source-filter`：只处理指定来源站点。
-- `--task-id`：只处理指定 task id，可重复传入。
-- `--min-task-id`：只处理 id 大于等于该值的 task。
-- `--max-task-id`：只处理 id 小于等于该值的 task。
+- `--db-path`：本地 pipeline SQLite。默认 `G:\ResourceUpload\data\databases\pipeline.db`。
+- `--limit`：最多处理多少个资源。默认不限制。
+- `--resource-type`：只处理指定资源类型。默认空，即处理所有可生成预览的非 `pack` 资源。
+- `--source-filter`：只处理指定来源站点。默认空，即不过滤来源。
+- `--resume`：通用断点续跑参数。默认关闭；当前预览命令默认也会跳过已达到 `preview_ready` 的任务。
+- `--work-dir`：工作目录。默认 `G:\ResourceUpload\data`，预览写到 `<work-dir>\previews\<resource_type>\`。
+- `--force`：强制重新生成匹配资源预览，成功后清除旧预览记录和旧文件。默认关闭。
+- `--task-id`：只处理指定 task id，可重复传。默认空。
+- `--min-task-id`：只处理 id 大于等于该值的 task。默认不限制。
+- `--max-task-id`：只处理 id 小于等于该值的 task。默认不限制。
+- `--preview-mode`：预览方式。默认 `renderer`；可选 `local`。
+- `--preview-renderer`：preview-renderer 地址。默认读取 `PREVIEW_RENDERER_URL`，未配置则 `http://localhost:8200`。
+- `--client-id`：renderer 请求的 `X-Client-Id`。默认读取 `CLIENT_ID`，未配置则 `client`。
+- `--api-key`：preview-renderer API key。默认读取 `PR_PREVIEW_RENDERER_API_KEY` / `PR_API_KEY`，未配置则空。
+- `--phase`：兼容旧 worker 的刷新阶段参数。默认 `non-pack`；当前命令始终跳过 `pack` 预览。
+- `--marker`：只处理 marker 时间之后没有新预览的任务。默认空。
+- `--worker-count`：并行 worker 总数，按 task id 取模分片。默认 `1`。
+- `--worker-index`：当前 worker 下标。默认 `0`。
+- `--progress-every`：每处理 N 个任务打印一次进度。默认 `25`。
+- `--status-file`：状态日志文件。默认空。
+- `--skip-missing-object-manifest`：renderer 模式下跳过没有对象存储 manifest 的任务。默认关闭。
 
-### 3.3 生成描述
+## 4. generate_descriptions
 
-使用 `client/.env` / `client/.env.local` 默认 provider：
+读取预览结果，生成描述并写回 `pipeline.db`。
+
+断点生成：
 
 ```powershell
-$env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.generate_descriptions --db-path "G:\ResourceUpload\data\databases\pipeline.db" --resume
-```
-
-显式指定 provider：
-
-```powershell
-$env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.generate_descriptions --db-path "G:\ResourceUpload\data\databases\pipeline.db" --llm-provider ksyun --audio-llm-provider ksyun --resume
+& $py -m ResourceProcessor.generate_descriptions --resume
 ```
 
 重试失败描述：
 
 ```powershell
-$env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.generate_descriptions --db-path "G:\ResourceUpload\data\databases\pipeline.db" --retry-failed --max-retries 3
+& $py -m ResourceProcessor.generate_descriptions --retry-failed
 ```
 
-Ksyun 视觉模型响应较慢时，可临时放宽读超时并降低并发后重试：
+强制刷新某类资源描述：
 
 ```powershell
-$env:KSPMAS_LLM_TIMEOUT = "180"; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.generate_descriptions --db-path "G:\ResourceUpload\data\databases\pipeline.db" --llm-provider ksyun --retry-failed --max-retries 3 --concurrency 3
+& $py -m ResourceProcessor.generate_descriptions --resource-type single_image --force
 ```
 
-参数说明：
+参数：
 
-- `--db-path`：读取预览结果并写入描述结果的 pipeline SQLite 数据库。
-- `--resume`：跳过已经生成描述的资源，只处理待描述资源。
-- `--llm-provider`：图片等非音频资源使用的 LLM provider。未传时读取 `client/.env` / `client/.env.local` 里的 `CLIENT_LLM_PROVIDER`，没有配置则使用 `mock`。
-- `--audio-llm-provider`：音频资源使用的 LLM provider。未配置时音频可能会被跳过。
-- `--retry-failed`：只重试描述生成失败的任务。
-- `--max-retries`：失败任务最多允许重试多少次，默认 `3`。
-- `--concurrency`：并发请求数。Codex 默认 `1`，API provider 默认 `5`，也可显式指定。
-- `--limit`：最多处理多少个资源。
-- `--resource-type`：只处理指定资源类型。
-- `--source-filter`：只处理指定来源站点。
-- `KSPMAS_LLM_TIMEOUT`：Ksyun LLM 请求读超时秒数，未设置时默认 `60`；大模型批量视觉描述建议 `180`。
+- `--db-path`：本地 pipeline SQLite。默认 `G:\ResourceUpload\data\databases\pipeline.db`。
+- `--limit`：最多处理多少个资源。默认不限制。
+- `--resource-type`：只处理指定资源类型。默认空，即不过滤类型。
+- `--source-filter`：只处理指定来源站点。默认空，即不过滤来源。
+- `--resume`：跳过已有描述的资源，并把它们标记为 `description_ready`。默认关闭。
+- `--llm-provider`：非音频资源使用的 LLM provider。默认读取 `CLIENT_LLM_PROVIDER`，未配置则 `mock`。
+- `--audio-llm-provider`：音频资源使用的 LLM provider。默认读取 `AUDIO_LLM_PROVIDER`，未配置则跳过音频。
+- `--retry-failed`：只重试描述生成失败的任务。默认关闭。
+- `--force`：强制刷新匹配资源描述；必须配合 `--resource-type`，且不能和 `--retry-failed` 同用。默认关闭。
+- `--max-retries`：失败任务最多重试次数。默认 `3`。
+- `--concurrency`：并发请求数。默认：Codex provider 读取 `CODEX_CONCURRENCY`，未配置则 `1`；其他 provider 读取 `DESCRIPTION_CONCURRENCY`，未配置则 `5`。
 
-### 3.4 上传
+常用环境变量：`KSPMAS_LLM_TIMEOUT` 控制 Ksyun LLM 请求超时，未配置时由 provider 默认值决定；大批量视觉描述常用 `180`。
 
-先 dry-run 看可上传数量：
+## 5. upload_resources
+
+生成最终加工 manifest，上传缺失对象或预览，写入 `pipeline.db`，并提交到 resource-processing-server。
+
+先 dry-run：
 
 ```powershell
-$env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.upload_resources --db-path "G:\ResourceUpload\data\databases\pipeline.db" --dry-run
+& $py -m ResourceProcessor.upload_resources --include-descriptions --dry-run --limit 5
 ```
 
-正式上传：
+正式上传并提交，默认等待加工完成：
 
 ```powershell
-$env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.upload_resources --db-path "G:\ResourceUpload\data\databases\pipeline.db" --server "http://localhost:8000"
+& $py -m ResourceProcessor.upload_resources --include-descriptions
 ```
 
-重新上传已提交资源：
+只提交任务，不等待加工完成：
 
 ```powershell
-$env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.upload_resources --db-path "G:\ResourceUpload\data\databases\pipeline.db" --force
+& $py -m ResourceProcessor.upload_resources --include-descriptions --no-wait
 ```
 
-参数说明：
-
-- `--db-path`：读取待上传资源的 pipeline SQLite 数据库。
-- `--server`：服务端 API 地址，默认读取 `client/.env` / `client/.env.local` 里的 `TEST_SERVER_URL`，否则使用 `http://localhost:8000`。
-- `--dry-run`：只统计可上传数量，不实际上传文件和提交资源。
-- `--force`：把已提交资源重置为待上传状态，用于服务端清库或换地址后重新上传。
-- `--retry-failed`：仅重置上传失败的资源并重新上传。
-- `--concurrency`：并发上传数量，默认 `5`。
-- `--limit`：最多处理多少个资源。
-- `--resource-type`：只上传指定资源类型。
-- `--source-filter`：只上传指定来源站点。
-
-## 4. 状态检查
-
-查看本地流水线状态：
+强制重传指定资源类型：
 
 ```powershell
-$env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -c "from ResourceProcessor.cache.local_cache import LocalCacheStore; c=LocalCacheStore(r'G:\ResourceUpload\data\databases\pipeline.db'); print(c.count_tasks_by_state()); c.close()"
+& $py -m ResourceProcessor.upload_resources --include-descriptions --force --resource-types "atlas,tileset,tiled_map,animation_sequence,spine_skeleton,pack"
 ```
 
-查看服务端上传统计：
+参数：
 
-```powershell
-$server = "http://localhost:8000"; Invoke-RestMethod -Uri "$server/stats" -Method Get
-```
+- `--db-path`：本地 pipeline SQLite。默认 `G:\ResourceUpload\data\databases\pipeline.db`。
+- `--limit`：最多处理多少个资源。默认不限制。
+- `--resource-type`：只上传一个资源类型。默认空，即不按单个类型过滤。
+- `--resource-types`：只上传多个资源类型，支持逗号分隔或重复传入。默认空，即不按多个类型过滤。
+- `--source-filter`：只上传指定来源站点。默认空，即不过滤来源。
+- `--resume`：通用断点续跑参数。默认关闭；该命令在未使用 `--force` 时本身会复用或跳过已有 manifest。
+- `--processing-server`：资源加工服务器地址。默认读取 `RP_PROCESSING_SERVER_URL`，未配置则 `http://localhost:8100`。
+- `--client-id`：客户端命名空间。默认读取 `CLIENT_ID`，未配置则 `client`。
+- `--api-key`：资源加工服务器 API key。默认读取 `RP_PROCESSING_SERVER_API_KEY` / `RP_API_KEY`，未配置则空。
+- `--storage-profile-id`：对象存储 profile ID。默认读取 `STORAGE_PROFILE_ID` / `OBJECT_STORAGE_PROFILE_ID`，未配置则使用 `client\storage_profiles.jsonc` 的默认 profile。
+- `--key-prefix`：对象 key 根前缀。默认空。
+- `--no-previews`：不上传本地已有预览，让加工服务器自行生成。默认关闭。
+- `--include-descriptions`：manifest 中携带本地已有描述，让加工服务器跳过描述生成。默认关闭。
+- `--manifest-out`：导出 JSONL manifest 文件。默认空，即不额外导出文件。
+- `--dry-run`：只构造 manifest，不上传对象、不写 DB、不提交加工服务器。默认关闭。
+- `--no-wait`：只提交到加工服务器并记录 queued，不等待加工完成。默认关闭，即默认等待加工完成。
+- `--poll-interval`：等待加工完成时的轮询间隔秒数。默认 `2.0`。
+- `--wait-timeout`：等待加工完成的超时秒数。默认读取 `RP_PROCESSING_JOB_TIMEOUT`，未配置则 `3600`；传 `0` 表示不超时。
+- `--force`：强制重新上传匹配资源；必须配合 `--resource-type` 或 `--resource-types`。默认关闭。
+- `--workers`：并发上传 worker 数。默认读取 `OBJECT_STORAGE_UPLOAD_WORKERS`，未配置则 `8`。
 
-查看服务端资源列表：
-
-```powershell
-$server = "http://localhost:8000"; Invoke-RestMethod -Uri "$server/resources?page=1&page_size=20" -Method Get
-```
-
-参数说明：
-
-- `/stats`：查看服务端总览统计。
-- `/resources`：查看资源列表。
-- `page`：列表页码。
-- `page_size`：每页资源数。
-
-## 5. 搜索和下载
-
-搜索：
-
-```powershell
-$body = @{ query_text = "角色模型"; top_k = 5; similarity_threshold = 0.5 } | ConvertTo-Json
-```
-
-```powershell
-$resp = Invoke-RestMethod -Uri "http://localhost:8000/search" -Method Post -ContentType "application/json" -Body $body
-```
-
-```powershell
-$resp.results[0].file_download_url; $resp.results[0].parent_download_url
-```
-
-API 参数说明：
-
-- `query_text`：搜索文本。
-- `top_k`：最多返回多少条结果。
-- `similarity_threshold`：最低相似度阈值。
-- `-Uri`：请求地址。
-- `-Method Post`：使用 POST 请求。
-- `-ContentType "application/json"`：声明请求体是 JSON。
-- `-Body $body`：发送上一步构造出的 JSON 请求体。
-
-下载：
-
-```powershell
-New-Item -ItemType Directory -Force -Path ".\downloads" | Out-Null; Invoke-WebRequest -Uri $resp.results[0].file_download_url -OutFile ".\downloads\resource.bin"
-```
-
-参数说明：
-
-- `-ItemType Directory`：创建目录。
-- `-Force`：目录已存在时不报错。
-- `-Path`：目录路径。
-- `-Uri`：下载地址。
-- `-OutFile`：保存到本地的文件路径。
-
-## 6. 常用维护
-
-描述失败后重试：
-
-```powershell
-$env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.generate_descriptions --db-path "G:\ResourceUpload\data\databases\pipeline.db" --retry-failed --max-retries 3
-```
-
-上传前 dry-run：
-
-```powershell
-$env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.upload_resources --db-path "G:\ResourceUpload\data\databases\pipeline.db" --dry-run
-```
-
-只重试上传失败的资源：
-
-```powershell
-$env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.upload_resources --db-path "G:\ResourceUpload\data\databases\pipeline.db" --retry-failed
-```
-
-重新生成指定资源类型预览：
-
-```powershell
-$env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.generate_previews --db-path "G:\ResourceUpload\data\databases\pipeline.db" --resource-type single_image --force
-```
-
-参数说明：
-
-- `--retry-failed`：只处理失败状态的任务。
-- `--max-retries`：描述生成失败任务最多重试次数。
-- `--dry-run`：只统计待上传数量，不实际上传。
-- `--force`：强制重新生成匹配资源的预览。
-- `--resource-type`：限定处理某一类资源。
-
-## 7. 最短跑通清单
-
-确认服务端可访问：
-
-```powershell
-cd G:\ResourceUpload; $server = "http://localhost:8000"; Invoke-RestMethod -Uri "$server/health" -Method Get
-```
-
-同步本地库：
-
-```powershell
-cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.tools.sync_pipeline_from_crawler_state --crawler-state-db "G:\ResourceCrawler\data\crawler_state.db" --crawler-output "K:\ResourceCrawler\output" --db-path "G:\ResourceUpload\data\databases\pipeline.db"
-```
-
-生成预览：
-
-```powershell
-cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.generate_previews --db-path "G:\ResourceUpload\data\databases\pipeline.db" --resume
-```
-
-生成描述和分类：
-
-```powershell
-cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.generate_descriptions --db-path "G:\ResourceUpload\data\databases\pipeline.db" --resume
-```
-
-上传：
-
-```powershell
-cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts"; .\.venv\Scripts\python.exe -m ResourceProcessor.upload_resources --db-path "G:\ResourceUpload\data\databases\pipeline.db"
-```
-
-检查结果：
-
-```powershell
-cd G:\ResourceUpload; $server = "http://localhost:8000"; Invoke-RestMethod -Uri "$server/stats" -Method Get
-```
-
-搜索验证：
-
-```powershell
-cd G:\ResourceUpload; $server = "http://localhost:8000"; $body = @{ query_text = "角色模型"; top_k = 5; similarity_threshold = 0.5 } | ConvertTo-Json; Invoke-RestMethod -Uri "$server/search" -Method Post -ContentType "application/json" -Body $body
-```
-
-
+说明：`pack` 只表示刷新包对象；`pack` 不生成预览/描述，也不会作为普通资源提交加工服务器。

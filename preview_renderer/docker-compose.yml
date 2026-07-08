@@ -1,0 +1,34 @@
+services:
+  preview-renderer:
+    build:
+      context: ..
+      dockerfile: preview_renderer/Dockerfile
+      args:
+        INSTALL_BLENDER: ${INSTALL_BLENDER:-false}
+        RP_APT_VENDOR_MODE: ${RP_APT_VENDOR_MODE:-auto}
+        RP_EXTRA_APT_PACKAGES: ${RP_EXTRA_APT_PACKAGES:-}
+    image: resource-upload/preview-renderer:dev
+    ports:
+      - "${PR_BIND_HOST:-0.0.0.0}:${PR_PORT:-8200}:8200"
+    env_file:
+      - path: .env
+        required: false
+      - path: .env.local
+        required: false
+    environment:
+      PR_WORK_DIR: /app/data/preview_renderer
+      PR_SHARED_RESOURCE_PROCESSOR_PATH: /app/Tools
+      PR_KEEP_WORK_DIR: ${PR_KEEP_WORK_DIR:-false}
+    volumes:
+      - ../data/preview_renderer:/app/data/preview_renderer
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8200/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"

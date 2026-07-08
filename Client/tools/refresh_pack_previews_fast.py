@@ -12,6 +12,23 @@ from typing import Iterable
 
 from PIL import Image, ImageOps
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from resource_contracts.resource_types import (  # noqa: E402
+    ANIMATION_SEQUENCE_RESOURCE_TYPE,
+    ATLAS_RESOURCE_TYPE,
+    AUDIO_FILE_RESOURCE_TYPE,
+    PACK_RESOURCE_TYPE,
+    FONT_FILE_RESOURCE_TYPE,
+    SINGLE_IMAGE_RESOURCE_TYPE,
+    SPINE_SKELETON_RESOURCE_TYPE,
+    SPRITER_RESOURCE_TYPE,
+    TILED_MAP_RESOURCE_TYPE,
+    TILESET_RESOURCE_TYPE,
+)
+
 
 PROCESS_ORDER = {
     "discovered": 0,
@@ -27,14 +44,15 @@ PROCESS_ORDER = {
 }
 
 PRIORITY = {
-    "tiled_map": 5,
-    "atlas": 10,
-    "spine_skeleton": 15,
-    "tileset": 20,
-    "animation_sequence": 30,
-    "font_file": 40,
-    "audio_file": 50,
-    "single_image": 70,
+    TILED_MAP_RESOURCE_TYPE: 5,
+    ATLAS_RESOURCE_TYPE: 10,
+    SPINE_SKELETON_RESOURCE_TYPE: 15,
+    SPRITER_RESOURCE_TYPE: 16,
+    TILESET_RESOURCE_TYPE: 20,
+    ANIMATION_SEQUENCE_RESOURCE_TYPE: 30,
+    FONT_FILE_RESOURCE_TYPE: 40,
+    AUDIO_FILE_RESOURCE_TYPE: 50,
+    SINGLE_IMAGE_RESOURCE_TYPE: 70,
 }
 
 
@@ -59,13 +77,13 @@ def _pack_rows(
     sql = """
         SELECT *
         FROM resource_task rt
-        WHERE rt.resource_type = 'pack'
+        WHERE rt.resource_type = ?
           AND NOT EXISTS (
               SELECT 1 FROM resource_preview rp
               WHERE rp.task_id = rt.id AND rp.created_at >= ?
           )
     """
-    params: list[object] = [marker]
+    params: list[object] = [PACK_RESOURCE_TYPE, marker]
     if worker_count > 1:
         sql += " AND (rt.id % ?) = ?"
         params.extend([worker_count, worker_index])
@@ -98,10 +116,11 @@ def _child_preview_rows(
         JOIN latest_primary_preview rp ON rp.task_id = c.id
         WHERE {where}
           AND c.id <> ?
-          AND c.resource_type <> 'pack'
+          AND c.resource_type <> ?
         ORDER BY {priority_sql}, c.id
         LIMIT ?
     """
+    params.append(PACK_RESOURCE_TYPE)
     params.append(sample_limit)
     return conn.execute(sql, params).fetchall()
 
@@ -192,16 +211,24 @@ def _insert_preview(
     used_placeholder: bool,
     fail_reason: str,
 ) -> None:
+    from ResourceProcessor.cache.local_cache import (  # noqa: WPS433
+        CONTENT_HASH_ALGORITHM,
+        file_content_hash,
+        refresh_resource_fingerprint_for_connection,
+    )
+
     with Image.open(preview_path) as image:
         width, height = image.size
     created_at = _now()
     task_id = int(pack["id"])
+    content_hash = file_content_hash(preview_path)
     conn.execute("DELETE FROM resource_preview WHERE task_id = ?", (task_id,))
     conn.execute(
         """INSERT INTO resource_preview
            (task_id, strategy, role, path, format, width, height, size,
-            renderer, used_placeholder, fail_reason, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            renderer, used_placeholder, fail_reason, content_hash,
+            content_hash_algorithm, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             task_id,
             strategy,
@@ -214,6 +241,8 @@ def _insert_preview(
             renderer,
             1 if used_placeholder else 0,
             fail_reason,
+            content_hash,
+            CONTENT_HASH_ALGORITHM,
             created_at,
         ),
     )
@@ -228,6 +257,7 @@ def _insert_preview(
                WHERE id = ?""",
             (created_at, task_id),
         )
+    refresh_resource_fingerprint_for_connection(conn, task_id, now=created_at)
 
 
 def main() -> int:
@@ -249,10 +279,14 @@ def main() -> int:
 
     root = Path(args.resource_upload_root)
     _add_scripts_path(root)
+    from ResourceProcessor.cache.local_cache import LocalCacheStore
     from ResourceProcessor.preview.crawler_thumbnail_policy import _save_metadata_card
     from ResourceProcessor.preview.thumbnail_generator import validate_preview
 
-    previews_dir = Path(args.work_dir) / "previews" / "pack"
+    cache = LocalCacheStore(args.db_path)
+    cache.close()
+
+    previews_dir = Path(args.work_dir) / "previews" / PACK_RESOURCE_TYPE
     conn = sqlite3.connect(args.db_path, timeout=120)
     conn.row_factory = sqlite3.Row
     packs = _pack_rows(

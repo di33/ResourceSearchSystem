@@ -131,6 +131,7 @@ async def _process_one(
     from ResourceProcessor.preview_metadata import ProcessState
 
     async with semaphore:
+        success_state = ProcessState.CLASSIFY_READY
         try:
             await _classify_with_retry(
                 cache,
@@ -140,7 +141,7 @@ async def _process_one(
                 report,
                 llm_model=llm_model,
             )
-            cache.update_task_state(task_id, ProcessState.CLASSIFY_READY)
+            cache.update_task_state(task_id, success_state)
             counters["class_ok"] += 1
         except Exception as exc:
             cache.record_task_error(
@@ -197,12 +198,13 @@ async def _run_normal_mode(args, cache, report, llm_provider, llm_model):
         nonlocal skipped_rebuild, skipped_no_description
         total_seen = 0
         try:
-            for task_id in cache.iter_tasks_by_state(
+            task_ids = cache.iter_tasks_by_state(
                 ProcessState.DESCRIPTION_READY,
                 limit=args.limit,
                 resource_type=args.resource_type,
                 source=args.source_filter,
-            ):
+            )
+            for task_id in task_ids:
                 total_seen += 1
                 entity = cache.rebuild_entity_from_cache(task_id)
                 if entity is None:

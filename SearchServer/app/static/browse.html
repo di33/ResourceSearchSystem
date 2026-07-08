@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Resource Browser</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0e0e10;
+  --panel: #18181b;
+  --panel2: #121214;
+  --border: #27272a;
+  --text: #e4e4e7;
+  --text2: #a1a1aa;
+  --accent: #6366f1;
+  --accent2: #818cf8;
+  --green: #22c55e;
+  --red: #ef4444;
+  --orange: #f59e0b;
+  --radius: 8px;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.topbar h1 { font-size: 16px; font-weight: 600; white-space: nowrap; }
+.topbar .stats { font-size: 13px; color: var(--text2); display: flex; flex-wrap: wrap; gap: 16px; }
+.topbar .stats .stat-val { color: var(--accent2); font-weight: 600; }
+.topbar .search-box {
+  margin-left: auto;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.topbar .search-box input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 7px 12px 7px 32px;
+  font-size: 13px;
+  width: min(340px, 38vw);
+  outline: none;
+}
+.topbar .search-box input:focus { border-color: var(--accent); }
+.topbar .search-box svg {
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 15px;
+  height: 15px;
+  color: var(--text2);
+}
+button {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #fff;
+  border-radius: var(--radius);
+  padding: 7px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+button:hover { background: var(--accent2); }
+button.secondary {
+  background: var(--panel2);
+  border-color: var(--border);
+  color: var(--text);
+}
+button.secondary:hover { border-color: var(--accent2); }
+button:disabled { opacity: .55; cursor: default; }
+.search-status {
+  font-size: 12px;
+  color: var(--text2);
+  min-width: 96px;
+}
+
+.app {
+  width: 100%;
+  max-width: 1760px;
+  margin: 0 auto;
+  padding: 18px 24px 36px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.toolbar .summary {
+  font-size: 13px;
+  color: var(--text2);
+  margin-right: auto;
+}
+.toolbar select {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  font-size: 13px;
+  padding: 7px 10px;
+  min-width: 150px;
+  outline: none;
+}
+.toolbar select:focus { border-color: var(--accent); }
+
+.resource-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 14px;
+  align-items: stretch;
+}
+.resource-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  cursor: pointer;
+  min-width: 0;
+  transition: border-color .12s, transform .12s, background .12s;
+}
+.resource-card:hover {
+  border-color: var(--accent2);
+  background: #1b1b20;
+  transform: translateY(-1px);
+}
+.thumb {
+  aspect-ratio: 1 / 1;
+  background: repeating-conic-gradient(#17171a 0% 25%, #202024 0% 50%) 0 0 / 18px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.thumb .placeholder {
+  color: var(--text2);
+  font-size: 12px;
+}
+.card-body { padding: 10px 11px 11px; min-width: 0; }
+.card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 8px;
+}
+.card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.pill-type { background: rgba(99,102,241,.15); color: var(--accent2); }
+.badge-ok { background: rgba(34,197,94,.15); color: var(--green); }
+.badge-partial { background: rgba(245,158,11,.15); color: var(--orange); }
+.badge-fail { background: rgba(239,68,68,.15); color: var(--red); }
+.count-pill {
+  margin-left: auto;
+  color: var(--text2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 22px 0 4px;
+}
+.empty-state {
+  min-height: 360px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text2);
+  font-size: 14px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+
+.detail { max-width: 1320px; margin: 0 auto; }
+.detail-nav { margin-bottom: 18px; }
+.detail-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 420px;
+  color: var(--text2);
+  font-size: 14px;
+  gap: 10px;
+}
+.detail-header { margin-bottom: 24px; }
+.detail-header h2 { font-size: 22px; font-weight: 650; margin-bottom: 6px; word-break: break-all; }
+.detail-header .meta { font-size: 13px; color: var(--text2); display: flex; flex-wrap: wrap; gap: 16px; margin-top: 8px; }
+.detail-header .meta span { display: flex; align-items: center; gap: 4px; }
+.detail-header .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.download-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #fff;
+  border-radius: var(--radius);
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.download-button:hover { background: var(--accent2); }
+.download-meta {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.section { margin-bottom: 28px; }
+.section-title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text2);
+  margin-bottom: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.preview-grid { display: flex; flex-wrap: wrap; gap: 12px; }
+.preview-card {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  max-width: 360px;
+}
+.preview-card img {
+  display: block;
+  max-width: 360px;
+  max-height: 300px;
+  object-fit: contain;
+  background: repeating-conic-gradient(#17171a 0% 25%, #202024 0% 50%) 0 0 / 18px 18px;
+}
+.preview-card .label {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--text2);
+  border-top: 1px solid var(--border);
+}
+
+.file-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.file-table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text2);
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.file-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.file-table tr:hover td { background: rgba(99,102,241,.05); }
+.file-table .dl-link {
+  color: var(--accent2);
+  text-decoration: none;
+  font-size: 12px;
+}
+.file-table .dl-link:hover { text-decoration: underline; }
+
+.desc-block {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.desc-block .desc-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent2);
+  margin-bottom: 4px;
+}
+.desc-block .desc-text { color: var(--text); margin-bottom: 12px; white-space: pre-wrap; }
+.desc-block .desc-text:last-child { margin-bottom: 0; }
+
+.embed-info { display: flex; flex-wrap: wrap; gap: 12px; }
+.embed-chip {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  font-size: 13px;
+}
+.embed-chip .label { font-size: 11px; color: var(--text2); margin-bottom: 2px; }
+.embed-chip .value { font-weight: 600; }
+
+.hidden { display: none !important; }
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 760px) {
+  .topbar { align-items: stretch; flex-direction: column; gap: 10px; }
+  .topbar .search-box { margin-left: 0; width: 100%; }
+  .topbar .search-box input { width: 100%; }
+  .toolbar { align-items: stretch; flex-direction: column; }
+  .toolbar .summary { margin-right: 0; }
+  .toolbar select { width: 100%; }
+  .app { padding: 14px 12px 28px; }
+  .resource-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>Resource Browser</h1>
+  <div class="stats" id="stats"></div>
+  <div class="search-box">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input type="text" id="searchInput" placeholder="Search title, path, id">
+    <button id="searchButton" type="button">Search</button>
+    <span class="search-status" id="searchStatus"></span>
+  </div>
+</div>
+
+<main class="app">
+  <section id="gridView">
+    <div class="toolbar">
+      <div class="summary" id="resultSummary">Loading resources...</div>
+      <select id="typeFilter"><option value="">All Types</option></select>
+      <select id="stateFilter"><option value="">All States</option></select>
+    </div>
+    <div class="resource-grid" id="resourceGrid"></div>
+    <div class="pager">
+      <button id="loadMoreButton" class="secondary" type="button">Load More</button>
+    </div>
+  </section>
+
+  <section id="detailView" class="detail hidden">
+    <div class="detail-nav">
+      <button id="backButton" class="secondary" type="button">Back to Browse</button>
+    </div>
+    <div id="detail"></div>
+  </section>
+</main>
+
+<script>
+const API = '';
+const PAGE_SIZE = 72;
+
+const state = {
+  page: 1,
+  pageSize: PAGE_SIZE,
+  total: 0,
+  resources: [],
+  typeCounts: {},
+  stateCounts: {},
+  resourceType: '',
+  processState: '',
+  query: '',
+  loading: false,
+  activeId: null,
+};
+
+function humanSize(b) {
+  b = Number(b) || 0;
+  for (const u of ['B','KB','MB','GB']) {
+    if (b < 1024) return b.toFixed(b < 10 ? 1 : 0) + ' ' + u;
+    b /= 1024;
+  }
+  return b.toFixed(1) + ' TB';
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[ch]));
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/`/g, '&#96;');
+}
+
+const RESOURCE_TYPES = Object.freeze({
+  PACK: 'pack',
+  TILED_MAP: 'tiled_map',
+  SINGLE_IMAGE: 'single_image',
+  MODEL: 'model',
+  IMAGE: 'image',
+  OTHER: 'other',
+});
+
+const RESOURCE_TYPE_LABELS = Object.freeze({
+  [RESOURCE_TYPES.MODEL]: 'Models',
+  [RESOURCE_TYPES.IMAGE]: 'Images',
+  [RESOURCE_TYPES.SINGLE_IMAGE]: 'Single Images',
+  [RESOURCE_TYPES.PACK]: 'Packs',
+  [RESOURCE_TYPES.TILED_MAP]: 'Tiled Maps',
+  [RESOURCE_TYPES.OTHER]: 'Others',
+});
+
+const PREFERRED_RESOURCE_TYPES = Object.freeze([
+  RESOURCE_TYPES.PACK,
+  RESOURCE_TYPES.TILED_MAP,
+  RESOURCE_TYPES.SINGLE_IMAGE,
+  RESOURCE_TYPES.MODEL,
+  RESOURCE_TYPES.IMAGE,
+  RESOURCE_TYPES.OTHER,
+]);
+
+function typeLabel(t) {
+  return RESOURCE_TYPE_LABELS[t] || t || 'Other';
+}
+
+function statusBadge(r) {
+  if (typeof r.score === 'number') return `<span class="pill badge-ok">${r.score.toFixed(2)}</span>`;
+  if (r.process_state && r.process_state !== 'committed') {
+    return `<span class="pill badge-partial">${escapeHtml(r.process_state)}</span>`;
+  }
+  if (r.has_description && r.has_embedding) return '<span class="pill badge-ok">OK</span>';
+  if (r.has_description && !r.has_embedding) return '<span class="pill badge-partial">No Vec</span>';
+  if (!r.has_description && r.has_embedding) return '<span class="pill badge-partial">No Desc</span>';
+  return '<span class="pill badge-fail">Missing</span>';
+}
+
+function setLoading(text) {
+  document.getElementById('searchStatus').textContent = text || '';
+}
+
+async function loadStats() {
+  try {
+    const r = await fetch(API + '/stats');
+    const d = await r.json();
+    document.getElementById('stats').innerHTML =
+      `<span>DB: <span class="stat-val">${d.db_resource_count}</span></span>` +
+      `<span>Vectors: <span class="stat-val">${d.milvus_vector_count}</span></span>`;
+  } catch(e) {
+    document.getElementById('stats').textContent = 'Failed to load stats';
+  }
+}
+
+function browseParams(page) {
+  const params = new URLSearchParams();
+  params.set('page', String(page));
+  params.set('page_size', String(state.pageSize));
+  if (state.resourceType) params.set('resource_type', state.resourceType);
+  if (state.processState) params.set('state', state.processState);
+  if (state.query) params.set('q', state.query);
+  return params;
+}
+
+async function loadResources({ reset = false, sync = true } = {}) {
+  if (state.loading) return;
+  state.loading = true;
+  setLoading(reset ? 'Loading...' : 'Loading more...');
+  if (reset) {
+    state.page = 1;
+    state.resources = [];
+    renderGrid(true);
+  }
+
+  try {
+    const r = await fetch(API + `/browse/resources?${browseParams(state.page)}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    state.total = d.total || 0;
+    state.typeCounts = d.type_counts || {};
+    state.stateCounts = d.state_counts || {};
+    state.resources = reset ? (d.resources || []) : state.resources.concat(d.resources || []);
+    state.page += 1;
+    state.loading = false;
+    populateFilters();
+    renderGrid(false);
+    setLoading('');
+    if (sync) syncBrowseUrl(false);
+  } catch(e) {
+    state.loading = false;
+    setLoading('Load failed');
+    document.getElementById('resourceGrid').innerHTML =
+      `<div class="empty-state">Failed to load resources: ${escapeHtml(e.message)}</div>`;
+  } finally {
+    state.loading = false;
+  }
+}
+
+function populateFilters() {
+  const typeSelect = document.getElementById('typeFilter');
+  const stateSelect = document.getElementById('stateFilter');
+  const currentType = state.resourceType;
+  const currentState = state.processState;
+
+  const typeEntries = Object.entries(state.typeCounts).sort((a, b) => {
+    const ai = PREFERRED_RESOURCE_TYPES.indexOf(a[0]);
+    const bi = PREFERRED_RESOURCE_TYPES.indexOf(b[0]);
+    if (ai !== -1 || bi !== -1) return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+    return a[0].localeCompare(b[0]);
+  });
+  if (currentType && !state.typeCounts[currentType]) typeEntries.unshift([currentType, 0]);
+  typeSelect.innerHTML = '<option value="">All Types</option>' +
+    typeEntries.map(([type, count]) =>
+      `<option value="${escapeAttr(type)}">${escapeHtml(typeLabel(type))} (${count})</option>`
+    ).join('');
+  typeSelect.value = currentType;
+
+  const stateEntries = Object.entries(state.stateCounts).sort((a, b) => a[0].localeCompare(b[0]));
+  if (currentState && !state.stateCounts[currentState]) stateEntries.unshift([currentState, 0]);
+  stateSelect.innerHTML = '<option value="">All States</option>' +
+    stateEntries.map(([status, count]) =>
+      `<option value="${escapeAttr(status)}">${escapeHtml(status)} (${count})</option>`
+    ).join('');
+  stateSelect.value = currentState;
+}
+
+function renderGrid(isLoading) {
+  const grid = document.getElementById('resourceGrid');
+  const shown = state.resources.length;
+  document.getElementById('resultSummary').textContent =
+    `${shown} / ${state.total} resources${state.query ? ` matching "${state.query}"` : ''}`;
+
+  if (isLoading) {
+    grid.innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
+  } else if (!state.resources.length) {
+    grid.innerHTML = '<div class="empty-state">No resources found</div>';
+  } else {
+    grid.innerHTML = state.resources.map(renderCard).join('');
+    grid.querySelectorAll('.resource-card').forEach(card => {
+      card.addEventListener('click', () => selectResource(card.dataset.id, true));
+    });
+  }
+
+  const loadMore = document.getElementById('loadMoreButton');
+  loadMore.classList.toggle('hidden', shown >= state.total || state.total === 0);
+  loadMore.disabled = state.loading;
+}
+
+function renderCard(r) {
+  const id = r.resource_id || r.content_md5;
+  const name = r.title || r.resource_id || (r.content_md5 || '').slice(0, 12);
+  const title = [r.title, r.resource_id, r.source_resource_id].filter(Boolean).join('\n');
+  const preview = r.preview_url
+    ? `<img src="${escapeAttr(r.preview_url)}" alt="" loading="lazy" onerror="this.parentElement.innerHTML='<span class=\\'placeholder\\'>No preview</span>'">`
+    : '<span class="placeholder">No preview</span>';
+  return `
+    <article class="resource-card" data-id="${escapeAttr(id)}" title="${escapeAttr(title || id)}">
+      <div class="thumb">${preview}</div>
+      <div class="card-body">
+        <div class="card-title">${escapeHtml(name)}</div>
+        <div class="card-meta">
+          <span class="pill pill-type">${escapeHtml(typeLabel(r.resource_type))}</span>
+          ${statusBadge(r)}
+          <span class="count-pill">${Number(r.file_count || 0)} files</span>
+        </div>
+      </div>
+    </article>`;
+}
+
+function showGrid(push = true) {
+  state.activeId = null;
+  document.getElementById('gridView').classList.remove('hidden');
+  document.getElementById('detailView').classList.add('hidden');
+  if (push) syncBrowseUrl(true);
+}
+
+async function selectResource(id, push) {
+  if (!id) return;
+  state.activeId = id;
+  document.getElementById('gridView').classList.add('hidden');
+  document.getElementById('detailView').classList.remove('hidden');
+  const detail = document.getElementById('detail');
+  detail.innerHTML = '<div class="detail-empty"><span class="spinner"></span><span>Loading...</span></div>';
+  if (push) syncDetailUrl(id);
+
+  try {
+    const r = await fetch(API + `/resources/${encodeURIComponent(id)}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    renderDetail(await r.json());
+  } catch(e) {
+    detail.innerHTML = `<div class="detail-empty"><span style="color:var(--red)">Failed to load: ${escapeHtml(e.message)}</span></div>`;
+  }
+}
+
+function renderDetail(d) {
+  const panel = document.getElementById('detail');
+  const rid = d.resource_id;
+  const isPack = d.resource_type === RESOURCE_TYPES.PACK;
+  let html = '<div class="detail-header">';
+  html += `<h2>${escapeHtml(d.title || d.resource_id || d.content_md5)}</h2>`;
+  html += '<div class="meta">';
+  html += `<span>ID: <b>${escapeHtml(d.resource_id || '-')}</b></span>`;
+  html += `<span>Type: <b>${escapeHtml(d.resource_type)}</b></span>`;
+  html += `<span>State: <b>${escapeHtml(d.process_state)}</b></span>`;
+  html += `<span>MD5: <code style="font-size:12px">${escapeHtml(d.content_md5)}</code></span>`;
+  html += `<span>Created: ${escapeHtml(d.created_at)}</span>`;
+  html += `<span>Updated: ${escapeHtml(d.updated_at)}</span>`;
+  if (d.source_directory) html += `<span>Source: <code style="font-size:12px">${escapeHtml(d.source_directory)}</code></span>`;
+  html += '</div>';
+  if (d.package_object_key) {
+    html += '<div class="actions">';
+    if (d.package_download_url) {
+      html += `<a class="download-button" href="${escapeAttr(d.package_download_url)}" target="_blank" rel="noopener">Download ZIP</a>`;
+    }
+    html += `<span class="download-meta">${escapeHtml(d.package_object_key)}</span>`;
+    html += '</div>';
+  }
+  html += '</div>';
+
+  html += '<div class="section"><div class="section-title">Previews</div>';
+  if (d.previews && d.previews.length) {
+    html += '<div class="preview-grid">';
+    for (let i = 0; i < d.previews.length; i++) {
+      const p = d.previews[i];
+      html += '<div class="preview-card">';
+      if (p.preview_url) {
+        html += `<img src="${escapeAttr(p.preview_url)}" alt="preview" loading="lazy" onerror="this.parentElement.innerHTML='<div style=\\'padding:20px;color:var(--text2);font-size:12px\\'>No preview available</div>'">`;
+      } else {
+        html += '<div style="padding:20px;color:var(--text2);font-size:12px">No preview available</div>';
+      }
+      html += `<div class="label">Role: ${escapeHtml(p.role)} | Strategy: ${escapeHtml(p.strategy)}${p.format ? ' | ' + escapeHtml(p.format) : ''}${p.width ? ' | ' + escapeHtml(p.width) + 'x' + escapeHtml(p.height) : ''}</div>`;
+      html += '</div>';
+    }
+    html += '</div>';
+  } else {
+    html += '<div style="color:var(--text2);font-size:13px">No previews</div>';
+  }
+  html += '</div>';
+
+  html += '<div class="section"><div class="section-title">Description</div>';
+  if (d.description) {
+    html += '<div class="desc-block">';
+    html += `<div class="desc-label">Main</div><div class="desc-text">${escapeHtml(d.description.main_content || '-')}</div>`;
+    html += `<div class="desc-label">Detail</div><div class="desc-text">${escapeHtml(d.description.detail_content || '-')}</div>`;
+    html += '</div>';
+  } else {
+    html += '<div style="color:var(--red);font-size:13px">No description generated</div>';
+  }
+  html += '</div>';
+
+  html += '<div class="section"><div class="section-title">Embedding</div>';
+  if (d.embedding) {
+    html += '<div class="embed-info">';
+    html += `<div class="embed-chip"><div class="label">Dimension</div><div class="value">${escapeHtml(d.embedding.dimension)}</div></div>`;
+    html += `<div class="embed-chip"><div class="label">Checksum</div><div class="value" style="font-size:11px;font-family:monospace">${escapeHtml(d.embedding.checksum || '-')}</div></div>`;
+    html += `<div class="embed-chip"><div class="label">Model</div><div class="value">${escapeHtml(d.embedding.model_version || '-')}</div></div>`;
+    html += '</div>';
+  } else {
+    html += '<div style="color:var(--red);font-size:13px">No embedding</div>';
+  }
+  html += '</div>';
+
+  if (d.last_error) {
+    html += `<div class="section"><div class="section-title" style="color:var(--red)">Last Error</div>`;
+    html += `<div style="color:var(--red);font-size:13px;background:var(--panel2);padding:12px;border-radius:var(--radius)">${escapeHtml(d.last_error)}</div></div>`;
+  }
+
+  html += `<div class="section"><div class="section-title">${isPack ? 'Pack File List' : 'Files'}</div>`;
+  if (d.files && d.files.length) {
+    if (isPack) {
+      html += '<table class="file-table"><thead><tr><th>Name</th><th>Format</th><th>Size</th><th>Role</th></tr></thead><tbody>';
+    } else {
+      html += '<table class="file-table"><thead><tr><th>Name</th><th>Format</th><th>Size</th><th>Role</th><th>Object Key</th><th></th></tr></thead><tbody>';
+    }
+    for (const f of d.files) {
+      const objectKey = f.object_key || '-';
+      const hasUrl = !!f.download_url;
+      html += '<tr>';
+      html += `<td><b>${escapeHtml(f.file_name)}</b></td>`;
+      html += `<td>${escapeHtml(f.file_format)}</td>`;
+      html += `<td>${humanSize(f.file_size)}</td>`;
+      html += `<td>${escapeHtml(f.file_role)}</td>`;
+      if (!isPack) {
+        html += `<td><code style="font-size:11px;color:var(--text2)">${escapeHtml(objectKey.length > 50 ? '...' + objectKey.slice(-47) : objectKey)}</code></td>`;
+        html += `<td>${hasUrl ? '<a class="dl-link" href="' + escapeAttr(f.download_url) + '" target="_blank" rel="noopener">Download</a>' : ''}</td>`;
+      }
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+  } else {
+    html += '<div style="color:var(--text2);font-size:13px">No files</div>';
+  }
+  html += '</div>';
+  panel.innerHTML = html;
+}
+
+function syncBrowseUrl(push) {
+  const params = new URLSearchParams();
+  if (state.query) params.set('q', state.query);
+  if (state.resourceType) params.set('resource_type', state.resourceType);
+  if (state.processState) params.set('state', state.processState);
+  const url = `${location.pathname}${params.toString() ? '?' + params.toString() : ''}`;
+  history[push ? 'pushState' : 'replaceState']({ view: 'grid' }, '', url);
+}
+
+function syncDetailUrl(id) {
+  const params = new URLSearchParams(location.search);
+  params.set('resource_id', id);
+  history.pushState({ view: 'detail', resource_id: id }, '', `${location.pathname}?${params.toString()}`);
+}
+
+function applyFiltersFromUrl() {
+  const params = new URLSearchParams(location.search);
+  state.query = params.get('q') || '';
+  state.resourceType = params.get('resource_type') || '';
+  state.processState = params.get('state') || '';
+  document.getElementById('searchInput').value = state.query;
+  document.getElementById('typeFilter').value = state.resourceType;
+  document.getElementById('stateFilter').value = state.processState;
+  return params.get('resource_id') || '';
+}
+
+function runSearch() {
+  state.query = document.getElementById('searchInput').value.trim();
+  loadResources({ reset: true });
+}
+
+document.getElementById('searchButton').addEventListener('click', runSearch);
+document.getElementById('searchInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') runSearch();
+});
+document.getElementById('typeFilter').addEventListener('change', e => {
+  state.resourceType = e.target.value;
+  loadResources({ reset: true });
+});
+document.getElementById('stateFilter').addEventListener('change', e => {
+  state.processState = e.target.value;
+  loadResources({ reset: true });
+});
+document.getElementById('loadMoreButton').addEventListener('click', () => loadResources());
+document.getElementById('backButton').addEventListener('click', () => showGrid(true));
+window.addEventListener('popstate', async () => {
+  const id = applyFiltersFromUrl();
+  await loadResources({ reset: true, sync: false });
+  if (id) selectResource(id, false);
+  else showGrid(false);
+});
+
+async function init() {
+  const initialId = applyFiltersFromUrl();
+  loadStats();
+  await loadResources({ reset: true, sync: !initialId });
+  if (initialId) selectResource(initialId, false);
+}
+
+init();
+</script>
+</body>
+</html>

@@ -1,5 +1,5 @@
 """
-运行 unittest：在 import 测试前把 Scripts 加入 sys.path（ResourceProcessor 位于 Scripts/ 下）。
+运行 unittest：在 import 测试前把共享 Tools、Client Scripts 和 SearchServer 加入 sys.path。
 
 用法（在仓库根目录）:
   python run_tests.py
@@ -13,7 +13,7 @@ import unittest
 
 def main() -> int:
     root = os.path.dirname(os.path.abspath(__file__))
-    for sub in ("client", "server"):
+    for sub in ("Tools", "client", "SearchServer"):
         base = os.path.join(root, sub)
         if base not in sys.path:
             sys.path.insert(0, base)
@@ -25,7 +25,7 @@ def main() -> int:
 
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
-    for sub in ("client", "server"):
+    for sub in ("client", "SearchServer", "resource_processing_server"):
         test_dir = os.path.join(root, sub, "Test")
         if os.path.isdir(test_dir):
             suite.addTests(loader.discover(test_dir, pattern="test_*.py", top_level_dir=root))
