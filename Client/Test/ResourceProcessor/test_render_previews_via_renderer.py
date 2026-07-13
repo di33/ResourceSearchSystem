@@ -103,7 +103,6 @@ def test_render_preview_manifest_derives_source_object_from_legacy_file_ref(monk
                 "is_primary": True,
             }
         ],
-        "client_metadata": {},
     }
 
     result = render_preview_manifest(

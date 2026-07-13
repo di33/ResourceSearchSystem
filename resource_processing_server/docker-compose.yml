@@ -19,11 +19,20 @@ services:
       RP_SEARCH_SERVER_URL: ${RP_SEARCH_SERVER_URL:-http://host.docker.internal:8000}
       RP_WORK_DIR: /app/data/resource_processing_server
       RP_SNAPSHOT_DB_PATH: /app/data/resource_processing_server/snapshots.db
+      RP_DATABASE_URL: ${RP_DATABASE_URL:-postgresql://resource_processor:resource_processor@postgres:5432/resource_processing}
+      RP_DATABASE_POOL_MIN_SIZE: ${RP_DATABASE_POOL_MIN_SIZE:-2}
+      RP_DATABASE_POOL_MAX_SIZE: ${RP_DATABASE_POOL_MAX_SIZE:-48}
+      RP_JOB_WORKER_CONCURRENCY: ${RP_JOB_WORKER_CONCURRENCY:-32}
+      RP_JOB_WORKER_IDLE_SECONDS: ${RP_JOB_WORKER_IDLE_SECONDS:-0.2}
+      RP_MIGRATE_LEGACY_SQLITE: ${RP_MIGRATE_LEGACY_SQLITE:-true}
       RP_SHARED_RESOURCE_PROCESSOR_PATH: /app/Tools
       RP_PREVIEW_RENDERER_URL: ${RP_PREVIEW_RENDERER_URL:-http://host.docker.internal:8200}
     volumes:
       - ../data/resource_processing_server:/app/data/resource_processing_server
       - ./storage_profiles.jsonc:/app/resource_processing_server/storage_profiles.jsonc:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -37,3 +46,27 @@ services:
       options:
         max-size: "50m"
         max-file: "3"
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "${RP_POSTGRES_BIND_HOST:-127.0.0.1}:${RP_POSTGRES_PORT:-5433}:5432"
+    environment:
+      POSTGRES_USER: ${RP_POSTGRES_USER:-resource_processor}
+      POSTGRES_PASSWORD: ${RP_POSTGRES_PASSWORD:-resource_processor}
+      POSTGRES_DB: ${RP_POSTGRES_DB:-resource_processing}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+volumes:
+  postgres_data:

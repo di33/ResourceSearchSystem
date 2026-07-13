@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import threading
 from typing import List
 
 import requests
@@ -13,6 +14,20 @@ import requests
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+_thread_local = threading.local()
+
+
+def _http_session() -> requests.Session:
+    session = getattr(_thread_local, "session", None)
+    if session is None:
+        session = requests.Session()
+        _thread_local.session = session
+    return session
+
+
+def _mock_embedding(text: str) -> List[float]:
+    h = int(hashlib.md5(text.encode("utf-8")).hexdigest()[:8], 16)
+    return [(h + i) % 1000 / 1000.0 for i in range(settings.embedding_dimension)]
 
 
 def _generate_embedding_sync(text: str) -> List[float]:
@@ -26,12 +41,21 @@ def _generate_embedding_sync(text: str) -> List[float]:
     elif provider == "zhipu":
         return _zhipu_embed(text)
     else:
-        # Fallback: deterministic mock vector
-        h = int(hashlib.md5(text.encode("utf-8")).hexdigest()[:8], 16)
-        return [(h + i) % 1000 / 1000.0 for i in range(settings.embedding_dimension)]
+        return _mock_embedding(text)
+
+
+def _generate_embeddings_sync(texts: list[str]) -> list[List[float]]:
+    provider = settings.embedding_provider
+    if provider == "ksyun":
+        return _ksyun_embed_batch(texts)
+    return [_generate_embedding_sync(text) for text in texts]
 
 
 def _ksyun_embed(text: str) -> List[float]:
+    return _ksyun_embed_batch([text])[0]
+
+
+def _ksyun_embed_batch(texts: list[str]) -> list[List[float]]:
     api_key = (
         settings.kspmas_api_key
         or settings.ksc_api_key
@@ -50,19 +74,19 @@ def _ksyun_embed(text: str) -> List[float]:
 
     payload = {
         "model": settings.embedding_model,
-        "input": text,
+        "input": texts[0] if len(texts) == 1 else texts,
     }
     if settings.embedding_dimension > 0:
         payload["dimensions"] = settings.embedding_dimension
 
-    resp = requests.post(
+    resp = _http_session().post(
         f"{base_url}/embeddings",
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
         json=payload,
-        timeout=60,
+        timeout=max(1.0, float(settings.embedding_timeout_seconds)),
     )
     if not resp.ok:
         raise RuntimeError(
@@ -74,10 +98,11 @@ def _ksyun_embed(text: str) -> List[float]:
     if not rows:
         raise RuntimeError("Ksyun embeddings response missing data")
 
-    vector = rows[0].get("embedding")
-    if not isinstance(vector, list):
+    rows = sorted(rows, key=lambda item: int(item.get("index", 0)))
+    vectors = [row.get("embedding") for row in rows]
+    if len(vectors) != len(texts) or any(not isinstance(vector, list) for vector in vectors):
         raise RuntimeError("Ksyun embeddings response format invalid")
-    return vector
+    return vectors
 
 
 def _dashscope_embed(text: str) -> List[float]:
@@ -140,10 +165,28 @@ async def generate_embedding(text: str, max_retries: int = 2) -> List[float]:
         except Exception as exc:
             last_exc = exc
             logger.warning("Embedding generation attempt %d failed: %s", attempt + 1, exc)
+            if attempt < max_retries:
+                await asyncio.sleep(min(10.0, 1.5 * (attempt + 1)))
     raise RuntimeError(f"Embedding generation failed after {max_retries + 1} attempts: {last_exc}")
+
+
+async def generate_embeddings(texts: list[str], max_retries: int = 2) -> list[List[float]]:
+    cleaned = [" ".join(text.split()).strip() for text in texts]
+    if any(not text for text in cleaned):
+        raise ValueError("Embedding input text is empty after cleaning")
+
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            return await asyncio.to_thread(_generate_embeddings_sync, cleaned)
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("Batch embedding generation attempt %d failed: %s", attempt + 1, exc)
+            if attempt < max_retries:
+                await asyncio.sleep(min(10.0, 1.5 * (attempt + 1)))
+    raise RuntimeError(f"Batch embedding generation failed after {max_retries + 1} attempts: {last_exc}")
 
 
 def get_model_version() -> str:
     """Return the configured embedding model name (e.g. 'text-embedding-v3')."""
     return settings.embedding_model
-

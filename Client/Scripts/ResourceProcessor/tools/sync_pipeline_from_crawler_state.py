@@ -661,12 +661,12 @@ def _object_refs_from_manifest(manifest: dict[str, Any]) -> list[dict[str, str]]
             kind="source_file",
             fallback_storage_profile_id=source_storage_profile_id,
         )
-    for item in manifest.get("provided_previews") or []:
+    for item in manifest.get("previews") or []:
         _append_object_ref(
             refs,
             seen,
             item,
-            kind="provided_preview",
+            kind="preview",
             fallback_storage_profile_id=source_storage_profile_id,
         )
     return refs

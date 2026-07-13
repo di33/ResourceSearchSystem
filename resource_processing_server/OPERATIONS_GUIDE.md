@@ -33,9 +33,11 @@ Windows 下不要直接使用裸 `python`：它可能命中 WindowsApps 的 Pyth
 ```env
 # resource_processing_server/.env
 RP_SEARCH_SERVER_URL=http://localhost:8000
+RP_DATABASE_URL=postgresql://resource_processor:resource_processor@localhost:5433/resource_processing
 RP_GENERATED_PREVIEW_PREFIX=
 RP_WORK_DIR=G:\ResourceUpload\data\resource_processing_server
 RP_SNAPSHOT_DB_PATH=G:\ResourceUpload\data\resource_processing_server\snapshots.db
+RP_JOB_WORKER_CONCURRENCY=32
 RP_LLM_PROVIDER=ksyun
 RP_PROCESS_INLINE=false
 RP_DESCRIPTION_BATCH_ENABLED=true
@@ -81,7 +83,9 @@ $server = "http://localhost:8100"; Invoke-RestMethod -Uri "$server/health" -Meth
 
 ### 2.2 Docker 独立部署
 
-资源加工服务器独立部署，不并入 SearchServer 的 compose。它通过 `RP_SEARCH_SERVER_URL` 访问 SearchServer，因此两台服务器可以在不同物理机上。
+资源加工服务器独立部署，不并入 SearchServer 的 compose。它通过 `RP_SEARCH_SERVER_URL` 访问 SearchServer，因此两台服务器可以在不同物理机上。加工任务、处理快照和删除标记保存在加工服务器自己的 Postgres；Docker Compose 默认使用 `postgres_data` named volume，宿主机调试端口为 `5433`，不会占用 SearchServer Postgres 的 `5432`。
+
+首次从旧版本升级时，服务会把 `RP_SNAPSHOT_DB_PATH` 指向的 SQLite 快照和 job 历史一次性导入 Postgres。导入完成后运行时不再写 `snapshots.db`，旧文件保留为迁移归档。不要对运行中的 Postgres volume 执行 `docker compose down -v`，除非明确要清空加工任务和快照。
 
 `preview-renderer` 独立启动。加工服务器默认通过 `RP_PREVIEW_RENDERER_URL=http://host.docker.internal:8200` 调用宿主机上已经启动的 renderer；Windows client 需要使用同一套容器工具链时，也访问 `http://localhost:8200`。renderer 不读取对象存储密钥，也不自己生成 URL；调用方负责生成临时读取 URL 并在请求里传 `source_object_url`。
 
@@ -89,6 +93,12 @@ $server = "http://localhost:8100"; Invoke-RestMethod -Uri "$server/health" -Meth
 
 ```powershell
 cd G:\ResourceUpload\resource_processing_server; docker compose up -d --build
+```
+
+查看加工服务器 Postgres 状态：
+
+```powershell
+cd G:\ResourceUpload\resource_processing_server; docker compose exec postgres psql -U resource_processor -d resource_processing -c "select state, count(*) from processing_job group by state order by state;"
 ```
 
 如果需要加工服务器调用统一预览服务，先单独启动 preview-renderer：

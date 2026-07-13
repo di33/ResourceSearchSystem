@@ -52,8 +52,10 @@ class Settings(BaseSettings):
 
     # PostgreSQL
     database_url: str = "postgresql+asyncpg://resource:resource@localhost:5432/resource_upload"
-    db_pool_min: int = 10
-    db_pool_max: int = 50
+    # Keep enough warm backends for upload and vector workers. New Postgres
+    # backends pay a noticeable one-time pg_jieba dictionary load cost.
+    db_pool_min: int = 48
+    db_pool_max: int = 64
 
     # Milvus
     milvus_host: str = "localhost"
@@ -81,12 +83,22 @@ class Settings(BaseSettings):
     embedding_model: str = Field(default="embedding-3", alias="SERVER_EMBEDDING_MODEL")
     embedding_dimension: int = Field(default=1024, alias="SERVER_EMBEDDING_DIMENSION")
     embedding_base_url: str = Field(default="https://kspmas.ksyun.com/v1", alias="SERVER_EMBEDDING_BASE_URL")
+    embedding_timeout_seconds: float = Field(default=120.0, alias="SERVER_EMBEDDING_TIMEOUT_SECONDS")
     kspmas_api_key: str = Field(default="", alias="KSPMAS_API_KEY")
     ksc_api_key: str = Field(default="", alias="KSC_API_KEY")
+    vector_sync_worker_enabled: bool = Field(default=True, alias="VECTOR_SYNC_WORKER_ENABLED")
+    vector_sync_worker_interval: float = Field(default=0.2, alias="VECTOR_SYNC_WORKER_INTERVAL")
+    vector_sync_worker_batch_size: int = Field(default=16, alias="VECTOR_SYNC_WORKER_BATCH_SIZE")
+    vector_sync_worker_concurrency: int = Field(default=8, alias="VECTOR_SYNC_WORKER_CONCURRENCY")
+    vector_sync_worker_stale_seconds: int = Field(default=600, alias="VECTOR_SYNC_WORKER_STALE_SECONDS")
+    vector_sync_failed_retry_seconds: int = Field(default=60, alias="VECTOR_SYNC_FAILED_RETRY_SECONDS")
 
     # BM25 / FTS
     bm25_default_weight: float = 0.5
     search_text_config: str = "jiebacfg"  # PostgreSQL text search config name
+    fts_worker_enabled: bool = Field(default=True, alias="FTS_WORKER_ENABLED")
+    fts_worker_interval: float = Field(default=1.0, alias="FTS_WORKER_INTERVAL")
+    fts_worker_batch_size: int = Field(default=200, alias="FTS_WORKER_BATCH_SIZE")
 
     # Reranker
     reranker_enabled: bool = True

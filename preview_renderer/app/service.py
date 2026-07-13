@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import shutil
 import uuid
 import zipfile
@@ -26,6 +28,15 @@ _CONTENT_TYPES = {
     ".jpeg": "image/jpeg",
     ".gif": "image/gif",
 }
+_RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
+_DOWNLOAD_RETRY_EXCEPTIONS = (
+    httpx.ConnectError,
+    httpx.ReadError,
+    httpx.RemoteProtocolError,
+    httpx.TimeoutException,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -168,18 +179,52 @@ class PreviewRendererService:
             allow_private_hosts=settings.allow_private_source_url_hosts,
         )
         target.parent.mkdir(parents=True, exist_ok=True)
-        downloaded = 0
-        async with httpx.AsyncClient(follow_redirects=False, timeout=300.0) as client:
-            async with client.stream("GET", url) as response:
-                if response.is_redirect:
-                    raise UrlValidationError("source_object_url redirects are not allowed")
-                response.raise_for_status()
-                with target.open("wb") as handle:
-                    async for chunk in response.aiter_bytes(1024 * 1024):
-                        downloaded += len(chunk)
-                        if downloaded > settings.max_download_bytes:
-                            raise RuntimeError("source object download exceeds limit")
-                        handle.write(chunk)
+        temp_target = target.with_name(f"{target.name}.{uuid.uuid4().hex[:8]}.part")
+        attempts = 4
+        for attempt in range(1, attempts + 1):
+            try:
+                downloaded = 0
+                async with httpx.AsyncClient(follow_redirects=False, timeout=300.0) as client:
+                    async with client.stream("GET", url) as response:
+                        if response.is_redirect:
+                            raise UrlValidationError("source_object_url redirects are not allowed")
+                        if response.status_code in _RETRYABLE_HTTP_STATUS:
+                            raise httpx.HTTPStatusError(
+                                f"retryable source object response: {response.status_code}",
+                                request=response.request,
+                                response=response,
+                            )
+                        response.raise_for_status()
+                        with temp_target.open("wb") as handle:
+                            async for chunk in response.aiter_bytes(1024 * 1024):
+                                downloaded += len(chunk)
+                                if downloaded > settings.max_download_bytes:
+                                    raise RuntimeError("source object download exceeds limit")
+                                handle.write(chunk)
+                temp_target.replace(target)
+                return target
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in _RETRYABLE_HTTP_STATUS or attempt >= attempts:
+                    raise
+                logger.warning(
+                    "Retrying source object download after HTTP %s (%s/%s)",
+                    exc.response.status_code,
+                    attempt,
+                    attempts,
+                )
+            except _DOWNLOAD_RETRY_EXCEPTIONS as exc:
+                if attempt >= attempts:
+                    raise
+                logger.warning(
+                    "Retrying source object download after %s (%s/%s)",
+                    exc.__class__.__name__,
+                    attempt,
+                    attempts,
+                )
+            finally:
+                if temp_target.exists():
+                    temp_target.unlink()
+            await asyncio.sleep(min(2 ** (attempt - 1), 8))
         return target
 
     async def render(self, *, client_id: str, request: PreviewRenderRequest) -> RenderedPreviewResult:

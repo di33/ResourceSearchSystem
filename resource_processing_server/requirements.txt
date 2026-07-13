@@ -2,6 +2,7 @@ fastapi>=0.115
 uvicorn[standard]>=0.30
 pydantic-settings>=2.0
 httpx>=0.27
+psycopg[binary,pool]>=3.2
 -r ../Tools/requirements.txt
 
 # Test dependencies

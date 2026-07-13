@@ -1,12 +1,14 @@
+import json
 from pathlib import Path
 import zipfile
 
 import ObjectStorageUpload.resource_manifest as resource_manifest
+import requests
 from ObjectStorageUpload.storage_profiles import load_storage_profiles
 from ResourceProcessor.cache.local_cache import LocalCacheStore
 from ResourceProcessor.core.object_storage_upload import ObjectStorageUploader, StorageObjectRef, safe_object_path_part
 from ResourceProcessor.delete_processed_resource import cleanup_local_pipeline_db
-from ResourceProcessor.preview_metadata import FileInfo, PreviewInfo, PreviewStrategy, ResourceProcessingEntity
+from ResourceProcessor.preview_metadata import FileInfo, PreviewInfo, PreviewStrategy, ProcessState, ResourceProcessingEntity
 from ResourceProcessor.submit_processing_manifest import submit_processing_job, wait_processing_job
 from ResourceProcessor.upload_objects_to_storage import build_manifests_from_cache, upload_entity_objects
 from resource_contracts.resource_types import PACK_RESOURCE_TYPE
@@ -47,6 +49,24 @@ class FakeUploader:
         keys = list(object_keys)
         self.deleted_keys.extend(keys)
         return len(keys)
+
+
+def _delete_jobs(db_path: Path) -> list[dict]:
+    cache = LocalCacheStore(str(db_path))
+    try:
+        rows = cache._conn.execute(
+            "SELECT reason, object_keys_json, object_refs_json FROM resource_object_delete_job ORDER BY id"
+        ).fetchall()
+        return [
+            {
+                "reason": row["reason"],
+                "object_keys": json.loads(row["object_keys_json"]),
+                "object_refs": json.loads(row["object_refs_json"]),
+            }
+            for row in rows
+        ]
+    finally:
+        cache.close()
 
 
 class FakeS3Client:
@@ -134,6 +154,29 @@ def test_processing_manifest_submit_sends_api_key_and_waits_for_completion():
     assert [item["headers"]["X-API-Key"] for item in session.gets] == ["processing-key", "processing-key"]
     assert completed["state"] == "completed"
     assert completed["search_resource_id"] == "res-1"
+
+
+def test_processing_manifest_submit_retries_transient_connection_error():
+    class FlakySession:
+        def __init__(self):
+            self.calls = 0
+
+        def request(self, method, url, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise requests.ConnectionError("remote disconnected")
+            return FakeResponse({"job_id": "job-1", "state": "queued"})
+
+    session = FlakySession()
+    created = submit_processing_job(
+        {"client_resource_id": "asset-1"},
+        processing_server="http://processing",
+        client_id="client-a",
+        session=session,
+    )
+
+    assert session.calls == 2
+    assert created["job_id"] == "job-1"
 
 
 def test_object_storage_uploader_puts_object_with_content_length(tmp_path):
@@ -286,12 +329,54 @@ def test_upload_entity_objects_builds_bucket_key_manifest(tmp_path):
     assert manifest["client_resource_id"] == "asset:001"
     assert manifest["source_object"]["storage_profile_id"] == "default"
     assert manifest["source_object"]["object_key"] == "crawler_A/files/asset:001/hero model.glb"
-    assert manifest["source_files"][0]["file_name"] == "hero model.glb"
-    assert manifest["provided_previews"][0]["object_key"] == "crawler_A/previews/asset:001/primary.png"
-    assert manifest["provided_previews"][0]["origin"] == "provided"
-    assert manifest["provided_previews"][0]["width"] == 128
-    assert manifest["client_metadata"]["category"] == "character"
-    assert manifest["client_metadata"]["auxiliary_metadata"] == {"prompt": "make a hero"}
+    assert "etag" not in manifest["source_object"]
+    assert "is_primary" not in manifest["source_object"]
+    assert "source_files" not in manifest
+    assert manifest["previews"][0]["object_key"] == "crawler_A/previews/asset:001/primary.png"
+    assert "renderer" not in manifest["previews"][0]
+    assert "origin" not in manifest["previews"][0]
+    assert "strategy" not in manifest["previews"][0]
+    assert "is_primary" not in manifest["previews"][0]
+    assert manifest["previews"][0]["width"] == 128
+    assert manifest["description_context"]["category"] == "character"
+    assert manifest["description_context"]["auxiliary_metadata"] == {"prompt": "make a hero"}
+
+
+def test_upload_entity_objects_includes_animation_display_metadata(tmp_path):
+    root = tmp_path / "frames"
+    root.mkdir()
+    frame = root / "Run__000.png"
+    frame.write_bytes(b"png")
+    entity = ResourceProcessingEntity(
+        resource_type="animation_sequence",
+        source_directory=str(root),
+        source_resource_id="anim-run",
+        title="Run",
+        resource_path="Run",
+        pack_name="Hero Pack",
+        files=[
+            FileInfo(
+                file_path=str(frame),
+                file_name=frame.name,
+                file_size=frame.stat().st_size,
+                file_format="png",
+                content_md5="frame-md5",
+                file_role="frame",
+                is_primary=True,
+            )
+        ],
+    )
+
+    manifest = upload_entity_objects(
+        entity,
+        uploader=FakeUploader(),
+        client_id="client",
+        include_previews=False,
+    )
+
+    assert manifest["client_metadata"]["display_title"] == "Run"
+    assert manifest["client_metadata"]["action_name"] == "Run"
+    assert manifest["client_metadata"]["resource_path"] == "Run"
 
 
 def test_upload_entity_objects_can_skip_previews(tmp_path):
@@ -323,8 +408,8 @@ def test_upload_entity_objects_can_skip_previews(tmp_path):
     )
 
     assert manifest["source_object"]["object_key"] == "client/files/asset-1/asset.obj"
-    assert len(manifest["source_files"]) == 1
-    assert manifest["provided_previews"] == []
+    assert "source_files" not in manifest
+    assert "previews" not in manifest
 
 
 def test_upload_entity_objects_names_multiple_previews_by_role_and_order(tmp_path):
@@ -363,7 +448,7 @@ def test_upload_entity_objects_names_multiple_previews_by_role_and_order(tmp_pat
         include_previews=True,
     )
 
-    assert [item["object_key"] for item in manifest["provided_previews"]] == [
+    assert [item["object_key"] for item in manifest["previews"]] == [
         "client/previews/asset-preview/primary.webp",
         "client/previews/asset-preview/gallery-001.webp",
         "client/previews/asset-preview/gallery-002.png",
@@ -456,6 +541,74 @@ def test_object_manifest_queued_state_does_not_commit_fingerprint(tmp_path):
         cache.close()
 
 
+def test_submit_candidates_exclude_package_only_resources(tmp_path):
+    pack_path = tmp_path / "source.zip"
+    pack_path.write_bytes(b"pack")
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(b"image")
+    pack_entity = ResourceProcessingEntity(
+        resource_type=PACK_RESOURCE_TYPE,
+        source_directory=str(tmp_path),
+        source_resource_id="pack-candidate",
+        content_md5="pack-md5",
+        files=[
+            FileInfo(
+                file_path=str(pack_path),
+                file_name=pack_path.name,
+                file_size=pack_path.stat().st_size,
+                file_format="zip",
+                content_md5="pack-file-md5",
+            )
+        ],
+    )
+    image_entity = ResourceProcessingEntity(
+        resource_type="single_image",
+        source_directory=str(tmp_path),
+        source_resource_id="image-candidate",
+        content_md5="image-md5",
+        files=[
+            FileInfo(
+                file_path=str(image_path),
+                file_name=image_path.name,
+                file_size=image_path.stat().st_size,
+                file_format="png",
+                content_md5="image-file-md5",
+            )
+        ],
+    )
+    cache = LocalCacheStore(str(tmp_path / "pipeline.db"))
+    try:
+        pack_task_id = cache.insert_task(pack_entity)
+        image_task_id = cache.insert_task(image_entity)
+        cache.upsert_object_manifest(
+            pack_task_id,
+            {
+                "client_resource_id": "pack-candidate",
+                "resource_type": PACK_RESOURCE_TYPE,
+                "source_object": {"object_key": "client/files/pack-candidate/source.zip"},
+                "source_files": [{"file_name": "source.zip"}],
+            },
+            submit_state="pending",
+        )
+        cache.upsert_object_manifest(
+            image_task_id,
+            {
+                "client_resource_id": "image-candidate",
+                "resource_type": "single_image",
+                "source_object": {"object_key": "client/files/image-candidate/image.png"},
+                "source_files": [{"file_name": "image.png"}],
+            },
+            submit_state="pending",
+        )
+        cache.update_task_state(image_task_id, ProcessState.DESCRIPTION_READY)
+
+        assert list(cache.iter_submit_candidate_task_ids()) == [image_task_id]
+        assert list(cache.iter_submit_candidate_task_ids(force=True)) == [image_task_id]
+        assert list(cache.iter_submit_candidate_task_ids(resource_types=[PACK_RESOURCE_TYPE], force=True)) == []
+    finally:
+        cache.close()
+
+
 def test_source_object_keys_from_manifest_collects_source_and_preview_objects():
     keys = resource_manifest.source_object_keys_from_manifest(
         {
@@ -465,7 +618,7 @@ def test_source_object_keys_from_manifest_collects_source_and_preview_objects():
                 {"object_key": "client/files/asset/a.png"},
                 {"object_key": "client/files/asset/b.json"},
             ],
-            "provided_previews": [
+            "previews": [
                 {"object_key": "client/previews/asset/primary.webp"},
                 {"object_key": "client/previews/asset/primary.webp"},
                 {"object_key": "client/previews/asset/gallery-001.webp"},
@@ -560,7 +713,7 @@ def test_build_manifests_from_cache_uses_pack_as_package_object_only(tmp_path, m
         "storage_profile_id": "default",
         "object_key": "client/files/pack-1/source.zip",
     }
-    assert child_manifest["provided_previews"] == []
+    assert "previews" not in child_manifest
     assert "client/files/pack-1/source.zip" in fake.zip_entries_by_key
     assert "client/files/child-1/child.png" in [call["object_key"] for call in fake.calls]
 
@@ -754,15 +907,7 @@ def test_build_manifests_from_cache_resumes_by_default_and_force_reuploads(tmp_p
             key_prefix="",
             include_previews=False,
         )
-        uploaded_resource_fp, _ = resource_manifest.manifest_resource_fingerprint_for_entity(
-            uploaded_entity,
-            client_id="client",
-            storage_profile_id=profile_id,
-            key_prefix="",
-            include_previews=False,
-            include_descriptions=False,
-            object_fingerprint=uploaded_object_fp,
-        )
+        uploaded_resource_fp = cache.get_task_by_id(uploaded_task)["resource_fingerprint"]
         cache.upsert_object_manifest(
             uploaded_task,
             uploaded_manifest,
@@ -770,12 +915,12 @@ def test_build_manifests_from_cache_resumes_by_default_and_force_reuploads(tmp_p
             object_fingerprint=uploaded_object_fp,
             upload_options=resource_manifest.upload_options_payload(
                 client_id="client",
-                storage_profile_id=profile_id,
-                key_prefix="",
-                include_previews=False,
-                include_descriptions=False,
-            ),
-        )
+                    storage_profile_id=profile_id,
+                    key_prefix="",
+                    include_previews=False,
+                    include_descriptions=True,
+                ),
+            )
         cache.mark_object_manifest_submitted(uploaded_task, {"job_id": "job-uploaded"})
     finally:
         cache.close()
@@ -857,7 +1002,7 @@ def test_build_manifests_reuses_objects_when_only_description_changes(tmp_path, 
     ))
 
     assert [manifest["client_resource_id"] for _, manifest in second] == ["asset-desc-dirty"]
-    assert second[0][1]["provided_description"]["main_content"] == "new main"
+    assert second[0][1]["description"]["summary"] == "new main"
     assert second_fake.calls == []
     assert second_fake.deleted_keys == []
 
@@ -919,7 +1064,14 @@ def test_build_manifests_key_prefix_change_reuploads_and_deletes_old_key(tmp_pat
     assert [call["object_key"] for call in second_fake.calls] == [
         "new/client/files/asset-key-dirty/asset.png",
     ]
-    assert second_fake.deleted_keys == ["old/client/files/asset-key-dirty/asset.png"]
+    assert second_fake.deleted_keys == []
+    assert _delete_jobs(db_path) == [
+        {
+            "reason": "replaced_object_cleanup",
+            "object_keys": ["old/client/files/asset-key-dirty/asset.png"],
+            "object_refs": [{"storage_profile_id": "default", "object_key": "old/client/files/asset-key-dirty/asset.png"}],
+        }
+    ]
 
 
 def test_build_manifests_force_reuploads_existing_for_selected_resource_types(tmp_path, monkeypatch):
@@ -981,7 +1133,7 @@ def test_build_manifests_force_reuploads_existing_for_selected_resource_types(tm
                     {"object_key": "client/files/atlas-1/old-a.png"},
                     {"object_key": "client/files/atlas-1/old-b.json"},
                 ],
-                "provided_previews": [
+                "previews": [
                     {"object_key": "client/previews/atlas-1/old-primary.webp"},
                 ],
             },
@@ -1012,10 +1164,21 @@ def test_build_manifests_force_reuploads_existing_for_selected_resource_types(tm
     ))
 
     assert [manifest["client_resource_id"] for _, manifest in uploaded] == ["atlas-1"]
-    assert fake.deleted_keys == [
-        "client/files/atlas-1/old-a.png",
-        "client/files/atlas-1/old-b.json",
-        "client/previews/atlas-1/old-primary.webp",
+    assert fake.deleted_keys == []
+    assert _delete_jobs(db_path) == [
+        {
+            "reason": "replaced_object_cleanup",
+            "object_keys": [
+                "client/files/atlas-1/old-a.png",
+                "client/files/atlas-1/old-b.json",
+                "client/previews/atlas-1/old-primary.webp",
+            ],
+            "object_refs": [
+                {"storage_profile_id": "", "object_key": "client/files/atlas-1/old-a.png"},
+                {"storage_profile_id": "", "object_key": "client/files/atlas-1/old-b.json"},
+                {"storage_profile_id": "", "object_key": "client/previews/atlas-1/old-primary.webp"},
+            ],
+        }
     ]
     assert fake.zip_entries_by_key["client/files/atlas-1/source.zip"] == ["a.png", "b.json"]
 
@@ -1024,7 +1187,7 @@ def test_build_manifests_force_reuploads_existing_for_selected_resource_types(tm
         atlas_saved = cache.get_object_manifest(atlas_task)
         image_saved = cache.get_object_manifest(image_task)
         assert atlas_saved["manifest"]["source_object"]["object_key"] == "client/files/atlas-1/source.zip"
-        assert len(atlas_saved["manifest"]["source_files"]) == 2
+        assert "source_files" not in atlas_saved["manifest"]
         assert image_saved["manifest"]["source_object"]["object_key"] == "client/files/single-1/single.png"
     finally:
         cache.close()
@@ -1078,6 +1241,167 @@ def test_build_manifests_from_cache_uploads_with_workers(tmp_path, monkeypatch):
         cache.close()
 
 
+def test_build_manifests_from_cache_backfills_previews_without_reuploading_source(tmp_path, monkeypatch):
+    db_path = tmp_path / "pipeline.db"
+    source = tmp_path / "asset.png"
+    source.write_bytes(b"source")
+    preview = tmp_path / "preview.webp"
+    preview.write_bytes(b"preview")
+    entity = ResourceProcessingEntity(
+        resource_type="single_image",
+        source_directory=str(tmp_path),
+        source_resource_id="asset-preview-backfill",
+        files=[
+            FileInfo(
+                file_path=str(source),
+                file_name=source.name,
+                file_size=source.stat().st_size,
+                file_format="png",
+                content_md5="source-md5",
+            )
+        ],
+    )
+    cache = LocalCacheStore(str(db_path))
+    try:
+        task_id = cache.insert_task(entity)
+        cache.insert_preview(
+            task_id,
+            PreviewInfo(
+                strategy=PreviewStrategy.STATIC,
+                role="primary",
+                path=str(preview),
+                format="webp",
+                width=16,
+                height=16,
+                size=preview.stat().st_size,
+            ),
+        )
+        old_manifest = {
+            "client_resource_id": "asset-preview-backfill",
+            "resource_type": "single_image",
+            "source_object": {
+                "storage_profile_id": "default",
+                "object_key": "client/files/asset-preview-backfill/asset.png",
+                "file_name": "asset.png",
+                "file_format": "png",
+            },
+        }
+        cache.upsert_object_manifest(
+            task_id,
+            old_manifest,
+            upload_options={
+                "client_id": "client",
+                "storage_profile_id": "default",
+                "key_prefix": "",
+                "key_scheme_version": resource_manifest.UPLOAD_KEY_SCHEME_VERSION,
+            },
+            object_fingerprint="legacy-source-only-fingerprint",
+        )
+    finally:
+        cache.close()
+
+    fake = FakeUploader()
+    monkeypatch.setattr(resource_manifest, "ObjectStorageUploader", lambda *args, **kwargs: fake)
+
+    records = list(build_manifests_from_cache(
+        db_path=str(db_path),
+        client_id="client",
+        storage_profile_id="default",
+        include_previews=True,
+        dry_run=False,
+        resume=True,
+        workers=1,
+    ))
+
+    assert len(records) == 1
+    manifest = records[0][1]
+    assert manifest["source_object"]["object_key"] == "client/files/asset-preview-backfill/asset.png"
+    assert manifest["previews"][0]["object_key"] == "client/previews/asset-preview-backfill/primary.webp"
+    assert [call["object_key"] for call in fake.calls] == ["client/previews/asset-preview-backfill/primary.webp"]
+
+
+def test_sync_preview_objects_to_manifest_uploads_preview_and_keeps_source(tmp_path, monkeypatch):
+    db_path = tmp_path / "pipeline.db"
+    source = tmp_path / "asset.png"
+    preview = tmp_path / "preview.webp"
+    source.write_bytes(b"source")
+    preview.write_bytes(b"preview")
+    entity = ResourceProcessingEntity(
+        resource_type="single_image",
+        source_directory=str(tmp_path),
+        source_resource_id="asset-preview-sync",
+        files=[
+            FileInfo(
+                file_path=str(source),
+                file_name=source.name,
+                file_size=source.stat().st_size,
+                file_format="png",
+                content_md5="source-md5",
+            )
+        ],
+        previews=[
+            PreviewInfo(
+                strategy=PreviewStrategy.STATIC,
+                role="primary",
+                path=str(preview),
+                format="webp",
+                width=16,
+                height=16,
+                size=preview.stat().st_size,
+            )
+        ],
+    )
+    cache = LocalCacheStore(str(db_path))
+    try:
+        task_id = cache.insert_task(entity)
+        old_manifest = {
+            "client_resource_id": "asset-preview-sync",
+            "resource_type": "single_image",
+            "source_object": {
+                "storage_profile_id": "default",
+                "object_key": "client/files/asset-preview-sync/asset.png",
+                "file_name": "asset.png",
+                "file_format": "png",
+            },
+            "previews": [
+                {
+                    "storage_profile_id": "default",
+                    "object_key": "client/previews/asset-preview-sync/old.webp",
+                    "role": "primary",
+                }
+            ],
+        }
+        cache.upsert_object_manifest(task_id, old_manifest)
+        fake = FakeUploader()
+
+        manifest = resource_manifest.sync_preview_objects_to_manifest(
+            cache,
+            task_id,
+            entity,
+            client_id="client",
+            storage_profile_id="default",
+            uploader=fake,
+        )
+
+        saved = cache.get_object_manifest(task_id)
+        assert manifest["source_object"]["object_key"] == "client/files/asset-preview-sync/asset.png"
+        assert manifest["previews"][0]["object_key"] == "client/previews/asset-preview-sync/primary.webp"
+        assert saved["manifest"]["previews"][0]["object_key"] == "client/previews/asset-preview-sync/primary.webp"
+        assert [call["object_key"] for call in fake.calls] == ["client/previews/asset-preview-sync/primary.webp"]
+        assert fake.deleted_keys == []
+        assert _delete_jobs(db_path) == [
+            {
+                "reason": "replaced_preview_cleanup",
+                "object_keys": ["client/previews/asset-preview-sync/old.webp"],
+                "object_refs": [
+                    {"storage_profile_id": "default", "object_key": "client/previews/asset-preview-sync/old.webp"}
+                ],
+            }
+        ]
+    finally:
+        cache.close()
+
+
 def test_upload_entity_objects_can_include_local_description(tmp_path):
     model = tmp_path / "asset.glb"
     model.write_bytes(b"glb")
@@ -1100,24 +1424,26 @@ def test_upload_entity_objects_can_include_local_description(tmp_path):
         ],
     )
 
+    manifest_with_default_description = upload_entity_objects(
+        entity,
+        uploader=FakeUploader(),
+        client_id="client",
+        include_previews=False,
+    )
     manifest_without_description = upload_entity_objects(
         entity,
         uploader=FakeUploader(),
         client_id="client",
         include_previews=False,
-    )
-    manifest_with_description = upload_entity_objects(
-        entity,
-        uploader=FakeUploader(),
-        client_id="client",
-        include_previews=False,
-        include_descriptions=True,
+        include_descriptions=False,
     )
 
-    assert manifest_without_description["provided_description"] is None
-    assert manifest_with_description["provided_description"]["main_content"] == "main text"
-    assert "full_description" not in manifest_with_description["provided_description"]
-    assert manifest_with_description["provided_description"]["prompt_version"] == "local-v1"
+    assert manifest_with_default_description["description"]["summary"] == "main text"
+    assert "full" not in manifest_with_default_description["description"]
+    assert manifest_with_default_description["description"]["prompt_version"] == "local-v1"
+    assert "description_context" not in manifest_with_default_description
+    assert "description" not in manifest_without_description
+    assert "description_context" in manifest_without_description
 
 
 def test_upload_entity_objects_preserves_safe_relative_paths(tmp_path):
@@ -1197,7 +1523,7 @@ def test_upload_entity_objects_uploads_pack_as_single_zip(tmp_path):
         include_previews=False,
     )
 
-    assert len(manifest["source_files"]) == 2
+    assert "source_files" not in manifest
     package = manifest["source_object"]
     assert package["file_name"] == "source.zip"
     assert package["object_key"] == "client/files/pack:001/source.zip"

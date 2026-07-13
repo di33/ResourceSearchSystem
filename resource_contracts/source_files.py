@@ -55,8 +55,13 @@ def resolve_local_source_files(
     refs = list(source_files)
     if not refs:
         return []
-    if len(refs) == 1 and source_object.suffix.lower() != ".zip":
-        return [source_object]
+    if len(refs) == 1:
+        if source_object.suffix.lower() != ".zip":
+            return [source_object]
+        path_in_package = str(_attr(refs[0], "path_in_package") or "").strip()
+        file_name = str(_attr(refs[0], "file_name") or "").strip()
+        if not path_in_package and file_name.casefold() == source_object.name.casefold():
+            return [source_object]
     if len(refs) > max_zip_members:
         raise RuntimeError(f"too many package members requested: {len(refs)}")
 

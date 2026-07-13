@@ -180,7 +180,7 @@ def _add_object_manifest(db_path, *, task_id: int, client_resource_id: str):
                         "object_key": f"resource-crawler/client/files/{client_resource_id}/legacy-extra.png",
                     }
                 ],
-                "provided_previews": [
+                "previews": [
                     {
                         "storage_profile_id": "default",
                         "object_key": f"resource-crawler/client/previews/{client_resource_id}/primary.webp",

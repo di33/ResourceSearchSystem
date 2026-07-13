@@ -52,6 +52,12 @@ class Settings(BaseSettings):
         default=str(_REPO_ROOT / "data" / "resource_processing_server" / "snapshots.db"),
         alias="RP_SNAPSHOT_DB_PATH",
     )
+    database_url: str = Field(default="", alias="RP_DATABASE_URL")
+    database_pool_min_size: int = Field(default=2, alias="RP_DATABASE_POOL_MIN_SIZE")
+    database_pool_max_size: int = Field(default=48, alias="RP_DATABASE_POOL_MAX_SIZE")
+    job_worker_concurrency: int = Field(default=32, alias="RP_JOB_WORKER_CONCURRENCY")
+    job_worker_idle_seconds: float = Field(default=0.2, alias="RP_JOB_WORKER_IDLE_SECONDS")
+    migrate_legacy_sqlite: bool = Field(default=True, alias="RP_MIGRATE_LEGACY_SQLITE")
     preview_max_size: int = Field(default=512, alias="RP_PREVIEW_MAX_SIZE")
     preview_renderer_url: str = Field(default="", alias="RP_PREVIEW_RENDERER_URL")
     preview_renderer_api_key: str = Field(default="", alias="RP_PREVIEW_RENDERER_API_KEY")
@@ -75,6 +81,8 @@ class Settings(BaseSettings):
     pipeline_version: str = Field(default="resource-processing-server-v1", alias="RP_PIPELINE_VERSION")
     process_inline: bool = Field(default=False, alias="RP_PROCESS_INLINE")
     allow_resource_id_delete: bool = Field(default=False, alias="RP_ALLOW_RESOURCE_ID_DELETE")
+    replay_failed_snapshots_on_startup: bool = Field(default=True, alias="RP_REPLAY_FAILED_SNAPSHOTS_ON_STARTUP")
+    replay_failed_snapshots_startup_limit: int = Field(default=1000, alias="RP_REPLAY_FAILED_SNAPSHOTS_STARTUP_LIMIT")
     description_batch_enabled: bool = Field(default=True, alias="RP_DESCRIPTION_BATCH_ENABLED")
     description_batch_min_size: int = Field(default=20, alias="RP_DESCRIPTION_BATCH_MIN_SIZE")
     description_batch_max_size: int = Field(default=200, alias="RP_DESCRIPTION_BATCH_MAX_SIZE")
@@ -86,8 +94,10 @@ class Settings(BaseSettings):
         "validate_object_exists",
         "process_inline",
         "allow_resource_id_delete",
+        "replay_failed_snapshots_on_startup",
         "description_batch_enabled",
         "preview_renderer_keep_work_dir",
+        "migrate_legacy_sqlite",
         mode="before",
     )
     @classmethod

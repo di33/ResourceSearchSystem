@@ -52,7 +52,6 @@ class ResourceTask(Base):
     source: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     pack_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
     title: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    resource_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
     source_url: Mapped[str] = mapped_column(Text, nullable=False, default="")
     original_download_url: Mapped[str] = mapped_column(Text, nullable=False, default="")
     category: Mapped[str] = mapped_column(String(128), nullable=False, default="")
@@ -91,7 +90,7 @@ class ResourceFile(Base):
     __tablename__ = "resource_file"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    task_id: Mapped[int] = mapped_column(ForeignKey("resource_task.id"), nullable=False)
+    task_id: Mapped[int] = mapped_column(ForeignKey("resource_task.id"), nullable=False, index=True)
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
     file_name: Mapped[str] = mapped_column(String(512), nullable=False)
     file_size: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -113,7 +112,7 @@ class ResourcePreview(Base):
     __tablename__ = "resource_preview"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    task_id: Mapped[int] = mapped_column(ForeignKey("resource_task.id"), nullable=False)
+    task_id: Mapped[int] = mapped_column(ForeignKey("resource_task.id"), nullable=False, index=True)
     strategy: Mapped[str] = mapped_column(String(32), nullable=False)
     role: Mapped[str] = mapped_column(String(32), nullable=False, default="primary")
     path: Mapped[str | None] = mapped_column(Text)
@@ -140,11 +139,11 @@ class ResourceDescription(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    task_id: Mapped[int] = mapped_column(ForeignKey("resource_task.id"), nullable=False)
+    task_id: Mapped[int] = mapped_column(ForeignKey("resource_task.id"), nullable=False, index=True)
     main_content: Mapped[str] = mapped_column(Text, default="")
     detail_content: Mapped[str] = mapped_column(Text, default="")
     full_description: Mapped[str] = mapped_column(Text, default="")
-    prompt_version: Mapped[str] = mapped_column(String(32), default="")
+    prompt_version: Mapped[str] = mapped_column(String(128), default="")
     quality_score: Mapped[float | None] = mapped_column(Float)
     usage_space: Mapped[str] = mapped_column(String(16), nullable=False, default="")
     usage_category: Mapped[str] = mapped_column(String(64), nullable=False, default="")
@@ -162,7 +161,7 @@ class ResourceEmbedding(Base):
     __tablename__ = "resource_embedding"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    task_id: Mapped[int] = mapped_column(ForeignKey("resource_task.id"), nullable=False)
+    task_id: Mapped[int] = mapped_column(ForeignKey("resource_task.id"), nullable=False, index=True)
     dimension: Mapped[int] = mapped_column(Integer, default=0)
     checksum: Mapped[str] = mapped_column(String(128), default="")
     generate_time: Mapped[float] = mapped_column(Float, default=0.0)
@@ -176,7 +175,7 @@ class ProcessLog(Base):
     __tablename__ = "process_log"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    task_id: Mapped[int] = mapped_column(ForeignKey("resource_task.id"), nullable=False)
+    task_id: Mapped[int] = mapped_column(ForeignKey("resource_task.id"), nullable=False, index=True)
     event: Mapped[str] = mapped_column(String(64), nullable=False)
     detail: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
@@ -192,7 +191,9 @@ class VectorSyncJob(Base):
     action: Mapped[str] = mapped_column(String(16), nullable=False)
     resource_type: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     vector_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    embedding_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     state: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
     last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    retry_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)

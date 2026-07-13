@@ -280,7 +280,9 @@ def main() -> int:
             ("--worker-index", {"type": int, "default": 0, "help": "当前 worker 下标，范围 [0, worker-count)"}),
             ("--progress-every", {"type": int, "default": 25, "help": "每处理 N 个任务打印一次进度"}),
             ("--status-file", {"default": "", "help": "可选状态日志文件，兼容旧刷新 worker"}),
-            ("--skip-missing-object-manifest", {"action": "store_true", "help": "renderer 模式下跳过没有对象存储 manifest 的任务"}),
+            ("--skip-missing-object-manifest", {"action": "store_true", "help": "跳过没有对象存储 manifest 的任务；默认报错并标记 preview_failed"}),
+            ("--storage-profile-id", {"default": None, "help": "预览对象上传使用的 storage profile；默认复用现有 manifest 或环境默认"}),
+            ("--key-prefix", {"default": None, "help": "预览对象 key 根前缀；默认复用现有 manifest 的 key_prefix"}),
         ],
     )
     args = parser.parse_args()
@@ -292,6 +294,7 @@ def main() -> int:
     from ResourceProcessor.cache.local_cache import LocalCacheStore
     from ResourceProcessor.preview.crawler_thumbnail_policy import CrawlerThumbnailPolicy
     from ResourceProcessor.preview_metadata import ProcessState
+    from ObjectStorageUpload.resource_manifest import sync_preview_objects_to_manifest
 
     db_path = os.path.abspath(args.db_path)
     cache = LocalCacheStore(db_path)
@@ -362,10 +365,10 @@ def main() -> int:
         nonlocal preview_count, deleted_preview_count, deleted_preview_file_count, skipped_preview_file_count, failed
         try:
             old_previews = cache.get_previews_by_task(task_id)
+            object_manifest = cache.get_object_manifest(task_id)
+            if not object_manifest:
+                raise RuntimeError("missing object-storage manifest; run upload_objects_to_storage first")
             if preview_mode == "renderer":
-                object_manifest = cache.get_object_manifest(task_id)
-                if not object_manifest:
-                    raise RuntimeError("missing object-storage manifest; run upload_objects_to_storage first")
                 renderer_kwargs = {
                     "preview_renderer": preview_renderer,
                     "client_id": client_id,
@@ -386,6 +389,16 @@ def main() -> int:
                 if preview.path:
                     cache.insert_preview(task_id, preview)
                     preview_count += 1
+            sync_preview_objects_to_manifest(
+                cache,
+                task_id,
+                entity,
+                client_id=client_id,
+                storage_profile_id=args.storage_profile_id or "",
+                key_prefix=args.key_prefix,
+                include_descriptions=True,
+                report=report,
+            )
             deleted_files, skipped_files = _delete_old_preview_files(
                 old_previews,
                 {preview.path for preview in previews if preview.path},
@@ -437,7 +450,7 @@ def main() -> int:
         if already_previewed and not args.force:
             skipped += 1
             continue
-        if preview_mode == "renderer" and args.skip_missing_object_manifest and not cache.get_object_manifest(task_id):
+        if args.skip_missing_object_manifest and not cache.get_object_manifest(task_id):
             skipped += 1
             continue
         entity = cache.rebuild_entity_from_cache(task_id)

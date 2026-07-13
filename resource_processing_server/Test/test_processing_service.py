@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -8,12 +10,13 @@ from PIL import Image, ImageDraw
 
 from resource_processing_server.app.config import settings
 from resource_processing_server.app.models import (
+    Classification,
     DeleteProcessedResourceIn,
+    Description,
     JobState,
     JobStep,
     ObjectRef,
     PreviewRef,
-    ProvidedDescription,
     ResourceManifest,
     SourceFileRef,
 )
@@ -28,9 +31,11 @@ class FakeStorage:
         self.upload_dir = upload_dir
         self.uploaded: list[Path] = []
         self.deleted_refs = []
+        self.downloaded_keys: list[str] = []
 
     def download_ref(self, ref, target_dir: Path, filename: str = "") -> Path:
         target_dir.mkdir(parents=True, exist_ok=True)
+        self.downloaded_keys.append(ref.object_key)
         source = self.objects[(ref.storage_profile_id or "default", ref.object_key)]
         target = target_dir / (filename or Path(ref.object_key).name)
         shutil.copy2(source, target)
@@ -118,6 +123,10 @@ class FakePreviewRenderer:
         ]
 
 
+class DisabledPreviewRenderer:
+    enabled = False
+
+
 def _write_test_image(path: Path) -> None:
     image = Image.new("RGB", (128, 128), (220, 120, 80))
     draw = ImageDraw.Draw(image)
@@ -125,8 +134,12 @@ def _write_test_image(path: Path) -> None:
     image.save(path)
 
 
+def _write_solid_image(path: Path, color: tuple[int, int, int]) -> None:
+    Image.new("RGB", (128, 128), color).save(path)
+
+
 @pytest.mark.asyncio
-async def test_processing_service_reuses_legacy_preview_and_description(tmp_path, monkeypatch):
+async def test_processing_service_generates_preview_and_description_with_context(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "work_dir", str(tmp_path / "work"))
     monkeypatch.setattr(settings, "llm_provider", "mock")
 
@@ -164,9 +177,13 @@ async def test_processing_service_reuses_legacy_preview_and_description(tmp_path
             storage_profile_id="package-profile",
             object_key="packages/source-pack.zip",
         ),
-        client_metadata={
+        description_context={
             "tags": ["crawler-tag"],
             "generation_prompt": "blue square icon",
+        },
+        client_metadata={
+            "display_title": "Run",
+            "action_name": "Run",
         },
     )
 
@@ -183,21 +200,41 @@ async def test_processing_service_reuses_legacy_preview_and_description(tmp_path
     payload = search.payloads[0]
     assert payload["client_id"] == "client-a"
     assert payload["client_resource_id"] == "asset-1"
-    assert payload["client_metadata"]["generation_prompt"] == "blue square icon"
+    assert payload["client_metadata"] == {
+        "display_title": "Run",
+        "action_name": "Run",
+    }
+    assert "description_context" not in payload
     assert payload["title"] == "source.png"
     assert payload["package_object"] == {
         "storage_profile_id": "package-profile",
         "object_key": "packages/source-pack.zip",
-        "file_name": "",
-        "file_format": "",
-        "size": 0,
-        "checksum": "",
-        "etag": "",
-        "is_primary": False,
     }
     assert payload["previews"][0]["origin"] == "generated"
     assert payload["previews"][0]["object_key"] == "client-a/previews/asset-1/primary.webp"
     assert payload["description"]["summary"]
+
+
+@pytest.mark.asyncio
+async def test_processing_service_rejects_pack_manifests(tmp_path):
+    service = ProcessingService(
+        storage=FakeStorage({}, tmp_path / "uploaded"),
+        search_client=FakeSearchClient(),
+        snapshot_store=ProcessedSnapshotStore(str(tmp_path / "snapshots.db")),
+        store=JobStore(),
+    )
+    manifest = ResourceManifest(
+        client_resource_id="pack-1",
+        resource_type="pack",
+        source_object=ObjectRef(object_key="raw/source.zip"),
+        source_files=[SourceFileRef(file_name="source.zip", file_format="zip", is_primary=True)],
+        description=Description(summary="package only"),
+    )
+
+    with pytest.raises(ValueError, match="not submitted to processing"):
+        await service.create_job(client_id="client-a", manifest=manifest)
+
+    assert service.search_client.payloads == []
 
 
 @pytest.mark.asyncio
@@ -297,18 +334,27 @@ async def test_processing_service_uses_provided_preview_and_description(tmp_path
                 is_primary=True,
             )
         ],
-        provided_previews=[
+        previews=[
             PreviewRef(
                 object_key="provided/preview.png",
                 width=128,
                 height=128,
                 origin="provided",
+                renderer="should-not-be-trusted",
             )
         ],
-        provided_description=ProvidedDescription(
-            main_content="客户端提供的主描述",
-            detail_content="客户端提供的详细描述",
+        description=Description(
+            summary="客户端提供的主描述",
+            detail="客户端提供的详细描述",
             prompt_version="client-desc-v1",
+        ),
+        description_context={"title": "只用于生成描述，不入库"},
+        classification=Classification(
+            category="角色",
+            tags=["像素"],
+            usage_space="2D",
+            usage_category="角色",
+            usage_subcategories=["主角"],
         ),
     )
 
@@ -316,10 +362,18 @@ async def test_processing_service_uses_provided_preview_and_description(tmp_path
     await service.run_job(created.job_id)
 
     assert not storage.uploaded
+    assert "raw/source.png" not in storage.downloaded_keys
+    assert "provided/preview.png" in storage.downloaded_keys
     payload = search.payloads[0]
     assert payload["previews"][0]["origin"] == "provided"
+    assert payload["previews"][0].get("renderer", "") == ""
     assert payload["description"]["summary"] == "客户端提供的主描述"
     assert payload["description"]["detail"] == "客户端提供的详细描述"
+    assert payload["classification"]["category"] == "角色"
+    assert payload["classification"]["tags"] == ["像素"]
+    assert payload["classification"]["usage_category"] == "角色"
+    assert "description_context" not in payload
+    assert "client_metadata" not in payload
     assert payload["processing"]["preview_source"] == "provided"
     assert payload["processing"]["description_source"] == "provided"
 
@@ -329,6 +383,181 @@ async def test_processing_service_uses_provided_preview_and_description(tmp_path
     assert snapshot["search_resource_id"] == "res-asset-2"
     assert snapshot["snapshot"]["description"]["summary"] == "客户端提供的主描述"
     assert snapshot["snapshot"]["description"]["full"] == "客户端提供的主描述\n客户端提供的详细描述"
+
+
+@pytest.mark.asyncio
+async def test_provided_preview_io_does_not_block_event_loop(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "work_dir", str(tmp_path / "work"))
+
+    source_path = tmp_path / "source.png"
+    preview_path = tmp_path / "preview.png"
+    _write_test_image(source_path)
+    _write_test_image(preview_path)
+
+    class SlowStorage(FakeStorage):
+        def download_ref(self, ref, target_dir: Path, filename: str = "") -> Path:
+            time.sleep(0.2)
+            return super().download_ref(ref, target_dir, filename)
+
+    storage = SlowStorage(
+        {
+            ("default", "raw/source.png"): source_path,
+            ("default", "provided/preview.png"): preview_path,
+        },
+        tmp_path / "uploaded",
+    )
+    service = ProcessingService(
+        storage=storage,
+        search_client=FakeSearchClient(),
+        snapshot_store=ProcessedSnapshotStore(str(tmp_path / "snapshots.db")),
+        store=JobStore(),
+    )
+    manifest = ResourceManifest(
+        request_id="req-nonblocking-preview",
+        client_resource_id="asset-nonblocking-preview",
+        resource_type="single_image",
+        source_object=ObjectRef(object_key="raw/source.png", file_name="source.png"),
+        source_files=[SourceFileRef(file_name="source.png", file_format="png", is_primary=True)],
+        previews=[PreviewRef(object_key="provided/preview.png", origin="provided")],
+        description=Description(summary="provided"),
+    )
+
+    created = await service.create_job(client_id="client-a", manifest=manifest)
+    started = time.perf_counter()
+    heartbeat = asyncio.create_task(asyncio.sleep(0.03))
+    processing = asyncio.create_task(service.run_job(created.job_id))
+    await heartbeat
+
+    assert time.perf_counter() - started < 0.15
+    await processing
+
+
+@pytest.mark.asyncio
+async def test_processing_service_accepts_solid_preview_when_source_is_solid(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "work_dir", str(tmp_path / "work"))
+    monkeypatch.setattr(settings, "llm_provider", "mock")
+
+    source_path = tmp_path / "source.png"
+    preview_path = tmp_path / "preview.webp"
+    _write_solid_image(source_path, (0, 0, 0))
+    _write_solid_image(preview_path, (0, 0, 0))
+
+    storage = FakeStorage(
+        {
+            ("default", "raw/source.png"): source_path,
+            ("default", "provided/preview.webp"): preview_path,
+        },
+        tmp_path / "uploaded",
+    )
+    search = FakeSearchClient()
+    service = ProcessingService(
+        storage=storage,
+        search_client=search,
+        snapshot_store=ProcessedSnapshotStore(str(tmp_path / "snapshots.db")),
+        store=JobStore(),
+    )
+
+    manifest = ResourceManifest(
+        request_id="req-solid-preview",
+        client_resource_id="asset-solid-preview",
+        resource_type="single_image",
+        source_object=ObjectRef(
+            object_key="raw/source.png",
+            file_name="source.png",
+            file_format="png",
+            size=source_path.stat().st_size,
+        ),
+        source_files=[SourceFileRef(file_name="source.png", file_format="png", is_primary=True)],
+        previews=[PreviewRef(object_key="provided/preview.webp", origin="provided")],
+        description=Description(summary="solid black sprite"),
+    )
+
+    created = await service.create_job(client_id="client-a", manifest=manifest)
+    await service.run_job(created.job_id)
+    job = await service.get_job(created.job_id, client_id="client-a")
+
+    assert job is not None
+    assert job.state == "completed"
+    assert "raw/source.png" in storage.downloaded_keys
+    payload = search.payloads[0]
+    assert payload["previews"][0]["origin"] == "provided"
+    assert payload["processing"]["preview_source"] == "provided"
+
+
+@pytest.mark.asyncio
+async def test_processing_service_falls_back_when_provided_previews_are_invalid(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "work_dir", str(tmp_path / "work"))
+    monkeypatch.setattr(settings, "llm_provider", "mock")
+
+    source_path = tmp_path / "source.png"
+    preview_path = tmp_path / "preview.webp"
+    generated_path = tmp_path / "generated.webp"
+    _write_test_image(source_path)
+    preview_path.write_bytes(b"not an image")
+    _write_test_image(generated_path)
+
+    async def fake_generate_previews(entity, previews_dir):
+        from ResourceProcessor.preview_metadata import PreviewInfo, PreviewStrategy
+
+        assert entity.primary_file.file_path
+        return [
+            PreviewInfo(
+                strategy=PreviewStrategy.STATIC,
+                role="primary",
+                path=str(generated_path),
+                width=128,
+                height=128,
+                size=generated_path.stat().st_size,
+                renderer="fallback-test",
+            )
+        ]
+
+    monkeypatch.setattr("resource_processing_server.app.processor.generate_previews", fake_generate_previews)
+
+    storage = FakeStorage(
+        {
+            ("default", "raw/source.png"): source_path,
+            ("default", "provided/preview.webp"): preview_path,
+        },
+        tmp_path / "uploaded",
+    )
+    search = FakeSearchClient()
+    service = ProcessingService(
+        storage=storage,
+        search_client=search,
+        snapshot_store=ProcessedSnapshotStore(str(tmp_path / "snapshots.db")),
+        store=JobStore(),
+    )
+    service.preview_renderer = DisabledPreviewRenderer()
+
+    manifest = ResourceManifest(
+        request_id="req-invalid-preview",
+        client_resource_id="asset-invalid-preview",
+        resource_type="single_image",
+        source_object=ObjectRef(
+            object_key="raw/source.png",
+            file_name="source.png",
+            file_format="png",
+            size=source_path.stat().st_size,
+        ),
+        source_files=[SourceFileRef(file_name="source.png", file_format="png", is_primary=True)],
+        previews=[PreviewRef(object_key="provided/preview.webp", origin="provided")],
+        description=Description(summary="provided description"),
+    )
+
+    created = await service.create_job(client_id="client-a", manifest=manifest)
+    await service.run_job(created.job_id)
+    job = await service.get_job(created.job_id, client_id="client-a")
+
+    assert job is not None
+    assert job.state == "completed"
+    assert "provided/preview.webp" in storage.downloaded_keys
+    assert "raw/source.png" in storage.downloaded_keys
+    assert storage.uploaded
+    payload = search.payloads[0]
+    assert payload["previews"][0]["origin"] == "generated"
+    assert payload["previews"][0]["renderer"] == "fallback-test"
+    assert payload["processing"]["preview_source"] == "generated"
 
 
 @pytest.mark.asyncio
@@ -394,6 +623,42 @@ async def test_processing_job_store_persists_jobs_and_marks_interrupted(tmp_path
     assert failed is not None
     assert failed.state == JobState.FAILED
     assert failed.error == "server restarted"
+
+
+@pytest.mark.asyncio
+async def test_processing_job_store_can_keep_intermediate_state_in_memory(tmp_path):
+    db_path = tmp_path / "jobs.db"
+    manifest = ResourceManifest(
+        client_resource_id="asset-memory",
+        resource_type="single_image",
+        source_object=ObjectRef(object_key="raw/asset.png"),
+        source_files=[SourceFileRef(file_name="asset.png")],
+    )
+    store = JobStore(str(db_path), persist_intermediate=False)
+
+    created = await store.create(client_id="client-a", manifest=manifest)
+    await store.append_step(created.job_id, JobStep(name="preview", state="completed"))
+    await store.update(created.job_id, state=JobState.SUBMITTING)
+
+    live = await store.get(created.job_id)
+    assert live is not None
+    assert live.state == JobState.SUBMITTING
+    assert live.steps[0].name == "preview"
+
+    reopened_before_final = JobStore(str(db_path))
+    persisted_before_final = await reopened_before_final.get(created.job_id)
+    assert persisted_before_final is not None
+    assert persisted_before_final.state == JobState.QUEUED
+    assert persisted_before_final.steps == []
+
+    await store.update(created.job_id, state=JobState.COMPLETED, search_resource_id="res-asset-memory")
+
+    reopened_after_final = JobStore(str(db_path))
+    persisted_after_final = await reopened_after_final.get(created.job_id)
+    assert persisted_after_final is not None
+    assert persisted_after_final.state == JobState.COMPLETED
+    assert persisted_after_final.search_resource_id == "res-asset-memory"
+    assert persisted_after_final.steps[0].name == "preview"
 
 
 @pytest.mark.asyncio
@@ -505,10 +770,10 @@ async def test_processing_service_keeps_snapshot_when_search_upsert_fails(tmp_pa
                 is_primary=True,
             )
         ],
-        provided_previews=[PreviewRef(object_key="provided/preview.png")],
-        provided_description=ProvidedDescription(
-            main_content="可恢复主描述",
-            detail_content="可恢复详细描述",
+        previews=[PreviewRef(object_key="provided/preview.png")],
+        description=Description(
+            summary="可恢复主描述",
+            detail="可恢复详细描述",
             prompt_version="client-desc-v1",
         ),
     )
@@ -529,6 +794,43 @@ async def test_processing_service_keeps_snapshot_when_search_upsert_fails(tmp_pa
 
     assert replayed.state == "upserted"
     assert replayed.search_resource_id == "res-asset-fail"
+    snapshot_after_replay = snapshot_store.get(client_id="client-a", client_resource_id="asset-fail")
+    assert snapshot_after_replay["search_upsert_state"] == "upserted"
+
+
+@pytest.mark.asyncio
+async def test_processing_service_replays_failed_snapshots_across_clients(tmp_path):
+    snapshot_store = ProcessedSnapshotStore(str(tmp_path / "snapshots.db"))
+    snapshot_store.save_pending(
+        {
+            "client_id": "client-a",
+            "client_resource_id": "asset-fail",
+            "resource_type": "single_image",
+            "source_object": {"object_key": "raw/source.png"},
+            "source_files": [],
+            "previews": [],
+            "description": {"summary": "recover"},
+            "processing": {},
+        },
+        resource_fingerprint="fingerprint",
+    )
+    snapshot_store.mark_upsert_failed(
+        client_id="client-a",
+        client_resource_id="asset-fail",
+        error="search was down",
+    )
+    service = ProcessingService(
+        storage=FakeStorage({}, tmp_path / "uploaded"),
+        search_client=FakeSearchClient(),
+        snapshot_store=snapshot_store,
+        store=JobStore(),
+    )
+
+    results = await service.replay_snapshots(client_id="", search_upsert_state="upsert_failed")
+
+    assert len(results) == 1
+    assert results[0].client_id == "client-a"
+    assert results[0].state == "upserted"
     snapshot_after_replay = snapshot_store.get(client_id="client-a", client_resource_id="asset-fail")
     assert snapshot_after_replay["search_upsert_state"] == "upserted"
 
@@ -627,7 +929,7 @@ async def test_processing_service_cleanup_replaced_objects_only_deletes_generate
             resource_type="single_image",
             source_object=ObjectRef(object_key="raw/new.png"),
             source_files=[SourceFileRef(file_name="new.png")],
-            provided_description=ProvidedDescription(main_content="cleanup"),
+            description=Description(summary="cleanup"),
         ),
     )
 

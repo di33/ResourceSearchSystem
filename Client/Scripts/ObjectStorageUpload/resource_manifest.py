@@ -21,9 +21,9 @@ from ObjectStorageUpload.uploader import (
 from ObjectStorageUpload.storage_profiles import load_storage_profiles
 from ResourceProcessor.core.processing_manifest import (
     build_processing_manifest,
-    client_metadata,
+    classification_from_entity,
+    description_from_entity,
     resource_identity,
-    provided_description_from_entity,
 )
 from ResourceProcessor.pipeline_common import Report
 from ResourceProcessor.preview_metadata import FileInfo, ResourceProcessingEntity
@@ -33,7 +33,6 @@ from resource_contracts.resource_types import PACK_RESOURCE_TYPE, is_search_inde
 _THREAD_LOCAL = threading.local()
 _WINDOWS_FILENAME_FORBIDDEN = set('<>:"/\\|?*')
 OBJECT_FINGERPRINT_VERSION = "client-object-fingerprint-v1"
-MANIFEST_FINGERPRINT_VERSION = "processing-manifest-fingerprint-v1"
 UPLOAD_KEY_SCHEME_VERSION = "client-object-key-v1"
 _WINDOWS_RESERVED_NAMES = {
     "CON",
@@ -325,7 +324,6 @@ def _preview_plan_parts(
                 "height": preview.height,
                 "strategy": preview.strategy.value if hasattr(preview.strategy, "value") else str(preview.strategy),
                 "origin": "provided",
-                "renderer": preview.renderer or "client",
                 "is_primary": use_primary,
             }
         )
@@ -377,47 +375,9 @@ def object_fingerprint_for_entity(
         "client_resource_id": resource_identity(entity),
         "source_object": source_parts["source_object"],
         "source_files": source_parts["source_files"],
-        "provided_previews": preview_parts,
+        "previews": preview_parts,
     }
     return _stable_hash(parts), parts
-
-
-def manifest_resource_fingerprint_for_entity(
-    entity: ResourceProcessingEntity,
-    *,
-    client_id: str,
-    storage_profile_id: str,
-    key_prefix: str,
-    include_previews: bool,
-    include_descriptions: bool,
-    object_fingerprint: str,
-    package_object: dict[str, Any] | None = None,
-) -> tuple[str, dict[str, Any]]:
-    source_parts = _source_object_plan_parts(
-        entity,
-        client_id=client_id,
-        storage_profile_id=storage_profile_id,
-        key_prefix=key_prefix,
-    )
-    payload = {
-        "version": MANIFEST_FINGERPRINT_VERSION,
-        "upload_options": upload_options_payload(
-            client_id=client_id,
-            storage_profile_id=storage_profile_id,
-            key_prefix=key_prefix,
-            include_previews=include_previews,
-            include_descriptions=include_descriptions,
-        ),
-        "request_id": f"{client_id}:{resource_identity(entity)}",
-        "client_resource_id": resource_identity(entity),
-        "resource_type": entity.resource_type,
-        "object_fingerprint": object_fingerprint,
-        "source_files": source_parts["source_files"],
-        "provided_description": provided_description_from_entity(entity) if include_descriptions else None,
-        "package_object": package_object or None,
-        "client_metadata": client_metadata(entity),
-    }
-    return _stable_hash(payload), payload
 
 
 def _manifest_reusing_objects(
@@ -433,8 +393,9 @@ def _manifest_reusing_objects(
         client_id=client_id,
         source_object=old_manifest.get("source_object") or {},
         source_files=old_manifest.get("source_files") or [],
-        provided_previews=old_manifest.get("provided_previews") or [],
-        provided_description=provided_description_from_entity(entity) if include_descriptions else None,
+        previews=old_manifest.get("previews") or [],
+        description=description_from_entity(entity) if include_descriptions else None,
+        classification=classification_from_entity(entity),
         package_object=package_object or None,
     )
 
@@ -446,7 +407,7 @@ def upload_entity_objects(
     client_id: str,
     include_previews: bool,
     key_prefix: str = "",
-    include_descriptions: bool = False,
+    include_descriptions: bool = True,
     storage_profile_id: str = "",
     dry_run: bool = False,
     package_object: dict[str, Any] | None = None,
@@ -510,7 +471,7 @@ def upload_entity_objects(
                 source_object["file_name"] = package_name
                 source_object["file_format"] = "zip"
 
-    provided_previews = []
+    previews = []
     if include_previews:
         primary_used = False
         gallery_index = 1
@@ -549,17 +510,17 @@ def upload_entity_objects(
                 "height": preview.height,
                 "strategy": preview.strategy.value if hasattr(preview.strategy, "value") else str(preview.strategy),
                 "origin": "provided",
-                "renderer": preview.renderer or "client",
             })
-            provided_previews.append(ref)
+            previews.append(ref)
 
     return build_processing_manifest(
         entity,
         client_id=client_id,
         source_object=source_object,
         source_files=source_files,
-        provided_previews=provided_previews,
-        provided_description=provided_description_from_entity(entity) if include_descriptions else None,
+        previews=previews,
+        description=description_from_entity(entity) if include_descriptions else None,
+        classification=classification_from_entity(entity),
         package_object=package_object or None,
     )
 
@@ -589,10 +550,37 @@ def source_object_keys_from_manifest(manifest: dict[str, Any]) -> list[str]:
     for item in manifest.get("source_files") or []:
         if isinstance(item, dict) and item.get("object_key"):
             keys.append(str(item["object_key"]))
-    for item in manifest.get("provided_previews") or []:
+    for item in manifest.get("previews") or []:
         if isinstance(item, dict) and item.get("object_key"):
             keys.append(str(item["object_key"]))
     return list(dict.fromkeys(keys))
+
+
+def preview_object_keys_from_manifest(manifest: dict[str, Any]) -> list[str]:
+    keys: list[str] = []
+    for item in manifest.get("previews") or []:
+        if isinstance(item, dict) and item.get("object_key"):
+            keys.append(str(item["object_key"]))
+    return list(dict.fromkeys(keys))
+
+
+def manifest_has_source_object(manifest: dict[str, Any]) -> bool:
+    source_object = manifest.get("source_object") if isinstance(manifest, dict) else None
+    if isinstance(source_object, dict) and source_object.get("object_key"):
+        return True
+    return any(
+        isinstance(item, dict) and item.get("object_key")
+        for item in (manifest.get("source_files") if isinstance(manifest, dict) else []) or []
+    )
+
+
+def manifest_has_preview_objects(manifest: dict[str, Any]) -> bool:
+    if not isinstance(manifest, dict):
+        return False
+    return any(
+        isinstance(item, dict) and item.get("object_key")
+        for item in manifest.get("previews") or []
+    )
 
 
 def source_object_refs_from_manifest(manifest: dict[str, Any]) -> list[dict[str, str]]:
@@ -604,7 +592,7 @@ def source_object_refs_from_manifest(manifest: dict[str, Any]) -> list[dict[str,
         object_key = str(source_object.get("object_key") or "").strip()
         if object_key:
             refs.append({"storage_profile_id": source_storage_profile_id, "object_key": object_key})
-    for section in ("source_files", "provided_previews"):
+    for section in ("source_files", "previews"):
         for item in manifest.get(section) or []:
             if not isinstance(item, dict):
                 continue
@@ -652,6 +640,135 @@ def _thread_uploader(storage_profile_id: str) -> ObjectStorageUploader:
         uploader = ObjectStorageUploader(storage_profile_id=storage_profile_id or None)
         uploaders[key] = uploader
     return uploader
+
+
+def sync_preview_objects_to_manifest(
+    cache,
+    task_id: int,
+    entity: ResourceProcessingEntity,
+    *,
+    client_id: str = "",
+    storage_profile_id: str = "",
+    key_prefix: str | None = None,
+    include_descriptions: bool = True,
+    dry_run: bool = False,
+    uploader: ObjectStorageUploader | None = None,
+    submit_state: str = "pending",
+    report: Report | None = None,
+) -> dict[str, Any]:
+    """Upload current local previews and refresh the stored object manifest.
+
+    Source objects must already exist. This keeps preview generation as the
+    single place that turns local preview files into uploaded preview refs.
+    """
+    old_record = cache.get_object_manifest(task_id)
+    old_manifest = old_record.get("manifest") if old_record else {}
+    if not isinstance(old_manifest, dict) or not manifest_has_source_object(old_manifest):
+        raise RuntimeError("missing uploaded source manifest; run upload_objects_to_storage first")
+
+    preview_files = [
+        preview.path
+        for preview in entity.previews
+        if preview.path and Path(preview.path).is_file()
+    ]
+    if not preview_files:
+        raise RuntimeError("no local preview files to upload")
+
+    old_options = old_record.get("upload_options") if old_record else {}
+    if not isinstance(old_options, dict):
+        old_options = {}
+    resolved_client_id = str(old_options.get("client_id") or "") or client_id or "client"
+    requested_profile_id = str(old_options.get("storage_profile_id") or "") or storage_profile_id
+    resolved_storage_profile_id = load_storage_profiles().get(requested_profile_id or None).profile_id
+    resolved_key_prefix = str(old_options.get("key_prefix") or "") if key_prefix is None else str(key_prefix or "")
+
+    preview_uploader = None if dry_run else (uploader or _thread_uploader(resolved_storage_profile_id))
+    manifest = upload_entity_objects(
+        entity,
+        uploader=preview_uploader,
+        client_id=resolved_client_id,
+        include_previews=True,
+        key_prefix=resolved_key_prefix,
+        include_descriptions=include_descriptions,
+        storage_profile_id=resolved_storage_profile_id,
+        dry_run=dry_run,
+        package_object=old_manifest.get("package_object") or None,
+        reuse_source_manifest=old_manifest,
+    )
+    for key in ("source_files", "child_resources"):
+        if key in old_manifest and key not in manifest:
+            manifest[key] = old_manifest[key]
+    if not manifest_has_preview_objects(manifest):
+        raise RuntimeError("preview upload produced no object refs")
+
+    object_fingerprint, _ = object_fingerprint_for_entity(
+        entity,
+        client_id=resolved_client_id,
+        storage_profile_id=resolved_storage_profile_id,
+        key_prefix=resolved_key_prefix,
+        include_previews=True,
+    )
+    upload_options = upload_options_payload(
+        client_id=resolved_client_id,
+        storage_profile_id=resolved_storage_profile_id,
+        key_prefix=resolved_key_prefix,
+        include_previews=True,
+        include_descriptions=include_descriptions,
+    )
+
+    if dry_run:
+        return manifest
+
+    cache.upsert_object_manifest(
+        task_id,
+        manifest,
+        submit_state=submit_state,
+        object_fingerprint=object_fingerprint,
+        upload_options=upload_options,
+    )
+    cache.add_log(task_id, "preview_objects_uploaded", f"previews={len(manifest.get('previews') or [])}")
+
+    old_keys = set(preview_object_keys_from_manifest(old_manifest))
+    new_keys = set(preview_object_keys_from_manifest(manifest))
+    replaced_keys = sorted(old_keys - new_keys)
+    if not replaced_keys:
+        return manifest
+
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    refs = [
+        ref
+        for ref in source_object_refs_from_manifest({"previews": old_manifest.get("previews") or []})
+        if ref["object_key"] in replaced_keys
+    ]
+    client_resource_id = str(
+        manifest.get("client_resource_id")
+        or old_manifest.get("client_resource_id")
+        or task_id
+    )
+    cache._conn.execute(
+        """INSERT INTO resource_object_delete_job
+           (client_resource_id, source_resource_id, task_id_snapshot,
+            storage_profile_id, object_keys_json, object_refs_json,
+            manifest_json_snapshot, status, attempt_count, last_error,
+            reason, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, '', ?, ?, ?)""",
+        (
+            client_resource_id,
+            client_resource_id,
+            task_id,
+            resolved_storage_profile_id,
+            json.dumps(replaced_keys, ensure_ascii=False),
+            json.dumps(refs, ensure_ascii=False),
+            json.dumps(old_manifest, ensure_ascii=False),
+            "replaced_preview_cleanup",
+            now,
+            now,
+        ),
+    )
+    cache._conn.commit()
+    if report:
+        report.ok("旧预览对象清理入队", f"task_id={task_id}, old_objects={len(replaced_keys)}")
+    return manifest
 
 
 def _upload_entity_worker(
@@ -704,7 +821,7 @@ def build_manifests_from_cache(
     storage_profile_id: str = "",
     include_previews: bool,
     key_prefix: str = "",
-    include_descriptions: bool = False,
+    include_descriptions: bool = True,
     dry_run: bool,
     resume: bool = False,
     force: bool = False,
@@ -717,7 +834,6 @@ def build_manifests_from_cache(
     max_task_id: int | None = None,
     preview_created_after: str = "",
     source_filter: str = "",
-    defer_replaced_object_cleanup: bool = False,
     missing_manifest_only: bool = False,
     report: Report | None = None,
 ):
@@ -739,7 +855,6 @@ def build_manifests_from_cache(
     reused_objects = 0
     emitted_manifests = 0
     manifest_limit = int(limit or 0)
-    cleanup_uploader = None
 
     def now() -> str:
         return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -767,8 +882,69 @@ def build_manifests_from_cache(
         nonlocal emitted_manifests
         emitted_manifests += 1
 
+    def manifest_has_source_object(manifest: dict[str, Any]) -> bool:
+        source_object = manifest.get("source_object") if isinstance(manifest, dict) else None
+        if isinstance(source_object, dict) and source_object.get("object_key"):
+            return True
+        return any(
+            isinstance(item, dict) and item.get("object_key")
+            for item in (manifest.get("source_files") if isinstance(manifest, dict) else []) or []
+        )
+
+    def source_signature(manifest: dict[str, Any]) -> dict[str, Any]:
+        source_object = manifest.get("source_object") if isinstance(manifest, dict) else None
+        source_files = manifest.get("source_files") if isinstance(manifest, dict) else None
+        if not isinstance(source_object, dict):
+            source_object = {}
+        if not isinstance(source_files, list):
+            source_files = []
+        return {
+            "source_object": {
+                "storage_profile_id": str(source_object.get("storage_profile_id") or ""),
+                "object_key": str(source_object.get("object_key") or ""),
+                "file_name": str(source_object.get("file_name") or ""),
+                "file_format": str(source_object.get("file_format") or ""),
+            },
+            "source_files": [
+                {
+                    "file_name": str(item.get("file_name") or ""),
+                    "file_format": str(item.get("file_format") or ""),
+                    "file_size": int(item.get("file_size") or 0),
+                    "checksum": str(item.get("checksum") or ""),
+                    "path_in_package": str(item.get("path_in_package") or ""),
+                    "is_primary": bool(item.get("is_primary")),
+                }
+                for item in source_files
+                if isinstance(item, dict)
+            ],
+        }
+
+    def source_object_matches_plan(old_manifest: dict[str, Any], planned_parts: dict[str, Any]) -> bool:
+        def normalize_profile(value: str) -> str:
+            text = str(value or "")
+            return resolved_storage_profile_id if text == "default" else text
+
+        old_signature = source_signature(old_manifest)
+        planned_signature = source_signature(planned_parts)
+        old_source_object = old_signature["source_object"]
+        planned_source_object = planned_signature["source_object"]
+        if not old_source_object["object_key"] or old_source_object["object_key"] != planned_source_object["object_key"]:
+            return False
+        if (
+            old_source_object["storage_profile_id"]
+            and planned_source_object["storage_profile_id"]
+            and normalize_profile(old_source_object["storage_profile_id"]) != normalize_profile(planned_source_object["storage_profile_id"])
+        ):
+            return False
+        if old_source_object["file_name"] and old_source_object["file_name"] != planned_source_object["file_name"]:
+            return False
+        if old_source_object["file_format"] and old_source_object["file_format"] != planned_source_object["file_format"]:
+            return False
+        old_source_files = old_signature["source_files"]
+        planned_source_files = planned_signature["source_files"]
+        return not old_source_files or old_source_files == planned_source_files
+
     def cleanup_replaced_objects(task_id: int, old_manifest: dict[str, Any], new_manifest: dict[str, Any]) -> None:
-        nonlocal cleanup_uploader
         old_keys = set(source_object_keys_from_manifest(old_manifest))
         new_keys = set(source_object_keys_from_manifest(new_manifest))
         keys = sorted(old_keys - new_keys)
@@ -778,51 +954,40 @@ def build_manifests_from_cache(
             if report:
                 report.ok("计划清理旧对象", f"task_id={task_id}, old_objects={len(keys)}")
             return
-        if defer_replaced_object_cleanup:
-            refs = [
-                ref
-                for ref in source_object_refs_from_manifest(old_manifest)
-                if ref["object_key"] in keys
-            ]
-            timestamp = now()
-            client_resource_id = str(
-                new_manifest.get("client_resource_id")
-                or old_manifest.get("client_resource_id")
-                or task_id
-            )
-            cache._conn.execute(
-                """INSERT INTO resource_object_delete_job
-                   (client_resource_id, source_resource_id, task_id_snapshot,
-                    storage_profile_id, object_keys_json, object_refs_json,
-                    manifest_json_snapshot, status, attempt_count, last_error,
-                    reason, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, '', ?, ?, ?)""",
-                (
-                    client_resource_id,
-                    client_resource_id,
-                    task_id,
-                    resolved_storage_profile_id,
-                    json.dumps(keys, ensure_ascii=False),
-                    json.dumps(refs, ensure_ascii=False),
-                    json.dumps(old_manifest, ensure_ascii=False),
-                    "replaced_object_cleanup",
-                    timestamp,
-                    timestamp,
-                ),
-            )
-            cache._conn.commit()
-            if report:
-                report.ok("旧对象清理入队", f"task_id={task_id}, old_objects={len(keys)}")
-            return
-        if cleanup_uploader is None:
-            cleanup_uploader = ObjectStorageUploader(storage_profile_id=resolved_storage_profile_id or None)
-        try:
-            deleted = cleanup_uploader.delete_objects(keys)
-            if report:
-                report.ok("清理旧对象", f"task_id={task_id}, old_objects={deleted}")
-        except Exception as exc:
-            if report:
-                report.fail("清理旧对象失败", f"task_id={task_id}: {str(exc)[:160]}")
+        refs = [
+            ref
+            for ref in source_object_refs_from_manifest(old_manifest)
+            if ref["object_key"] in keys
+        ]
+        timestamp = now()
+        client_resource_id = str(
+            new_manifest.get("client_resource_id")
+            or old_manifest.get("client_resource_id")
+            or task_id
+        )
+        cache._conn.execute(
+            """INSERT INTO resource_object_delete_job
+               (client_resource_id, source_resource_id, task_id_snapshot,
+                storage_profile_id, object_keys_json, object_refs_json,
+                manifest_json_snapshot, status, attempt_count, last_error,
+                reason, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, '', ?, ?, ?)""",
+            (
+                client_resource_id,
+                client_resource_id,
+                task_id,
+                resolved_storage_profile_id,
+                json.dumps(keys, ensure_ascii=False),
+                json.dumps(refs, ensure_ascii=False),
+                json.dumps(old_manifest, ensure_ascii=False),
+                "replaced_object_cleanup",
+                timestamp,
+                timestamp,
+            ),
+        )
+        cache._conn.commit()
+        if report:
+            report.ok("旧对象清理入队", f"task_id={task_id}, old_objects={len(keys)}")
 
     def handle_manifest(
         task_id: int,
@@ -834,10 +999,11 @@ def build_manifests_from_cache(
         upload_options_value: dict[str, Any] | None = None,
     ):
         nonlocal skipped
-        if not manifest["source_files"]:
+        source_object = manifest.get("source_object") if isinstance(manifest, dict) else None
+        if not isinstance(source_object, dict) or not source_object.get("object_key"):
             skipped += 1
             if report:
-                report.fail("跳过", f"task_id={task_id} 没有可上传原始文件")
+                report.fail("跳过", f"task_id={task_id} 没有可上传源文件对象")
             return None
         if not dry_run:
             cache.upsert_object_manifest(
@@ -874,34 +1040,21 @@ def build_manifests_from_cache(
             key_prefix=key_prefix,
             include_previews=False,
         )
-        resource_fingerprint, _resource_parts = manifest_resource_fingerprint_for_entity(
-            entity,
-            client_id=client_id,
-            storage_profile_id=resolved_storage_profile_id,
-            key_prefix=key_prefix,
-            include_previews=include_previews_value,
-            include_descriptions=include_descriptions_value,
-            object_fingerprint=object_fingerprint,
-            package_object=package_object,
-        )
+        from ResourceProcessor.cache.local_cache import compute_resource_fingerprint_for_connection
+
+        current_fingerprint, _current_parts = compute_resource_fingerprint_for_connection(cache._conn, task_id)
+        upload_record_fingerprint = current_fingerprint
         old = cache.get_object_manifest(task_id)
-        if old and not force and old.get("resource_fingerprint") == resource_fingerprint:
-            if (
-                old.get("submit_state") == "submitted"
-                and old.get("committed_fingerprint") == resource_fingerprint
-            ):
-                skipped_clean += 1
-                return {
-                    "action": "skip",
-                    "resource_fingerprint": resource_fingerprint,
-                    "object_fingerprint": object_fingerprint,
-                    "old_manifest": old.get("manifest") or {},
-                }
-            reused_objects += 1
+        if (
+            old
+            and not force
+            and old.get("resource_fingerprint") == upload_record_fingerprint
+            and old.get("object_fingerprint") == object_fingerprint
+        ):
+            skipped_clean += 1
             return {
-                "action": "reuse_pending",
-                "manifest": old.get("manifest") or {},
-                "resource_fingerprint": resource_fingerprint,
+                "action": "skip",
+                "resource_fingerprint": upload_record_fingerprint,
                 "object_fingerprint": object_fingerprint,
                 "old_manifest": old.get("manifest") or {},
             }
@@ -918,26 +1071,44 @@ def build_manifests_from_cache(
                     include_descriptions=include_descriptions_value,
                     package_object=package_object,
                 ),
-                "resource_fingerprint": resource_fingerprint,
+                "resource_fingerprint": upload_record_fingerprint,
                 "object_fingerprint": object_fingerprint,
                 "old_manifest": old.get("manifest") or {},
             }
-        if (
-            old
-            and not force
-            and include_previews_value
-            and entity.previews
-            and old.get("object_fingerprint") == source_only_object_fingerprint
-        ):
-            return {
-                "action": "upload_previews",
-                "resource_fingerprint": resource_fingerprint,
-                "object_fingerprint": object_fingerprint,
-                "old_manifest": old.get("manifest") or {},
-            }
+        if old and not force and include_previews_value and entity.previews:
+            old_manifest = old.get("manifest") or {}
+            old_has_preview_objects = any(
+                isinstance(item, dict) and item.get("object_key")
+                for item in old_manifest.get("previews") or []
+            )
+            old_options = old.get("upload_options") or {}
+            old_key_scheme_matches = str(old_options.get("key_scheme_version") or "") == UPLOAD_KEY_SCHEME_VERSION
+            old_key_options_match = (
+                str(old_options.get("client_id") or client_id) == client_id
+                and str(old_options.get("storage_profile_id") or resolved_storage_profile_id) == resolved_storage_profile_id
+                and str(old_options.get("key_prefix") or "") == (key_prefix or "")
+            )
+            old_source_matches_plan = source_object_matches_plan(old_manifest, _source_only_parts)
+            can_reuse_source = (
+                old.get("object_fingerprint") == source_only_object_fingerprint
+                or old_source_matches_plan
+                or (
+                    not old_has_preview_objects
+                    and old_key_scheme_matches
+                    and old_key_options_match
+                    and manifest_has_source_object(old_manifest)
+                )
+            )
+            if can_reuse_source:
+                return {
+                    "action": "upload_previews",
+                    "resource_fingerprint": upload_record_fingerprint,
+                    "object_fingerprint": object_fingerprint,
+                    "old_manifest": old_manifest,
+                }
         return {
             "action": "upload",
-            "resource_fingerprint": resource_fingerprint,
+            "resource_fingerprint": upload_record_fingerprint,
             "object_fingerprint": object_fingerprint,
             "source_only_object_fingerprint": source_only_object_fingerprint,
             "old_manifest": (old.get("manifest") or {}) if old else {},
@@ -1206,7 +1377,7 @@ def build_manifests_from_cache(
         if report and skipped:
             report.ok("跳过", f"{skipped} 个资源未生成 manifest")
         if report and skipped_clean:
-            report.ok("指纹未变化", f"{skipped_clean} 个资源已提交，跳过")
+            report.ok("对象未变化", f"{skipped_clean} 个资源对象已就绪，跳过")
         if report and reused_objects:
             report.ok("复用对象", f"{reused_objects} 个资源无需重传桶对象")
         cache.close()

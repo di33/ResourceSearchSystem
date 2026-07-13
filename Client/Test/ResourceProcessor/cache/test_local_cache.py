@@ -297,6 +297,38 @@ def test_preview_and_description_content_hash_refresh_resource_fingerprint(tmp_p
         store.close()
 
 
+def test_object_manifest_refreshes_resource_fingerprint(tmp_path):
+    store = LocalCacheStore(str(tmp_path / "test.db"))
+    try:
+        task_id = store.insert_task(_make_entity())
+        initial = store.get_task_by_id(task_id)["resource_fingerprint"]
+
+        store.upsert_object_manifest(
+            task_id,
+            {"source_object": {"storage_profile_id": "default", "object_key": "old/key.png"}},
+            object_fingerprint="old-object-fingerprint",
+        )
+        uploaded = store.get_task_by_id(task_id)["resource_fingerprint"]
+        assert uploaded and uploaded != initial
+        record = store.get_object_manifest(task_id)
+        assert record["resource_fingerprint"] == uploaded
+
+        store.mark_object_manifest_submitted(task_id, {"job_id": "job-1"}, resource_fingerprint=uploaded)
+        assert store.get_task_by_id(task_id)["process_state"] == ProcessState.COMMITTED.value
+        store.upsert_object_manifest(
+            task_id,
+            {"source_object": {"storage_profile_id": "default", "object_key": "new/key.png"}},
+            object_fingerprint="new-object-fingerprint",
+        )
+        refreshed = store.get_task_by_id(task_id)["resource_fingerprint"]
+        refreshed_record = store.get_object_manifest(task_id)
+        assert refreshed and refreshed != uploaded
+        assert refreshed_record["resource_fingerprint"] == refreshed
+        assert refreshed_record["committed_fingerprint"] == uploaded
+    finally:
+        store.close()
+
+
 # ---- 10. test_add_and_get_logs ----
 
 

@@ -220,7 +220,6 @@ def render_preview_manifest(
         "source_object": source_object,
         "source_object_url": _source_object_url_for_renderer(source_object),
         "source_files": manifest.get("source_files") or [],
-        "client_metadata": manifest.get("client_metadata"),
     }
     output_dir = _resource_output_dir(output_root, manifest)
     file_prefix = _resource_file_prefix(manifest)

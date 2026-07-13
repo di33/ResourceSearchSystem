@@ -1,11 +1,41 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import datetime
 import json
 import sqlite3
-from typing import Any
+import threading
+from typing import Any, Iterator
 
 from resource_processing_server.app.config import settings
+from resource_processing_server.app.database import PostgresDatabase
+
+
+_SQLITE_LOCK = threading.RLock()
+
+
+def _configure_sqlite_connection(conn: sqlite3.Connection) -> sqlite3.Connection:
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=DELETE")
+    except sqlite3.Error:
+        # Windows bind mounts can make journal-mode changes unreliable. Prefer
+        # continuing in SQLite's current mode over failing normal reads/writes.
+        pass
+    conn.execute("PRAGMA busy_timeout=300000")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
+
+
+@contextmanager
+def sqlite_connection(db_path: str) -> Iterator[sqlite3.Connection]:
+    """Open one SQLite connection under the process-wide snapshots DB lock."""
+    with _SQLITE_LOCK:
+        conn = sqlite3.connect(db_path, timeout=300)
+        try:
+            yield _configure_sqlite_connection(conn)
+        finally:
+            conn.close()
 
 
 class ProcessedSnapshotStore:
@@ -15,22 +45,22 @@ class ProcessedSnapshotStore:
     binaries or embeddings.
     """
 
-    def __init__(self, db_path: str | None = None):
+    def __init__(self, db_path: str | None = None, *, database: PostgresDatabase | None = None):
         self.db_path = db_path or settings.snapshot_db_path
+        self.database = database
         self._create_tables()
 
     def _connect(self):
-        conn = sqlite3.connect(self.db_path, timeout=300)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=300000")
-        return conn
+        if self.database is not None:
+            return self.database.connect()
+        return sqlite_connection(self.db_path)
 
     def _create_tables(self) -> None:
         with self._connect() as conn:
-            conn.execute("""
+            id_sql = "BIGSERIAL PRIMARY KEY" if self.database is not None else "INTEGER PRIMARY KEY AUTOINCREMENT"
+            conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS processed_resource_snapshot (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id {id_sql},
                     client_id TEXT NOT NULL,
                     client_resource_id TEXT NOT NULL,
                     resource_type TEXT NOT NULL,
@@ -50,9 +80,9 @@ class ProcessedSnapshotStore:
                 CREATE INDEX IF NOT EXISTS idx_processed_snapshot_upsert_state
                 ON processed_resource_snapshot(search_upsert_state)
             """)
-            conn.execute("""
+            conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS processed_resource_delete_marker (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id {id_sql},
                     client_id TEXT NOT NULL,
                     client_resource_id TEXT NOT NULL,
                     resource_id TEXT NOT NULL DEFAULT '',

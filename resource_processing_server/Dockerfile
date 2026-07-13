@@ -9,7 +9,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app:/app/Tools \
     RP_SHARED_RESOURCE_PROCESSOR_PATH=/app/Tools \
     RP_WORK_DIR=/app/data/resource_processing_server \
-    RP_SNAPSHOT_DB_PATH=/app/data/resource_processing_server/snapshots.db
+    RP_SNAPSHOT_DB_PATH=/app/data/resource_processing_server/snapshots.db \
+    RP_DATABASE_URL=postgresql://resource_processor:resource_processor@postgres:5432/resource_processing
 
 COPY resource_processing_server/docker/apt-packages*.txt /tmp/resource-processing-apt/
 COPY resource_processing_server/docker/vendor/apt/ /opt/resource-processing-vendor/apt/
@@ -54,7 +55,10 @@ COPY resource_processing_server/requirements.txt /app/resource_processing_server
 COPY resource_processing_server/docker/vendor/pip/ /opt/resource-processing-vendor/pip/
 RUN set -eux; \
     pip_vendor=/opt/resource-processing-vendor/pip; \
-    if [ -f "$pip_vendor/manifest.json" ] && find "$pip_vendor" -type f \( -name '*.whl' -o -name '*.tar.gz' -o -name '*.zip' \) | grep -q .; then \
+    if [ -f "$pip_vendor/manifest.json" ] \
+        && find "$pip_vendor" -type f -name 'psycopg-*.whl' | grep -q . \
+        && find "$pip_vendor" -type f -name 'psycopg_binary-*.whl' | grep -q . \
+        && find "$pip_vendor" -type f -name 'psycopg_pool-*.whl' | grep -q .; then \
         python -m pip install --no-cache-dir --no-index --find-links="$pip_vendor" -r /app/resource_processing_server/requirements.txt; \
     else \
         python -m pip install --no-cache-dir --upgrade pip; \

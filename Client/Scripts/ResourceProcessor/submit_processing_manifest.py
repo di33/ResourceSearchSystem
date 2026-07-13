@@ -8,8 +8,45 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import requests
+from requests import Response
 
 from ResourceProcessor.pipeline_common import Report, env, make_arg_parser
+
+
+_RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
+_DEFAULT_HTTP_RETRIES = 3
+_DEFAULT_HTTP_RETRY_BACKOFF = 0.5
+
+
+def _request_with_retries(
+    http: requests.Session,
+    method: str,
+    url: str,
+    *,
+    retries: int = _DEFAULT_HTTP_RETRIES,
+    retry_backoff: float = _DEFAULT_HTTP_RETRY_BACKOFF,
+    **kwargs,
+) -> Response:
+    attempts = max(1, int(retries or 1))
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            if hasattr(http, "request"):
+                response = http.request(method, url, **kwargs)
+            else:
+                response = getattr(http, method.lower())(url, **kwargs)
+            status_code = getattr(response, "status_code", 200)
+            if status_code not in _RETRYABLE_STATUS_CODES or attempt >= attempts:
+                return response
+            last_exc = requests.HTTPError(f"retryable status {status_code} for {method} {url}")
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            last_exc = exc
+            if attempt >= attempts:
+                raise
+        time.sleep(max(0.0, float(retry_backoff)) * attempt)
+    if last_exc:
+        raise last_exc
+    raise RuntimeError(f"request failed without response: {method} {url}")
 
 
 def submit_processing_job(
@@ -24,7 +61,9 @@ def submit_processing_job(
     headers = {"X-Client-Id": client_id}
     if api_key:
         headers["X-API-Key"] = api_key
-    response = http.post(
+    response = _request_with_retries(
+        http,
+        "POST",
         f"{processing_server.rstrip('/')}/processing-jobs",
         json=manifest,
         headers=headers,
@@ -46,8 +85,39 @@ def get_processing_job(
     headers = {"X-Client-Id": client_id}
     if api_key:
         headers["X-API-Key"] = api_key
-    response = http.get(
+    response = _request_with_retries(
+        http,
+        "GET",
         f"{processing_server.rstrip('/')}/processing-jobs/{job_id}",
+        headers=headers,
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def get_processing_job_statuses(
+    job_ids: list[str],
+    *,
+    processing_server: str,
+    client_id: str,
+    api_key: str = "",
+    session: requests.Session | None = None,
+) -> dict[str, Any]:
+    normalized = list(dict.fromkeys(str(job_id or "").strip() for job_id in job_ids if str(job_id or "").strip()))
+    if not normalized:
+        return {"jobs": [], "missing_job_ids": []}
+    if len(normalized) > 1000:
+        raise ValueError("at most 1000 processing job ids can be queried at once")
+    http = session or requests.Session()
+    headers = {"X-Client-Id": client_id}
+    if api_key:
+        headers["X-API-Key"] = api_key
+    response = _request_with_retries(
+        http,
+        "POST",
+        f"{processing_server.rstrip('/')}/processing-jobs/status",
+        json={"job_ids": normalized},
         headers=headers,
         timeout=60,
     )
@@ -131,7 +201,9 @@ def submit_processing_batch(
     headers = {"X-Client-Id": client_id}
     if api_key:
         headers["X-API-Key"] = api_key
-    response = http.post(
+    response = _request_with_retries(
+        http,
+        "POST",
         f"{processing_server.rstrip('/')}/processing-jobs/batch",
         json={"manifests": manifests},
         headers=headers,

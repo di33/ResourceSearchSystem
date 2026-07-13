@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 
 from resource_contracts.auth import (
     ClientAuthConfig,
@@ -18,6 +20,8 @@ from resource_processing_server.app.models import (
     DeleteProcessedResourceIn,
     DeleteProcessedResourceOut,
     JobOut,
+    JobStatusBatchIn,
+    JobStatusBatchOut,
     ReplaySnapshotOut,
     ReplaySnapshotsOut,
     ResourceBatchManifest,
@@ -29,15 +33,49 @@ logging.basicConfig(
     level=logging.DEBUG if settings.debug else logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+logger = logging.getLogger(__name__)
+
+service = ProcessingService()
+
+
+async def _replay_failed_snapshots_on_startup() -> None:
+    if not settings.replay_failed_snapshots_on_startup:
+        return
+    try:
+        items = await service.replay_snapshots(
+            client_id="",
+            search_upsert_state="upsert_failed",
+            limit=settings.replay_failed_snapshots_startup_limit,
+        )
+    except Exception:
+        logger.exception("Startup replay of failed snapshots crashed")
+        return
+    if not items:
+        return
+    states: dict[str, int] = {}
+    for item in items:
+        states[item.state] = states.get(item.state, 0) + 1
+    logger.info("Startup replayed %s failed snapshots: %s", len(items), states)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await service.start_workers()
+    task = asyncio.create_task(_replay_failed_snapshots_on_startup())
+    try:
+        yield
+    finally:
+        if not task.done():
+            task.cancel()
+        await service.stop_workers()
 
 app = FastAPI(
     title="资源加工服务器",
     description="Consumes object-storage resource manifests, generates previews/descriptions, and upserts to search server.",
     version="0.1.0",
     debug=settings.debug,
+    lifespan=lifespan,
 )
-
-service = ProcessingService()
 
 
 def _client_auth_config() -> ClientAuthConfig:
@@ -67,37 +105,48 @@ async def require_client_id(
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    database_ok = service.database is None or await asyncio.to_thread(service.database.ping)
+    if not database_ok:
+        raise HTTPException(status_code=503, detail="processing database unavailable")
+    return {"status": "ok", "database": "ok" if service.database is not None else "memory"}
 
 
 @app.post("/processing-jobs", response_model=CreateJobOut)
 async def create_processing_job(
     manifest: ResourceManifest,
-    background_tasks: BackgroundTasks,
     client_id: str = Depends(require_client_id),
 ):
-    created = await service.create_job(client_id=client_id, manifest=manifest)
+    try:
+        created = await service.create_job(client_id=client_id, manifest=manifest)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if settings.process_inline:
         await service.run_job(created.job_id)
-    else:
-        background_tasks.add_task(service.run_job, created.job_id)
     return created
 
 
 @app.post("/processing-jobs/batch", response_model=CreateBatchOut)
 async def create_processing_job_batch(
     batch: ResourceBatchManifest,
-    background_tasks: BackgroundTasks,
     client_id: str = Depends(require_client_id),
 ):
-    created = await service.create_batch(client_id=client_id, manifests=batch.manifests)
+    try:
+        created = await service.create_batch(client_id=client_id, manifests=batch.manifests)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if settings.process_inline:
         for item in created.jobs:
             await service.run_job(item.job_id)
-    else:
-        for item in created.jobs:
-            background_tasks.add_task(service.run_job, item.job_id)
     return created
+
+
+@app.post("/processing-jobs/status", response_model=JobStatusBatchOut)
+async def get_processing_job_statuses(
+    request: JobStatusBatchIn,
+    client_id: str = Depends(require_client_id),
+):
+    jobs, missing_job_ids = await service.get_job_statuses(request.job_ids, client_id=client_id)
+    return JobStatusBatchOut(jobs=jobs, missing_job_ids=missing_job_ids)
 
 
 @app.get("/processing-jobs/{job_id}", response_model=JobOut)
@@ -114,7 +163,6 @@ async def get_processing_job(
 @app.post("/processing-jobs/{job_id}/retry", response_model=CreateJobOut)
 async def retry_processing_job(
     job_id: str,
-    background_tasks: BackgroundTasks,
     client_id: str = Depends(require_client_id),
 ):
     created = await service.retry_job(job_id, client_id=client_id)
@@ -122,8 +170,6 @@ async def retry_processing_job(
         raise HTTPException(status_code=404, detail="job not found")
     if settings.process_inline:
         await service.run_job(created.job_id)
-    else:
-        background_tasks.add_task(service.run_job, created.job_id)
     return created
 
 

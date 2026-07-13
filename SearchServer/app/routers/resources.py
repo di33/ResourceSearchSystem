@@ -23,6 +23,7 @@ from app.models.tables import (
     ResourcePreview,
     ResourceTask,
 )
+from app.services.display_titles import display_title_for_task
 from app.services.object_urls import ObjectUrlGenerator
 
 router = APIRouter(prefix="/resources", tags=["resources"], dependencies=[Depends(require_read_auth)])
@@ -72,6 +73,7 @@ class ResourceSummaryOut(BaseModel):
     resource_id: Optional[str] = None
     source_resource_id: str = ""
     title: str = ""
+    display_title: str = ""
     content_md5: str
     resource_type: str
     process_state: str
@@ -100,7 +102,7 @@ class ResourceDetailOut(BaseModel):
     source: str = ""
     pack_name: str = ""
     title: str = ""
-    resource_path: str = ""
+    display_title: str = ""
     source_url: str = ""
     original_download_url: str = ""
     category: str = ""
@@ -206,6 +208,10 @@ async def list_resources(
                 resource_id=t.resource_id,
                 source_resource_id=t.source_resource_id,
                 title=t.title,
+                display_title=display_title_for_task(
+                    t,
+                    description=t.descriptions[0] if t.descriptions else None,
+                ),
                 content_md5=t.content_md5,
                 resource_type=t.resource_type,
                 process_state=t.process_state,
@@ -298,7 +304,7 @@ async def get_resource_detail(resource_id: str, session: AsyncSession = Depends(
         source=task.source,
         pack_name=task.pack_name,
         title=task.title,
-        resource_path=task.resource_path,
+        display_title=display_title_for_task(task, description=task.descriptions[0] if task.descriptions else None),
         source_url=task.source_url,
         original_download_url=task.original_download_url,
         category=task.category,

@@ -82,7 +82,7 @@ def _live_object_refs_from_manifest(manifest: dict[str, Any]) -> list[dict[str, 
     _append_ref(refs, source_object)
     for item in manifest.get("source_files") or []:
         _append_ref(refs, item, fallback_storage_profile_id=source_storage_profile_id)
-    for item in manifest.get("provided_previews") or []:
+    for item in manifest.get("previews") or []:
         _append_ref(refs, item, fallback_storage_profile_id=source_storage_profile_id)
     _append_ref(refs, manifest.get("package_object"), fallback_storage_profile_id=source_storage_profile_id)
     return refs

@@ -216,6 +216,7 @@ def build_processing_entity(
 
     auxiliary_metadata: dict[str, Any] = {
         "source_resource_id": record.id,
+        "group_name": str(record.raw.get("group_name", "")),
         "resolved_file_count": len(record.resolved_files),
         "missing_file_count": len(record.missing_files),
         "asset_formats": asset_formats,

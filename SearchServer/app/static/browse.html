@@ -51,8 +51,9 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  justify-content: flex-end;
 }
-.topbar .search-box input {
+.topbar .search-box .search-input {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -62,8 +63,8 @@ body {
   width: min(340px, 38vw);
   outline: none;
 }
-.topbar .search-box input:focus { border-color: var(--accent); }
-.topbar .search-box svg {
+.topbar .search-box .search-input:focus { border-color: var(--accent); }
+.topbar .search-box .search-icon {
   position: absolute;
   left: 9px;
   top: 50%;
@@ -93,6 +94,54 @@ button:disabled { opacity: .55; cursor: default; }
   font-size: 12px;
   color: var(--text2);
   min-width: 96px;
+}
+.advanced-search {
+  position: relative;
+}
+.advanced-search summary {
+  display: inline-flex;
+  align-items: center;
+  height: 34px;
+  list-style: none;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 12px;
+  user-select: none;
+}
+.advanced-search summary::-webkit-details-marker { display: none; }
+.advanced-search[open] summary {
+  border-color: var(--accent2);
+}
+.advanced-search-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(130px, 1fr));
+  gap: 10px;
+  width: min(430px, calc(100vw - 32px));
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+}
+.advanced-search-panel::before {
+  content: "";
+  position: absolute;
+  top: -7px;
+  right: 28px;
+  width: 12px;
+  height: 12px;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  transform: rotate(45deg);
 }
 
 .app {
@@ -124,6 +173,38 @@ button:disabled { opacity: .55; cursor: default; }
   outline: none;
 }
 .toolbar select:focus { border-color: var(--accent); }
+.search-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.search-control label {
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 600;
+}
+.search-control select,
+.search-control input {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  font-size: 13px;
+  height: 34px;
+  padding: 7px 10px;
+  outline: none;
+}
+.search-control input[type="number"] {
+  width: 96px;
+}
+.search-control select:focus,
+.search-control input:focus {
+  border-color: var(--accent);
+}
+.search-control.search-control-wide {
+  min-width: 190px;
+}
 
 .resource-grid {
   display: grid;
@@ -234,6 +315,12 @@ button:disabled { opacity: .55; cursor: default; }
 .detail-header .meta { font-size: 13px; color: var(--text2); display: flex; flex-wrap: wrap; gap: 16px; margin-top: 8px; }
 .detail-header .meta span { display: flex; align-items: center; gap: 4px; }
 .detail-header .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.download-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
 .download-button {
   display: inline-flex;
   align-items: center;
@@ -248,11 +335,22 @@ button:disabled { opacity: .55; cursor: default; }
   text-decoration: none;
 }
 .download-button:hover { background: var(--accent2); }
+.download-button.package-download {
+  background: var(--panel2);
+  border-color: var(--accent2);
+  color: var(--text);
+}
+.download-button.package-download:hover { background: #1b1b20; }
 .download-meta {
   display: inline-flex;
   align-items: center;
   color: var(--text2);
   font-size: 12px;
+  min-width: 0;
+  max-width: min(560px, 46vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .section { margin-bottom: 28px; }
@@ -274,6 +372,14 @@ button:disabled { opacity: .55; cursor: default; }
   overflow: hidden;
   max-width: 360px;
 }
+.preview-zoom-trigger {
+  display: block;
+  width: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
 .preview-card img {
   display: block;
   max-width: 360px;
@@ -286,6 +392,110 @@ button:disabled { opacity: .55; cursor: default; }
   font-size: 11px;
   color: var(--text2);
   border-top: 1px solid var(--border);
+}
+
+.preview-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background: rgba(3, 3, 5, 0.88);
+}
+.preview-lightbox.hidden {
+  display: none !important;
+}
+.preview-lightbox-dialog {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(96vw, 1600px);
+  max-width: min(96vw, 1600px);
+  max-height: 92vh;
+}
+.preview-lightbox-close {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  padding: 0;
+  font-size: 24px;
+  line-height: 1;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+.preview-lightbox-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 44px;
+}
+.preview-lightbox-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 30px;
+  padding: 0;
+  background: var(--panel2);
+  border-color: var(--border);
+  color: var(--text);
+}
+.preview-lightbox-tool:hover { border-color: var(--accent2); }
+.preview-lightbox-tool-wide {
+  width: auto;
+  min-width: 52px;
+  padding: 0 10px;
+}
+.preview-lightbox-zoom-level {
+  min-width: 54px;
+  color: var(--text);
+  font-size: 12px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.preview-lightbox-viewport {
+  width: 100%;
+  height: min(78vh, 900px);
+  max-height: calc(92vh - 86px);
+  min-height: 240px;
+  overflow: auto;
+  border-radius: var(--radius);
+  background: repeating-conic-gradient(#17171a 0% 25%, #202024 0% 50%) 0 0 / 18px 18px;
+  overscroll-behavior: contain;
+}
+.preview-lightbox-viewport.is-draggable { cursor: grab; }
+.preview-lightbox-viewport.is-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+.preview-lightbox-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 100%;
+  min-height: 100%;
+  padding: 12px;
+}
+.preview-lightbox-image {
+  flex: 0 0 auto;
+  display: block;
+  border-radius: var(--radius);
+  max-width: none;
+  max-height: none;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.preview-lightbox-caption {
+  color: var(--text2);
+  font-size: 12px;
+  text-align: center;
 }
 
 .file-table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -352,12 +562,43 @@ button:disabled { opacity: .55; cursor: default; }
 @media (max-width: 760px) {
   .topbar { align-items: stretch; flex-direction: column; gap: 10px; }
   .topbar .search-box { margin-left: 0; width: 100%; }
-  .topbar .search-box input { width: 100%; }
+  .topbar .search-box .search-input { width: 100%; }
+  .advanced-search { position: static; }
+  .advanced-search-panel {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    top: 132px;
+    width: auto;
+    grid-template-columns: 1fr 1fr;
+  }
   .toolbar { align-items: stretch; flex-direction: column; }
   .toolbar .summary { margin-right: 0; }
   .toolbar select { width: 100%; }
+  .search-control.search-control-wide { grid-column: 1 / -1; }
+  .search-control input[type="number"] { width: 100%; }
   .app { padding: 14px 12px 28px; }
   .resource-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+  .download-action { width: 100%; }
+  .download-meta { max-width: 100%; }
+  .preview-lightbox { padding: 16px; }
+  .preview-lightbox-dialog {
+    width: 100%;
+    max-height: calc(100vh - 32px);
+  }
+  .preview-lightbox-close {
+    top: 8px;
+    right: 8px;
+  }
+  .preview-lightbox-toolbar {
+    justify-content: flex-start;
+    padding: 0 44px 0 0;
+    overflow-x: auto;
+  }
+  .preview-lightbox-viewport {
+    height: calc(100vh - 132px);
+    max-height: calc(100vh - 132px);
+  }
 }
 </style>
 </head>
@@ -367,8 +608,37 @@ button:disabled { opacity: .55; cursor: default; }
   <h1>Resource Browser</h1>
   <div class="stats" id="stats"></div>
   <div class="search-box">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    <input type="text" id="searchInput" placeholder="Search title, path, id">
+    <svg class="search-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input class="search-input" type="text" id="searchInput" placeholder="Search resources">
+    <details class="advanced-search" id="advancedSearch">
+      <summary>Advanced</summary>
+      <div class="advanced-search-panel">
+        <div class="search-control">
+          <label for="topKInput">Top K</label>
+          <input id="topKInput" type="number" min="1" max="120" step="1" value="36">
+        </div>
+        <div class="search-control">
+          <label for="thresholdInput">Threshold</label>
+          <input id="thresholdInput" type="number" min="0" max="1" step="0.05" value="0.5">
+        </div>
+        <div class="search-control">
+          <label for="bm25WeightInput">BM25 Weight</label>
+          <input id="bm25WeightInput" type="number" min="0" max="1" step="0.05" value="0.5">
+        </div>
+        <div class="search-control">
+          <label for="rerankerSelect">Reranker</label>
+          <select id="rerankerSelect">
+            <option value="">Default</option>
+            <option value="true">On</option>
+            <option value="false">Off</option>
+          </select>
+        </div>
+        <div class="search-control search-control-wide">
+          <label for="formatFilterInput">Formats</label>
+          <input id="formatFilterInput" type="text" placeholder="All formats">
+        </div>
+      </div>
+    </details>
     <button id="searchButton" type="button">Search</button>
     <span class="search-status" id="searchStatus"></span>
   </div>
@@ -395,6 +665,24 @@ button:disabled { opacity: .55; cursor: default; }
   </section>
 </main>
 
+<div id="previewLightbox" class="preview-lightbox hidden" aria-hidden="true">
+  <div class="preview-lightbox-dialog">
+    <button id="previewLightboxClose" class="preview-lightbox-close" type="button" aria-label="Close preview">&times;</button>
+    <div class="preview-lightbox-toolbar" aria-label="Preview zoom controls">
+      <button id="previewZoomOut" class="preview-lightbox-tool" type="button" aria-label="Zoom out" title="Zoom out">-</button>
+      <span id="previewZoomLevel" class="preview-lightbox-zoom-level">100%</span>
+      <button id="previewZoomIn" class="preview-lightbox-tool" type="button" aria-label="Zoom in" title="Zoom in">+</button>
+      <button id="previewZoomReset" class="preview-lightbox-tool preview-lightbox-tool-wide" type="button" aria-label="Reset zoom" title="Reset zoom">Reset</button>
+    </div>
+    <div id="previewLightboxViewport" class="preview-lightbox-viewport">
+      <div class="preview-lightbox-stage">
+        <img id="previewLightboxImage" class="preview-lightbox-image" alt="Preview zoom" draggable="false">
+      </div>
+    </div>
+    <div id="previewLightboxCaption" class="preview-lightbox-caption"></div>
+  </div>
+</div>
+
 <script>
 const API = '';
 const PAGE_SIZE = 72;
@@ -409,9 +697,37 @@ const state = {
   resourceType: '',
   processState: '',
   query: '',
+  topK: 36,
+  similarityThreshold: 0.5,
+  bm25Weight: 0.5,
+  enableReranker: '',
+  formatFilter: '',
   loading: false,
   activeId: null,
 };
+
+const lightbox = {
+  root: null,
+  viewport: null,
+  image: null,
+  caption: null,
+  zoomLevel: null,
+  zoomIn: null,
+  zoomOut: null,
+  zoomReset: null,
+  zoom: 1,
+  naturalWidth: 0,
+  naturalHeight: 0,
+  isDragging: false,
+  dragStartX: 0,
+  dragStartY: 0,
+  scrollStartLeft: 0,
+  scrollStartTop: 0,
+};
+
+const PREVIEW_ZOOM_MIN = 0.25;
+const PREVIEW_ZOOM_MAX = 5;
+const PREVIEW_ZOOM_STEP = 0.25;
 
 function humanSize(b) {
   b = Number(b) || 0;
@@ -434,6 +750,107 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value).replace(/`/g, '&#96;');
+}
+
+function shortObjectKey(value) {
+  const text = String(value || '');
+  return text.length > 72 ? '...' + text.slice(-69) : text;
+}
+
+function bindPreviewZoom(scope) {
+  if (!scope) return;
+  scope.querySelectorAll('[data-preview-src]').forEach(node => {
+    node.addEventListener('click', () => {
+      openPreviewLightbox(
+        node.getAttribute('data-preview-src'),
+        node.getAttribute('data-preview-caption') || ''
+      );
+    });
+  });
+}
+
+function clampPreviewZoom(value) {
+  return Math.min(PREVIEW_ZOOM_MAX, Math.max(PREVIEW_ZOOM_MIN, value));
+}
+
+function updatePreviewDragState() {
+  if (!lightbox.viewport) return;
+  const canDrag = lightbox.viewport.scrollWidth > lightbox.viewport.clientWidth
+    || lightbox.viewport.scrollHeight > lightbox.viewport.clientHeight;
+  lightbox.viewport.classList.toggle('is-draggable', canDrag);
+}
+
+function applyPreviewZoom(nextZoom, anchor) {
+  if (!lightbox.image || !lightbox.viewport) return;
+  const viewport = lightbox.viewport;
+  const oldZoom = lightbox.zoom || 1;
+  const zoom = clampPreviewZoom(nextZoom);
+  const point = anchor || {
+    x: viewport.clientWidth / 2,
+    y: viewport.clientHeight / 2,
+  };
+  const scrollRatioX = (viewport.scrollLeft + point.x) / oldZoom;
+  const scrollRatioY = (viewport.scrollTop + point.y) / oldZoom;
+  lightbox.zoom = zoom;
+  lightbox.image.style.width = `${lightbox.naturalWidth * zoom}px`;
+  lightbox.image.style.height = `${lightbox.naturalHeight * zoom}px`;
+  if (lightbox.zoomLevel) {
+    lightbox.zoomLevel.textContent = `${Math.round(zoom * 100)}%`;
+  }
+  requestAnimationFrame(() => {
+    viewport.scrollLeft = scrollRatioX * zoom - point.x;
+    viewport.scrollTop = scrollRatioY * zoom - point.y;
+    updatePreviewDragState();
+  });
+}
+
+function fitPreviewZoom() {
+  if (!lightbox.image || !lightbox.viewport || !lightbox.naturalWidth || !lightbox.naturalHeight) {
+    applyPreviewZoom(1);
+    return;
+  }
+  const viewport = lightbox.viewport;
+  const fitZoom = Math.min(
+    1,
+    (viewport.clientWidth - 24) / lightbox.naturalWidth,
+    (viewport.clientHeight - 24) / lightbox.naturalHeight
+  );
+  applyPreviewZoom(fitZoom);
+}
+
+function resetPreviewLightboxImage() {
+  if (!lightbox.image) return;
+  lightbox.naturalWidth = 0;
+  lightbox.naturalHeight = 0;
+  lightbox.zoom = 1;
+  lightbox.image.style.width = '';
+  lightbox.image.style.height = '';
+  if (lightbox.zoomLevel) lightbox.zoomLevel.textContent = '100%';
+  if (lightbox.viewport) {
+    lightbox.viewport.scrollLeft = 0;
+    lightbox.viewport.scrollTop = 0;
+    lightbox.viewport.classList.remove('is-draggable', 'is-dragging');
+  }
+}
+
+function openPreviewLightbox(src, caption) {
+  if (!src || !lightbox.root || !lightbox.image || !lightbox.caption) return;
+  resetPreviewLightboxImage();
+  lightbox.image.src = src;
+  lightbox.caption.textContent = caption;
+  lightbox.root.classList.remove('hidden');
+  lightbox.root.setAttribute('aria-hidden', 'false');
+  document.body.style.overflow = 'hidden';
+}
+
+function closePreviewLightbox() {
+  if (!lightbox.root || !lightbox.image || !lightbox.caption) return;
+  lightbox.root.classList.add('hidden');
+  lightbox.root.setAttribute('aria-hidden', 'true');
+  lightbox.image.removeAttribute('src');
+  lightbox.caption.textContent = '';
+  resetPreviewLightboxImage();
+  document.body.style.overflow = '';
 }
 
 const RESOURCE_TYPES = Object.freeze({
@@ -500,14 +917,96 @@ function browseParams(page) {
   params.set('page_size', String(state.pageSize));
   if (state.resourceType) params.set('resource_type', state.resourceType);
   if (state.processState) params.set('state', state.processState);
-  if (state.query) params.set('q', state.query);
   return params;
+}
+
+function parseNumber(value, fallback, min, max) {
+  if (value === null || value === undefined || value === '') return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function formatFilterValues() {
+  return String(state.formatFilter || '')
+    .split(',')
+    .map(v => v.trim().replace(/^\./, '').toLowerCase())
+    .filter(Boolean);
+}
+
+function searchBody() {
+  const body = {
+    query_text: state.query,
+    resource_type: state.resourceType || null,
+    format_filter: formatFilterValues(),
+    top_k: state.topK,
+    similarity_threshold: state.similarityThreshold,
+    bm25_weight: state.bm25Weight,
+  };
+  if (!body.format_filter.length) body.format_filter = null;
+  if (state.enableReranker === 'true') body.enable_reranker = true;
+  if (state.enableReranker === 'false') body.enable_reranker = false;
+  return body;
+}
+
+function resultFromSearchItem(item) {
+  return {
+    resource_id: item.resource_id,
+    source_resource_id: item.source_resource_id || '',
+    title: item.title || item.resource_id,
+    display_title: item.title || item.resource_id,
+    content_md5: '',
+    resource_type: item.resource_type,
+    process_state: item.status || '',
+    file_count: item.file_count || 0,
+    preview_count: item.primary_preview_url ? 1 + (item.other_preview_urls || []).length : 0,
+    has_description: !!item.description_summary,
+    has_embedding: Number(item.vector_score || 0) > 0,
+    preview_url: item.primary_preview_url || '',
+    score: Number(item.score || 0),
+  };
+}
+
+async function loadSearchResults({ reset = false, sync = true } = {}) {
+  if (reset) {
+    state.page = 1;
+    state.resources = [];
+    renderGrid(true);
+  }
+  const body = searchBody();
+  const r = await fetch(API + '/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json();
+  let resources = (d.results || []).map(resultFromSearchItem);
+  if (state.processState) {
+    resources = resources.filter(item => item.process_state === state.processState);
+  }
+  state.total = state.processState ? resources.length : (d.total_count || resources.length);
+  state.resources = resources;
+  state.typeCounts = {};
+  for (const item of resources) {
+    const type = item.resource_type || RESOURCE_TYPES.OTHER;
+    state.typeCounts[type] = (state.typeCounts[type] || 0) + 1;
+  }
+  state.stateCounts = {};
+  for (const item of resources) {
+    const status = item.process_state || 'unknown';
+    state.stateCounts[status] = (state.stateCounts[status] || 0) + 1;
+  }
+  state.page = 2;
+  populateFilters();
+  renderGrid(false);
+  if (sync) syncBrowseUrl(false);
 }
 
 async function loadResources({ reset = false, sync = true } = {}) {
   if (state.loading) return;
   state.loading = true;
-  setLoading(reset ? 'Loading...' : 'Loading more...');
+  setLoading(reset ? (state.query ? 'Searching...' : 'Loading...') : 'Loading more...');
   if (reset) {
     state.page = 1;
     state.resources = [];
@@ -515,19 +1014,23 @@ async function loadResources({ reset = false, sync = true } = {}) {
   }
 
   try {
-    const r = await fetch(API + `/browse/resources?${browseParams(state.page)}`);
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const d = await r.json();
-    state.total = d.total || 0;
-    state.typeCounts = d.type_counts || {};
-    state.stateCounts = d.state_counts || {};
-    state.resources = reset ? (d.resources || []) : state.resources.concat(d.resources || []);
-    state.page += 1;
+    if (state.query) {
+      await loadSearchResults({ reset: false, sync });
+    } else {
+      const r = await fetch(API + `/browse/resources?${browseParams(state.page)}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      state.total = d.total || 0;
+      state.typeCounts = d.type_counts || {};
+      state.stateCounts = d.state_counts || {};
+      state.resources = reset ? (d.resources || []) : state.resources.concat(d.resources || []);
+      state.page += 1;
+      populateFilters();
+      renderGrid(false);
+      if (sync) syncBrowseUrl(false);
+    }
     state.loading = false;
-    populateFilters();
-    renderGrid(false);
     setLoading('');
-    if (sync) syncBrowseUrl(false);
   } catch(e) {
     state.loading = false;
     setLoading('Load failed');
@@ -569,8 +1072,9 @@ function populateFilters() {
 function renderGrid(isLoading) {
   const grid = document.getElementById('resourceGrid');
   const shown = state.resources.length;
+  const noun = state.query ? 'search results' : 'resources';
   document.getElementById('resultSummary').textContent =
-    `${shown} / ${state.total} resources${state.query ? ` matching "${state.query}"` : ''}`;
+    `${shown} / ${state.total} ${noun}${state.query ? ` for "${state.query}"` : ''}`;
 
   if (isLoading) {
     grid.innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
@@ -584,14 +1088,14 @@ function renderGrid(isLoading) {
   }
 
   const loadMore = document.getElementById('loadMoreButton');
-  loadMore.classList.toggle('hidden', shown >= state.total || state.total === 0);
+  loadMore.classList.toggle('hidden', !!state.query || shown >= state.total || state.total === 0);
   loadMore.disabled = state.loading;
 }
 
 function renderCard(r) {
   const id = r.resource_id || r.content_md5;
-  const name = r.title || r.resource_id || (r.content_md5 || '').slice(0, 12);
-  const title = [r.title, r.resource_id, r.source_resource_id].filter(Boolean).join('\n');
+  const name = r.display_title || r.title || r.resource_id || (r.content_md5 || '').slice(0, 12);
+  const title = [r.display_title, r.title, r.resource_id, r.source_resource_id].filter(Boolean).join('\n');
   const preview = r.preview_url
     ? `<img src="${escapeAttr(r.preview_url)}" alt="" loading="lazy" onerror="this.parentElement.innerHTML='<span class=\\'placeholder\\'>No preview</span>'">`
     : '<span class="placeholder">No preview</span>';
@@ -639,7 +1143,7 @@ function renderDetail(d) {
   const rid = d.resource_id;
   const isPack = d.resource_type === RESOURCE_TYPES.PACK;
   let html = '<div class="detail-header">';
-  html += `<h2>${escapeHtml(d.title || d.resource_id || d.content_md5)}</h2>`;
+  html += `<h2>${escapeHtml(d.display_title || d.title || d.resource_id || d.content_md5)}</h2>`;
   html += '<div class="meta">';
   html += `<span>ID: <b>${escapeHtml(d.resource_id || '-')}</b></span>`;
   html += `<span>Type: <b>${escapeHtml(d.resource_type)}</b></span>`;
@@ -649,12 +1153,35 @@ function renderDetail(d) {
   html += `<span>Updated: ${escapeHtml(d.updated_at)}</span>`;
   if (d.source_directory) html += `<span>Source: <code style="font-size:12px">${escapeHtml(d.source_directory)}</code></span>`;
   html += '</div>';
-  if (d.package_object_key) {
+
+  const downloads = [];
+  if (d.source_download_url) {
+    downloads.push({
+      label: 'Download Resource',
+      url: d.source_download_url,
+      key: d.source_object_key,
+      kind: 'resource',
+    });
+  }
+  if (d.package_download_url) {
+    downloads.push({
+      label: 'Download Package',
+      url: d.package_download_url,
+      key: d.package_object_key,
+      kind: 'package',
+    });
+  }
+  if (downloads.length) {
     html += '<div class="actions">';
-    if (d.package_download_url) {
-      html += `<a class="download-button" href="${escapeAttr(d.package_download_url)}" target="_blank" rel="noopener">Download ZIP</a>`;
+    for (const item of downloads) {
+      const buttonClass = item.kind === 'package' ? 'download-button package-download' : 'download-button';
+      html += '<div class="download-action">';
+      html += `<a class="${buttonClass}" href="${escapeAttr(item.url)}" target="_blank" rel="noopener">${escapeHtml(item.label)}</a>`;
+      if (item.key) {
+        html += `<span class="download-meta" title="${escapeAttr(item.key)}">${escapeHtml(shortObjectKey(item.key))}</span>`;
+      }
+      html += '</div>';
     }
-    html += `<span class="download-meta">${escapeHtml(d.package_object_key)}</span>`;
     html += '</div>';
   }
   html += '</div>';
@@ -664,13 +1191,14 @@ function renderDetail(d) {
     html += '<div class="preview-grid">';
     for (let i = 0; i < d.previews.length; i++) {
       const p = d.previews[i];
+      const previewMeta = `Role: ${p.role || '-'} | Strategy: ${p.strategy || '-'}${p.format ? ' | ' + p.format : ''}${p.width ? ' | ' + p.width + 'x' + p.height : ''}`;
       html += '<div class="preview-card">';
       if (p.preview_url) {
-        html += `<img src="${escapeAttr(p.preview_url)}" alt="preview" loading="lazy" onerror="this.parentElement.innerHTML='<div style=\\'padding:20px;color:var(--text2);font-size:12px\\'>No preview available</div>'">`;
+        html += `<button class="preview-zoom-trigger" type="button" data-preview-src="${escapeAttr(p.preview_url)}" data-preview-caption="${escapeAttr(previewMeta)}"><img src="${escapeAttr(p.preview_url)}" alt="preview" loading="lazy" onerror="this.parentElement.outerHTML='<div style=\\'padding:20px;color:var(--text2);font-size:12px\\'>No preview available</div>'"></button>`;
       } else {
         html += '<div style="padding:20px;color:var(--text2);font-size:12px">No preview available</div>';
       }
-      html += `<div class="label">Role: ${escapeHtml(p.role)} | Strategy: ${escapeHtml(p.strategy)}${p.format ? ' | ' + escapeHtml(p.format) : ''}${p.width ? ' | ' + escapeHtml(p.width) + 'x' + escapeHtml(p.height) : ''}</div>`;
+      html += `<div class="label">${escapeHtml(previewMeta)}</div>`;
       html += '</div>';
     }
     html += '</div>';
@@ -734,6 +1262,7 @@ function renderDetail(d) {
   }
   html += '</div>';
   panel.innerHTML = html;
+  bindPreviewZoom(panel);
 }
 
 function syncBrowseUrl(push) {
@@ -741,6 +1270,13 @@ function syncBrowseUrl(push) {
   if (state.query) params.set('q', state.query);
   if (state.resourceType) params.set('resource_type', state.resourceType);
   if (state.processState) params.set('state', state.processState);
+  if (state.query) {
+    if (state.topK !== 36) params.set('top_k', String(state.topK));
+    if (state.similarityThreshold !== 0.5) params.set('threshold', String(state.similarityThreshold));
+    if (state.bm25Weight !== 0.5) params.set('bm25_weight', String(state.bm25Weight));
+    if (state.enableReranker) params.set('reranker', state.enableReranker);
+    if (state.formatFilter) params.set('format_filter', state.formatFilter);
+  }
   const url = `${location.pathname}${params.toString() ? '?' + params.toString() : ''}`;
   history[push ? 'pushState' : 'replaceState']({ view: 'grid' }, '', url);
 }
@@ -756,20 +1292,40 @@ function applyFiltersFromUrl() {
   state.query = params.get('q') || '';
   state.resourceType = params.get('resource_type') || '';
   state.processState = params.get('state') || '';
+  state.topK = parseNumber(params.get('top_k'), 36, 1, 120);
+  state.similarityThreshold = parseNumber(params.get('threshold'), 0.5, 0, 1);
+  state.bm25Weight = parseNumber(params.get('bm25_weight'), 0.5, 0, 1);
+  state.enableReranker = params.get('reranker') || '';
+  state.formatFilter = params.get('format_filter') || '';
   document.getElementById('searchInput').value = state.query;
   document.getElementById('typeFilter').value = state.resourceType;
   document.getElementById('stateFilter').value = state.processState;
+  document.getElementById('topKInput').value = String(state.topK);
+  document.getElementById('thresholdInput').value = String(state.similarityThreshold);
+  document.getElementById('bm25WeightInput').value = String(state.bm25Weight);
+  document.getElementById('rerankerSelect').value = state.enableReranker;
+  document.getElementById('formatFilterInput').value = state.formatFilter;
   return params.get('resource_id') || '';
 }
 
 function runSearch() {
   state.query = document.getElementById('searchInput').value.trim();
+  state.topK = parseNumber(document.getElementById('topKInput').value, 36, 1, 120);
+  state.similarityThreshold = parseNumber(document.getElementById('thresholdInput').value, 0.5, 0, 1);
+  state.bm25Weight = parseNumber(document.getElementById('bm25WeightInput').value, 0.5, 0, 1);
+  state.enableReranker = document.getElementById('rerankerSelect').value;
+  state.formatFilter = document.getElementById('formatFilterInput').value.trim();
+  document.getElementById('advancedSearch').open = false;
   loadResources({ reset: true });
 }
 
 document.getElementById('searchButton').addEventListener('click', runSearch);
 document.getElementById('searchInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') runSearch();
+});
+document.addEventListener('click', e => {
+  const advanced = document.getElementById('advancedSearch');
+  if (advanced.open && !advanced.contains(e.target)) advanced.open = false;
 });
 document.getElementById('typeFilter').addEventListener('change', e => {
   state.resourceType = e.target.value;
@@ -779,9 +1335,94 @@ document.getElementById('stateFilter').addEventListener('change', e => {
   state.processState = e.target.value;
   loadResources({ reset: true });
 });
+for (const id of ['topKInput', 'thresholdInput', 'bm25WeightInput', 'rerankerSelect', 'formatFilterInput']) {
+  const node = document.getElementById(id);
+  node.addEventListener('keydown', e => {
+    if (e.key === 'Enter') runSearch();
+  });
+}
 document.getElementById('loadMoreButton').addEventListener('click', () => loadResources());
 document.getElementById('backButton').addEventListener('click', () => showGrid(true));
+lightbox.root = document.getElementById('previewLightbox');
+lightbox.viewport = document.getElementById('previewLightboxViewport');
+lightbox.image = document.getElementById('previewLightboxImage');
+lightbox.caption = document.getElementById('previewLightboxCaption');
+lightbox.zoomLevel = document.getElementById('previewZoomLevel');
+lightbox.zoomIn = document.getElementById('previewZoomIn');
+lightbox.zoomOut = document.getElementById('previewZoomOut');
+lightbox.zoomReset = document.getElementById('previewZoomReset');
+document.getElementById('previewLightboxClose').addEventListener('click', closePreviewLightbox);
+lightbox.root.addEventListener('click', e => {
+  if (e.target === lightbox.root) closePreviewLightbox();
+});
+lightbox.image.addEventListener('load', () => {
+  lightbox.naturalWidth = lightbox.image.naturalWidth || 1;
+  lightbox.naturalHeight = lightbox.image.naturalHeight || 1;
+  fitPreviewZoom();
+});
+lightbox.zoomIn.addEventListener('click', () => applyPreviewZoom(lightbox.zoom + PREVIEW_ZOOM_STEP));
+lightbox.zoomOut.addEventListener('click', () => applyPreviewZoom(lightbox.zoom - PREVIEW_ZOOM_STEP));
+lightbox.zoomReset.addEventListener('click', fitPreviewZoom);
+lightbox.viewport.addEventListener('wheel', e => {
+  if (!lightbox.root || lightbox.root.classList.contains('hidden')) return;
+  e.preventDefault();
+  const rect = lightbox.viewport.getBoundingClientRect();
+  const anchor = {
+    x: e.clientX - rect.left,
+    y: e.clientY - rect.top,
+  };
+  const direction = e.deltaY < 0 ? 1 : -1;
+  applyPreviewZoom(lightbox.zoom + direction * PREVIEW_ZOOM_STEP, anchor);
+}, { passive: false });
+lightbox.viewport.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  const canDrag = lightbox.viewport.scrollWidth > lightbox.viewport.clientWidth
+    || lightbox.viewport.scrollHeight > lightbox.viewport.clientHeight;
+  if (!canDrag) return;
+  lightbox.isDragging = true;
+  lightbox.dragStartX = e.clientX;
+  lightbox.dragStartY = e.clientY;
+  lightbox.scrollStartLeft = lightbox.viewport.scrollLeft;
+  lightbox.scrollStartTop = lightbox.viewport.scrollTop;
+  lightbox.viewport.classList.add('is-dragging');
+  lightbox.viewport.setPointerCapture(e.pointerId);
+  e.preventDefault();
+});
+lightbox.viewport.addEventListener('pointermove', e => {
+  if (!lightbox.isDragging) return;
+  lightbox.viewport.scrollLeft = lightbox.scrollStartLeft - (e.clientX - lightbox.dragStartX);
+  lightbox.viewport.scrollTop = lightbox.scrollStartTop - (e.clientY - lightbox.dragStartY);
+});
+function stopPreviewDrag(e) {
+  if (!lightbox.isDragging) return;
+  lightbox.isDragging = false;
+  lightbox.viewport.classList.remove('is-dragging');
+  if (e && lightbox.viewport.hasPointerCapture(e.pointerId)) {
+    lightbox.viewport.releasePointerCapture(e.pointerId);
+  }
+}
+lightbox.viewport.addEventListener('pointerup', stopPreviewDrag);
+lightbox.viewport.addEventListener('pointercancel', stopPreviewDrag);
+window.addEventListener('resize', updatePreviewDragState);
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && lightbox.root && !lightbox.root.classList.contains('hidden')) {
+    closePreviewLightbox();
+    return;
+  }
+  if (!lightbox.root || lightbox.root.classList.contains('hidden')) return;
+  if (e.key === '+' || e.key === '=') {
+    e.preventDefault();
+    applyPreviewZoom(lightbox.zoom + PREVIEW_ZOOM_STEP);
+  } else if (e.key === '-') {
+    e.preventDefault();
+    applyPreviewZoom(lightbox.zoom - PREVIEW_ZOOM_STEP);
+  } else if (e.key === '0') {
+    e.preventDefault();
+    fitPreviewZoom();
+  }
+});
 window.addEventListener('popstate', async () => {
+  closePreviewLightbox();
   const id = applyFiltersFromUrl();
   await loadResources({ reset: true, sync: false });
   if (id) selectResource(id, false);

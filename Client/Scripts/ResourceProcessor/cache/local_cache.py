@@ -20,7 +20,7 @@ from ResourceProcessor.preview_metadata import (
 from resource_contracts.resource_types import PACK_RESOURCE_TYPE
 
 
-RESOURCE_FINGERPRINT_VERSION = "client-resource-fingerprint-v1"
+RESOURCE_FINGERPRINT_VERSION = "client-resource-fingerprint-v2"
 CONTENT_HASH_ALGORITHM = "sha256"
 
 
@@ -127,6 +127,43 @@ def _latest_active_preview_rows(conn: sqlite3.Connection, task_id: int) -> list[
     ]
 
 
+def _stable_manifest_dict(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): value[key]
+        for key in sorted(value)
+        if key not in {"etag"} and value[key] is not None
+    }
+
+
+def _stable_manifest_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [_stable_manifest_dict(item) for item in value if isinstance(item, dict)]
+
+
+def _object_manifest_fingerprint_parts(conn: sqlite3.Connection, task_id: int) -> dict[str, Any]:
+    row = _fetchone_dict(
+        conn,
+        """SELECT manifest_json, upload_state
+           FROM resource_object_manifest
+           WHERE task_id = ?""",
+        (task_id,),
+    )
+    if not row or row.get("upload_state") != "uploaded":
+        return {}
+    manifest = _json_loads_value(row.get("manifest_json"), {})
+    if not isinstance(manifest, dict):
+        return {}
+    return {
+        "source_object": _stable_manifest_dict(manifest.get("source_object")),
+        "source_files": _stable_manifest_list(manifest.get("source_files")),
+        "previews": _stable_manifest_list(manifest.get("previews")),
+        "package_object": _stable_manifest_dict(manifest.get("package_object")),
+    }
+
+
 def _resource_fingerprint_parts(conn: sqlite3.Connection, task_id: int) -> dict[str, Any]:
     task = _fetchone_dict(conn, "SELECT * FROM resource_task WHERE id = ?", (task_id,))
     if not task:
@@ -215,6 +252,7 @@ def _resource_fingerprint_parts(conn: sqlite3.Connection, task_id: int) -> dict[
             }
             for row in previews
         ],
+        "uploaded_objects": _object_manifest_fingerprint_parts(conn, task_id),
         "description": desc_parts,
     }
 
@@ -428,6 +466,10 @@ class LocalCacheStore:
         cur.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_object_manifest_task
             ON resource_object_manifest(task_id)
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_resource_object_manifest_submit
+            ON resource_object_manifest(upload_state, submit_state, id)
         """)
 
         cur.execute("""
@@ -1052,43 +1094,59 @@ class LocalCacheStore:
         now = self._now()
         manifest_json = json.dumps(manifest, ensure_ascii=False)
         upload_options_json = json.dumps(upload_options or {}, ensure_ascii=False, sort_keys=True)
-        self._write(
-            """INSERT INTO resource_object_manifest
-               (task_id, manifest_json, upload_state, submit_state,
-                resource_fingerprint, object_fingerprint, committed_fingerprint,
-                upload_options_json,
-                processing_job_id, processing_result_json, error_message,
-                created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, '', ?, '', '{}', '', ?, ?)
-               ON CONFLICT(task_id) DO UPDATE SET
-                   manifest_json = excluded.manifest_json,
-                   upload_state = excluded.upload_state,
-                   submit_state = excluded.submit_state,
-                   resource_fingerprint = excluded.resource_fingerprint,
-                   object_fingerprint = excluded.object_fingerprint,
-                   upload_options_json = excluded.upload_options_json,
-                   processing_job_id = '',
-                   processing_result_json = '{}',
-                   error_message = '',
-                   updated_at = excluded.updated_at""",
-            (
-                task_id,
-                manifest_json,
-                upload_state,
-                submit_state,
-                resource_fingerprint,
-                object_fingerprint,
-                upload_options_json,
-                now,
-                now,
-            ),
-        )
-        self._write(
-            """UPDATE resource_task
-               SET last_error_code = '', last_error_message = '', updated_at = ?
-               WHERE id = ? AND last_error_code = 'object_storage_upload_error'""",
-            (now, task_id),
-        )
+        conn = sqlite3.connect(self.db_path, timeout=300)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=300000")
+        try:
+            conn.execute(
+                """INSERT INTO resource_object_manifest
+                   (task_id, manifest_json, upload_state, submit_state,
+                    resource_fingerprint, object_fingerprint, committed_fingerprint,
+                    upload_options_json,
+                    processing_job_id, processing_result_json, error_message,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, '', ?, '', '{}', '', ?, ?)
+                   ON CONFLICT(task_id) DO UPDATE SET
+                       manifest_json = excluded.manifest_json,
+                       upload_state = excluded.upload_state,
+                       submit_state = excluded.submit_state,
+                       resource_fingerprint = excluded.resource_fingerprint,
+                       object_fingerprint = excluded.object_fingerprint,
+                       upload_options_json = excluded.upload_options_json,
+                       processing_job_id = '',
+                       processing_result_json = '{}',
+                       error_message = '',
+                       updated_at = excluded.updated_at""",
+                (
+                    task_id,
+                    manifest_json,
+                    upload_state,
+                    submit_state,
+                    resource_fingerprint,
+                    object_fingerprint,
+                    upload_options_json,
+                    now,
+                    now,
+                ),
+            )
+            refreshed_fingerprint = refresh_resource_fingerprint_for_connection(conn, task_id, now=now)
+            conn.execute(
+                """UPDATE resource_object_manifest
+                   SET resource_fingerprint = ?,
+                       updated_at = ?
+                   WHERE task_id = ?""",
+                (refreshed_fingerprint, now, task_id),
+            )
+            conn.execute(
+                """UPDATE resource_task
+                   SET last_error_code = '', last_error_message = '', updated_at = ?
+                   WHERE id = ? AND last_error_code = 'object_storage_upload_error'""",
+                (now, task_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def get_object_manifest(self, task_id: int) -> Optional[dict]:
         row = self._conn.execute(
@@ -1105,10 +1163,13 @@ class LocalCacheStore:
 
     def delete_object_manifest(self, task_id: int) -> int:
         conn = sqlite3.connect(self.db_path, timeout=300)
+        conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=300000")
         try:
             cur = conn.execute("DELETE FROM resource_object_manifest WHERE task_id = ?", (task_id,))
+            if cur.rowcount:
+                refresh_resource_fingerprint_for_connection(conn, task_id, now=self._now())
             conn.commit()
             return int(cur.rowcount or 0)
         finally:
@@ -1149,8 +1210,256 @@ class LocalCacheStore:
             data["upload_options"] = self._json_loads(data.get("upload_options_json"), {})
             yield data
 
-    def mark_object_manifest_submitted(self, task_id: int, result: dict) -> None:
+    def iter_inflight_object_manifests(
+        self,
+        *,
+        resource_types: Iterable[str] | None = None,
+        source: str = "",
+        limit: int | None = None,
+    ):
+        sql = """
+            SELECT rom.task_id, rom.submit_state, rom.resource_fingerprint,
+                   rom.processing_job_id, rom.processing_result_json,
+                   rt.resource_type, rt.source
+            FROM resource_object_manifest rom
+            JOIN resource_task rt ON rt.id = rom.task_id
+            WHERE rom.upload_state = 'uploaded'
+              AND rom.submit_state IN ('queued', 'submitting')
+        """
+        params: list[Any] = []
+        resource_type_values = []
+        if isinstance(resource_types, str):
+            resource_type_values.append(resource_types)
+        else:
+            resource_type_values.extend(resource_types or [])
+        resource_type_values = list(dict.fromkeys(
+            str(value).strip() for value in resource_type_values if str(value or "").strip()
+        ))
+        if len(resource_type_values) == 1:
+            sql += " AND rt.resource_type = ?"
+            params.append(resource_type_values[0])
+        elif resource_type_values:
+            placeholders = ",".join("?" for _ in resource_type_values)
+            sql += f" AND rt.resource_type IN ({placeholders})"
+            params.extend(resource_type_values)
+        if source:
+            sql += " AND rt.source = ?"
+            params.append(source)
+        sql += " ORDER BY rom.updated_at, rom.id"
+        if limit:
+            sql += " LIMIT ?"
+            params.append(limit)
+        for row in self._conn.execute(sql, params):
+            data = dict(row)
+            data["processing_result"] = self._json_loads(data.get("processing_result_json"), {})
+            yield data
+
+    def count_inflight_object_manifests(
+        self,
+        *,
+        resource_types: Iterable[str] | None = None,
+        source: str = "",
+    ) -> int:
+        sql = """
+            SELECT COUNT(*)
+            FROM resource_object_manifest rom
+            JOIN resource_task rt ON rt.id = rom.task_id
+            WHERE rom.upload_state = 'uploaded'
+              AND rom.submit_state IN ('queued', 'submitting')
+        """
+        params: list[Any] = []
+        values = list(dict.fromkeys(
+            str(value).strip() for value in (resource_types or []) if str(value or "").strip()
+        )) if not isinstance(resource_types, str) else [resource_types]
+        if len(values) == 1:
+            sql += " AND rt.resource_type = ?"
+            params.append(values[0])
+        elif values:
+            placeholders = ",".join("?" for _ in values)
+            sql += f" AND rt.resource_type IN ({placeholders})"
+            params.extend(values)
+        if source:
+            sql += " AND rt.source = ?"
+            params.append(source)
+        return int(self._conn.execute(sql, params).fetchone()[0])
+
+    def apply_processing_job_statuses(
+        self,
+        *,
+        completed: Iterable[dict] = (),
+        active: Iterable[dict] = (),
+        failed: Iterable[dict] = (),
+    ) -> dict[str, int]:
+        """Apply one status-query batch in a single local transaction."""
+        counts = {"completed": 0, "active": 0, "failed": 0}
+        now = self._now()
+        conn = sqlite3.connect(self.db_path, timeout=300)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=300000")
+        try:
+            for item in completed:
+                task_id = int(item["task_id"])
+                job_id = str(item.get("job_id") or "")
+                resource_fingerprint = str(item.get("resource_fingerprint") or "")
+                result_json = json.dumps(item.get("result") or {}, ensure_ascii=False)
+                cursor = conn.execute(
+                    """UPDATE resource_object_manifest
+                       SET submit_state = 'submitted',
+                           processing_result_json = ?,
+                           committed_fingerprint = ?,
+                           error_message = '',
+                           updated_at = ?
+                       WHERE task_id = ? AND processing_job_id = ?""",
+                    (result_json, resource_fingerprint, now, task_id, job_id),
+                )
+                if cursor.rowcount:
+                    conn.execute(
+                        """UPDATE resource_task
+                           SET process_state = ?, last_error_code = '', last_error_message = '', updated_at = ?
+                           WHERE id = ?""",
+                        (ProcessState.COMMITTED.value, now, task_id),
+                    )
+                    counts["completed"] += 1
+            for item in active:
+                cursor = conn.execute(
+                    """UPDATE resource_object_manifest
+                       SET submit_state = 'queued', processing_result_json = ?,
+                           error_message = '', updated_at = ?
+                       WHERE task_id = ? AND processing_job_id = ?
+                         AND submit_state IN ('queued', 'submitting')""",
+                    (
+                        json.dumps(item.get("result") or {}, ensure_ascii=False),
+                        now,
+                        int(item["task_id"]),
+                        str(item.get("job_id") or ""),
+                    ),
+                )
+                counts["active"] += int(cursor.rowcount or 0)
+            for item in failed:
+                job_id = str(item.get("job_id") or "")
+                if job_id:
+                    cursor = conn.execute(
+                        """UPDATE resource_object_manifest
+                           SET submit_state = 'submit_failed', error_message = ?, updated_at = ?
+                           WHERE task_id = ? AND processing_job_id = ?""",
+                        (str(item.get("error") or "processing job failed")[:1000], now, int(item["task_id"]), job_id),
+                    )
+                else:
+                    cursor = conn.execute(
+                        """UPDATE resource_object_manifest
+                           SET submit_state = 'submit_failed', error_message = ?, updated_at = ?
+                           WHERE task_id = ? AND submit_state = 'submitting'
+                             AND processing_job_id = ''""",
+                        (str(item.get("error") or "processing job id was not recorded")[:1000], now, int(item["task_id"])),
+                    )
+                counts["failed"] += int(cursor.rowcount or 0)
+            conn.commit()
+        finally:
+            conn.close()
+        return counts
+
+    def iter_submit_candidate_task_ids(
+        self,
+        *,
+        limit: int | None = None,
+        resource_types: Iterable[str] | None = None,
+        source: str = "",
+        include_submitting: bool = True,
+        force: bool = False,
+    ):
+        sql = """
+            SELECT rom.task_id
+            FROM resource_object_manifest rom
+            JOIN resource_task rt ON rt.id = rom.task_id
+            WHERE rom.upload_state = 'uploaded'
+              AND rt.resource_type <> ?
+              AND rt.process_state IN (?, ?, ?, ?, ?, ?, ?)
+        """
+        params: list[Any] = [
+            PACK_RESOURCE_TYPE,
+            ProcessState.DESCRIPTION_READY.value,
+            ProcessState.CLASSIFY_READY.value,
+            ProcessState.PACKAGE_READY.value,
+            ProcessState.REGISTERED.value,
+            ProcessState.UPLOADED.value,
+            ProcessState.COMMITTED.value,
+            ProcessState.SYNCED.value,
+        ]
+        if not force:
+            states = ["pending", "submit_failed"]
+            if include_submitting:
+                states.append("submitting")
+            placeholders = ",".join("?" for _ in states)
+            sql += f" AND rom.submit_state IN ({placeholders})"
+            params.extend(states)
+        else:
+            # A resumed force run must not create a second job while the first
+            # force submission is still active.
+            sql += " AND rom.submit_state NOT IN ('queued', 'submitting')"
+        resource_type_values = []
+        if isinstance(resource_types, str):
+            resource_type_values.append(resource_types)
+        else:
+            resource_type_values.extend(resource_types or [])
+        resource_type_values = list(dict.fromkeys(str(value).strip() for value in resource_type_values if str(value or "").strip()))
+        if len(resource_type_values) == 1:
+            sql += " AND rt.resource_type = ?"
+            params.append(resource_type_values[0])
+        elif resource_type_values:
+            placeholders = ",".join("?" for _ in resource_type_values)
+            sql += f" AND rt.resource_type IN ({placeholders})"
+            params.extend(resource_type_values)
+        if source:
+            sql += " AND rt.source = ?"
+            params.append(source)
+        sql += " ORDER BY rom.id"
+        if limit:
+            sql += " LIMIT ?"
+            params.append(limit)
+        for row in self._conn.execute(sql, params).fetchall():
+            yield row["task_id"]
+
+    def mark_object_manifest_submitted(
+        self,
+        task_id: int,
+        result: dict,
+        *,
+        resource_fingerprint: str = "",
+    ) -> None:
         job_id = str(result.get("job_id") or "")
+        now = self._now()
+        self._write(
+            """UPDATE resource_task
+               SET process_state = ?,
+                   last_error_code = '',
+                   last_error_message = '',
+                   updated_at = ?
+               WHERE id = ?""",
+            (ProcessState.COMMITTED.value, now, task_id),
+        )
+        if resource_fingerprint:
+            self._write(
+                """UPDATE resource_object_manifest
+                   SET submit_state = 'submitted',
+                       resource_fingerprint = CASE WHEN ? != '' THEN ? ELSE resource_fingerprint END,
+                       processing_job_id = ?,
+                       processing_result_json = ?,
+                       committed_fingerprint = ?,
+                       error_message = '',
+                       updated_at = ?
+                   WHERE task_id = ?""",
+                (
+                    resource_fingerprint,
+                    resource_fingerprint,
+                    job_id,
+                    json.dumps(result, ensure_ascii=False),
+                    resource_fingerprint,
+                    now,
+                    task_id,
+                ),
+            )
+            return
         self._write(
             """UPDATE resource_object_manifest
                SET submit_state = 'submitted',
@@ -1160,11 +1469,35 @@ class LocalCacheStore:
                    error_message = '',
                    updated_at = ?
                WHERE task_id = ?""",
-            (job_id, json.dumps(result, ensure_ascii=False), self._now(), task_id),
+            (
+                job_id,
+                json.dumps(result, ensure_ascii=False),
+                now,
+                task_id,
+            ),
         )
 
-    def mark_object_manifest_queued(self, task_id: int, result: dict) -> None:
+    def mark_object_manifest_queued(
+        self,
+        task_id: int,
+        result: dict,
+        *,
+        resource_fingerprint: str = "",
+    ) -> None:
         job_id = str(result.get("job_id") or "")
+        if resource_fingerprint:
+            self._write(
+                """UPDATE resource_object_manifest
+                   SET submit_state = 'queued',
+                       resource_fingerprint = ?,
+                       processing_job_id = ?,
+                       processing_result_json = ?,
+                       error_message = '',
+                       updated_at = ?
+                   WHERE task_id = ?""",
+                (resource_fingerprint, job_id, json.dumps(result, ensure_ascii=False), self._now(), task_id),
+            )
+            return
         self._write(
             """UPDATE resource_object_manifest
                SET submit_state = 'queued',
@@ -1174,6 +1507,194 @@ class LocalCacheStore:
                    updated_at = ?
                WHERE task_id = ?""",
             (job_id, json.dumps(result, ensure_ascii=False), self._now(), task_id),
+        )
+
+    def claim_object_manifest_for_submit(
+        self,
+        task_id: int,
+        *,
+        resource_fingerprint: str,
+        force: bool = False,
+        stale_after_seconds: int = 1800,
+        pre_submit_stale_after_seconds: int = 120,
+    ) -> bool:
+        """Atomically mark an uploaded manifest as being submitted by this client."""
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        now = now_dt.isoformat(timespec="seconds").replace("+00:00", "Z")
+        stale_before = (now_dt - datetime.timedelta(seconds=stale_after_seconds)).isoformat(timespec="seconds").replace("+00:00", "Z")
+        pre_submit_stale_before = (
+            now_dt - datetime.timedelta(seconds=pre_submit_stale_after_seconds)
+        ).isoformat(timespec="seconds").replace("+00:00", "Z")
+        conn = sqlite3.connect(self.db_path, timeout=300)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=300000")
+        try:
+            cur = conn.execute(
+                """UPDATE resource_object_manifest
+                   SET submit_state = 'submitting',
+                       resource_fingerprint = CASE WHEN ? != '' THEN ? ELSE resource_fingerprint END,
+                       processing_job_id = '',
+                       processing_result_json = '{}',
+                       error_message = '',
+                       updated_at = ?
+                   WHERE task_id = ?
+                     AND upload_state = 'uploaded'
+                     AND (
+                        submit_state != 'submitting'
+                        OR updated_at < ?
+                        OR (processing_job_id = '' AND updated_at < ?)
+                     )
+                     AND (? OR committed_fingerprint != ?)""",
+                (
+                    resource_fingerprint,
+                    resource_fingerprint,
+                    now,
+                    task_id,
+                    stale_before,
+                    pre_submit_stale_before,
+                    1 if force else 0,
+                    resource_fingerprint,
+                ),
+            )
+            conn.commit()
+            return bool(cur.rowcount)
+        finally:
+            conn.close()
+
+    def claim_object_manifest_for_async_submit(
+        self,
+        task_id: int,
+        *,
+        resource_fingerprint: str,
+        request_id: str,
+        force: bool = False,
+        stale_after_seconds: int = 1800,
+        pre_submit_stale_after_seconds: int = 120,
+    ) -> bool:
+        """Persist the idempotency key while atomically claiming one task."""
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        now = now_dt.isoformat(timespec="seconds").replace("+00:00", "Z")
+        stale_before = (now_dt - datetime.timedelta(seconds=stale_after_seconds)).isoformat(timespec="seconds").replace("+00:00", "Z")
+        pre_submit_stale_before = (now_dt - datetime.timedelta(seconds=pre_submit_stale_after_seconds)).isoformat(timespec="seconds").replace("+00:00", "Z")
+        conn = sqlite3.connect(self.db_path, timeout=300)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=300000")
+        try:
+            cursor = conn.execute(
+                """UPDATE resource_object_manifest
+                   SET submit_state = 'submitting',
+                       resource_fingerprint = ?,
+                       processing_job_id = '',
+                       processing_result_json = ?,
+                       error_message = '',
+                       updated_at = ?
+                   WHERE task_id = ?
+                     AND upload_state = 'uploaded'
+                     AND (
+                        submit_state != 'submitting'
+                        OR updated_at < ?
+                        OR (processing_job_id = '' AND updated_at < ?)
+                     )
+                     AND (? OR committed_fingerprint != ?)""",
+                (
+                    resource_fingerprint,
+                    json.dumps({"request_id": request_id}, ensure_ascii=False),
+                    now,
+                    task_id,
+                    stale_before,
+                    pre_submit_stale_before,
+                    1 if force else 0,
+                    resource_fingerprint,
+                ),
+            )
+            conn.commit()
+            return bool(cursor.rowcount)
+        finally:
+            conn.close()
+
+    def mark_object_manifest_async_queued(
+        self,
+        task_id: int,
+        result: dict,
+        *,
+        resource_fingerprint: str,
+    ) -> None:
+        """Record accepted job and audit log in one local transaction."""
+        now = self._now()
+        job_id = str(result.get("job_id") or "")
+        result_json = json.dumps(result, ensure_ascii=False)
+        conn = sqlite3.connect(self.db_path, timeout=300)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=300000")
+        try:
+            conn.execute(
+                """UPDATE resource_object_manifest
+                   SET submit_state = 'queued',
+                       resource_fingerprint = ?,
+                       processing_job_id = ?,
+                       processing_result_json = ?,
+                       error_message = '',
+                       updated_at = ?
+                   WHERE task_id = ?""",
+                (resource_fingerprint, job_id, result_json, now, task_id),
+            )
+            conn.execute(
+                "INSERT INTO process_log (task_id, event, detail, created_at) VALUES (?, ?, ?, ?)",
+                (task_id, "processing_job_submitted", result_json, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def mark_object_manifest_submitting_request(
+        self,
+        task_id: int,
+        *,
+        request_id: str,
+        resource_fingerprint: str,
+    ) -> None:
+        self._write(
+            """UPDATE resource_object_manifest
+               SET submit_state = 'submitting',
+                   resource_fingerprint = ?,
+                   processing_job_id = '',
+                   processing_result_json = ?,
+                   error_message = '',
+                   updated_at = ?
+               WHERE task_id = ?""",
+            (
+                resource_fingerprint,
+                json.dumps({"request_id": request_id}, ensure_ascii=False),
+                self._now(),
+                task_id,
+            ),
+        )
+
+    def mark_object_manifest_submitting_job(
+        self,
+        task_id: int,
+        result: dict,
+        *,
+        resource_fingerprint: str = "",
+    ) -> None:
+        job_id = str(result.get("job_id") or "")
+        self._write(
+            """UPDATE resource_object_manifest
+               SET submit_state = 'submitting',
+                   resource_fingerprint = CASE WHEN ? != '' THEN ? ELSE resource_fingerprint END,
+                   processing_job_id = ?,
+                   processing_result_json = ?,
+                   error_message = '',
+                   updated_at = ?
+               WHERE task_id = ?""",
+            (
+                resource_fingerprint,
+                resource_fingerprint,
+                job_id,
+                json.dumps(result, ensure_ascii=False),
+                self._now(),
+                task_id,
+            ),
         )
 
     def mark_object_manifest_submit_failed(self, task_id: int, error_message: str) -> None:

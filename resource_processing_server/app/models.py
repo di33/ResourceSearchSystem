@@ -21,8 +21,6 @@ class ObjectRef(BaseModel):
     file_format: str = ""
     size: int = 0
     checksum: str = ""
-    etag: str = ""
-    is_primary: bool = False
 
     @field_validator("object_key")
     @classmethod
@@ -31,6 +29,19 @@ class ObjectRef(BaseModel):
         if not value:
             raise ValueError("must not be blank")
         return value
+
+
+def _object_file_name(ref: ObjectRef) -> str:
+    if ref.file_name:
+        return ref.file_name
+    return ref.object_key.rstrip("/").rsplit("/", 1)[-1] or "source"
+
+
+def _object_file_format(ref: ObjectRef) -> str:
+    if ref.file_format:
+        return ref.file_format.lower().lstrip(".")
+    name = _object_file_name(ref)
+    return name.rsplit(".", 1)[-1].lower() if "." in name else ""
 
 
 class SourceFileRef(BaseModel):
@@ -50,6 +61,19 @@ class SourceFileRef(BaseModel):
         return value
 
 
+def _source_files_from_source_object(source_object: ObjectRef) -> list[SourceFileRef]:
+    return [
+        SourceFileRef(
+            file_name=_object_file_name(source_object),
+            file_format=_object_file_format(source_object),
+            file_size=int(source_object.size or 0),
+            checksum=source_object.checksum or "",
+            path_in_package="",
+            is_primary=True,
+        )
+    ]
+
+
 class PreviewRef(BaseModel):
     role: str = "primary"
     storage_profile_id: str = ""
@@ -58,7 +82,6 @@ class PreviewRef(BaseModel):
     height: int | None = None
     size: int | None = None
     checksum: str = ""
-    etag: str = ""
     strategy: str = "static"
     origin: str = "provided"
     renderer: str = "client"
@@ -72,82 +95,90 @@ class PreviewRef(BaseModel):
         return value
 
 
-class ProvidedDescription(BaseModel):
-    main_content: str = ""
-    detail_content: str = ""
+class Description(BaseModel):
+    summary: str = ""
+    detail: str = ""
     prompt_version: str = "client-provided"
     description_quality_score: float | None = None
+    source: str = "client"
+
+    @model_validator(mode="after")
+    def _has_description_text(self):
+        if not (self.summary or self.detail):
+            raise ValueError("description must contain text")
+        return self
+
+
+class Classification(BaseModel):
+    category: str = ""
+    tags: list[str] = Field(default_factory=list)
+    style: list[str] = Field(default_factory=list)
+    materials: list[str] = Field(default_factory=list)
+    use_cases: list[str] = Field(default_factory=list)
     usage_space: str = ""
     usage_category: str = ""
     usage_subcategories: list[str] = Field(default_factory=list)
     usage_classification_reason: str = ""
     usage_classification_suggestion: dict[str, Any] | None = None
     usage_classification_version: str = ""
-    source: str = "client"
+
+    def has_values(self) -> bool:
+        for value in self.model_dump().values():
+            if value not in ("", [], {}, None):
+                return True
+        return False
+
+
+class _ManifestFields(BaseModel):
+    client_resource_id: str
+    resource_type: str
+    source_object: ObjectRef
+    source_files: list[SourceFileRef] = Field(default_factory=list)
+    package_object: ObjectRef | None = None
+    previews: list[PreviewRef] = Field(default_factory=list)
+    description: Description | None = None
+    description_context: Any | None = None
+    client_metadata: dict[str, Any] = Field(default_factory=dict)
+    classification: Classification | None = None
 
     @model_validator(mode="after")
-    def _has_description_text(self):
-        if not (self.main_content or self.detail_content):
-            raise ValueError("provided_description must contain description text")
+    def _derive_source_files(self):
+        if not self.source_files:
+            self.source_files = _source_files_from_source_object(self.source_object)
         return self
+
+    @field_validator("client_resource_id")
+    @classmethod
+    def _client_resource_id_not_blank(cls, value: str) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+    @field_validator("resource_type")
+    @classmethod
+    def _normalize_resource_type(cls, value: str) -> str:
+        return _normalize_resource_type_value(value)
 
 
 class ProcessingOptions(BaseModel):
     """Deprecated compatibility field.
 
     Client-supplied policies are intentionally ignored by the processing
-    service. The server decides from provided_description/provided_previews.
+    service. The server decides from description/previews.
     """
 
     preview_policy: str = "use_provided_or_generate"
     description_policy: str = "generate"
 
 
-class ChildResourceManifest(BaseModel):
-    client_resource_id: str
-    resource_type: str
-    source_object: ObjectRef
-    source_files: list[SourceFileRef]
-    package_object: ObjectRef | None = None
-    provided_previews: list[PreviewRef] = Field(default_factory=list)
-    provided_description: ProvidedDescription | None = None
-    client_metadata: Any | None = None
+class ChildResourceManifest(_ManifestFields):
     options: ProcessingOptions = Field(default_factory=ProcessingOptions)
 
-    @model_validator(mode="after")
-    def _has_source_files(self):
-        if not self.source_files:
-            raise ValueError("source_files must not be empty")
-        return self
 
-    @field_validator("resource_type")
-    @classmethod
-    def _normalize_resource_type(cls, value: str) -> str:
-        return _normalize_resource_type_value(value)
-
-
-class ResourceManifest(BaseModel):
+class ResourceManifest(_ManifestFields):
     request_id: str = ""
-    client_resource_id: str
-    resource_type: str
-    source_object: ObjectRef
-    source_files: list[SourceFileRef]
-    package_object: ObjectRef | None = None
-    provided_previews: list[PreviewRef] = Field(default_factory=list)
-    provided_description: ProvidedDescription | None = None
-    client_metadata: Any | None = None
     options: ProcessingOptions = Field(default_factory=ProcessingOptions)
-
-    @model_validator(mode="after")
-    def _has_source_files(self):
-        if not self.source_files:
-            raise ValueError("source_files must not be empty")
-        return self
-
-    @field_validator("resource_type")
-    @classmethod
-    def _normalize_resource_type(cls, value: str) -> str:
-        return _normalize_resource_type_value(value)
 
 
 class ResourceBatchManifest(BaseModel):
@@ -218,7 +249,35 @@ class JobOut(BaseModel):
     error: str | None = None
 
 
+class JobStatusBatchIn(BaseModel):
+    job_ids: list[str]
+
+    @field_validator("job_ids")
+    @classmethod
+    def _valid_job_ids(cls, values: list[str]) -> list[str]:
+        normalized = list(dict.fromkeys(str(value or "").strip() for value in values if str(value or "").strip()))
+        if not normalized:
+            raise ValueError("job_ids must not be empty")
+        if len(normalized) > 1000:
+            raise ValueError("job_ids must contain at most 1000 items")
+        return normalized
+
+
+class JobStatusOut(BaseModel):
+    job_id: str
+    state: JobState
+    client_resource_id: str
+    search_resource_id: str = ""
+    error: str | None = None
+
+
+class JobStatusBatchOut(BaseModel):
+    jobs: list[JobStatusOut]
+    missing_job_ids: list[str] = Field(default_factory=list)
+
+
 class ReplaySnapshotOut(BaseModel):
+    client_id: str = ""
     client_resource_id: str
     state: str
     search_resource_id: str = ""

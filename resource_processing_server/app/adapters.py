@@ -6,7 +6,7 @@ from typing import Any
 
 from resource_processing_server.app.config import settings
 from resource_processing_server.app.legacy import ensure_resource_processor_imports
-from resource_processing_server.app.models import PreviewRef, ProvidedDescription, SourceFileRef
+from resource_processing_server.app.models import Description, PreviewRef, SourceFileRef
 from resource_processing_server.app.storage import local_file_md5
 from resource_contracts.resource_types import SPINE_SKELETON_RESOURCE_TYPE
 
@@ -25,10 +25,10 @@ def _file_format(ref: SourceFileRef, local_path: str = "") -> str:
     return suffix
 
 
-def _metadata_context(client_metadata: Any | None) -> str:
-    if client_metadata is None:
+def _description_context_json(description_context: Any | None) -> str:
+    if description_context is None:
         return "null"
-    return json.dumps(client_metadata, ensure_ascii=False, indent=2, sort_keys=True)
+    return json.dumps(description_context, ensure_ascii=False, indent=2, sort_keys=True)
 
 
 def build_processing_entity(
@@ -38,19 +38,20 @@ def build_processing_entity(
     resource_type: str,
     source_files: list[SourceFileRef],
     local_source_paths: list[Path],
-    client_metadata: Any | None,
+    description_context: Any | None,
 ):
     ensure_resource_processor_imports()
     from ResourceProcessor.preview_metadata import FileInfo, ResourceProcessingEntity
 
     files = []
-    for index, (ref, path) in enumerate(zip(source_files, local_source_paths)):
-        checksum = ref.checksum or local_file_md5(str(path))
+    for index, ref in enumerate(source_files):
+        path = local_source_paths[index] if index < len(local_source_paths) else None
+        checksum = ref.checksum or (local_file_md5(str(path)) if path is not None else "")
         files.append(FileInfo(
-            file_path=str(path),
+            file_path=str(path) if path is not None else "",
             file_name=_file_name(ref),
-            file_size=ref.file_size or path.stat().st_size,
-            file_format=_file_format(ref, str(path)),
+            file_size=ref.file_size or (path.stat().st_size if path is not None else 0),
+            file_format=_file_format(ref, str(path) if path is not None else ""),
             content_md5=checksum,
             file_role="main",
             is_primary=ref.is_primary or index == 0,
@@ -70,7 +71,7 @@ def build_processing_entity(
         auxiliary_metadata={
             "client_id": client_id,
             "client_resource_id": client_resource_id,
-            "client_metadata_json": _metadata_context(client_metadata),
+            "description_context_json": _description_context_json(description_context),
         },
     )
 
@@ -123,7 +124,7 @@ async def generate_description(
     *,
     entity,
     preview_paths: list[str],
-    client_metadata: Any | None,
+    description_context: Any | None,
 ):
     ensure_resource_processor_imports()
     from ResourceProcessor.description.description_generator import (
@@ -145,12 +146,11 @@ async def generate_description(
             }
             for file in entity.files
         ],
-        "client_metadata": client_metadata,
+        "description_context": description_context,
     }
     prompt_context = (
         "资源加工服务器收到的客户端资源清单上下文如下。"
-        "client_metadata 是客户端自定义 JSON，字段含义不由服务器解释，"
-        "请只把它作为描述资源的线索。\n"
+        "description_context 仅用于辅助生成资源描述，不会作为资源字段入库。\n"
         + json.dumps(context, ensure_ascii=False, indent=2, sort_keys=True)
     )
     input_data = DescriptionInput(
@@ -161,7 +161,7 @@ async def generate_description(
         resource_type=entity.resource_type,
         preview_strategy="provided" if preview_paths else "metadata",
         auxiliary_metadata={
-            "client_metadata_json": _metadata_context(client_metadata),
+            "description_context_json": _description_context_json(description_context),
             "source_file_count": len(entity.files),
         },
         asset_formats=formats,
@@ -188,18 +188,18 @@ async def generate_descriptions_batch(requests: list[dict[str, Any]]) -> list[An
         generate_description(
             entity=request["entity"],
             preview_paths=request["preview_paths"],
-            client_metadata=request["client_metadata"],
+            description_context=request["description_context"],
         )
         for request in requests
     ])
 
 
-def description_result_from_provided(provided: ProvidedDescription):
+def description_result_from_provided(provided: Description):
     ensure_resource_processor_imports()
     from ResourceProcessor.description.description_generator import DescriptionResult
 
-    main = provided.main_content.strip()
-    detail = provided.detail_content.strip()
+    main = provided.summary.strip()
+    detail = provided.detail.strip()
     full = "\n".join(part for part in (main, detail) if part)
     if not main:
         main = full[:120]
@@ -211,10 +211,10 @@ def description_result_from_provided(provided: ProvidedDescription):
         full_description=full,
         prompt_version=provided.prompt_version or "client-provided",
         description_quality_score=provided.description_quality_score,
-        usage_space=provided.usage_space,
-        usage_category=provided.usage_category,
-        usage_subcategories=provided.usage_subcategories,
-        usage_classification_reason=provided.usage_classification_reason,
-        usage_classification_suggestion=provided.usage_classification_suggestion,
-        usage_classification_version=provided.usage_classification_version or "",
+        usage_space="",
+        usage_category="",
+        usage_subcategories=[],
+        usage_classification_reason="",
+        usage_classification_suggestion=None,
+        usage_classification_version="",
     )

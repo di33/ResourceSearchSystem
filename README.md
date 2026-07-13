@@ -106,7 +106,10 @@ Windows：
 .\.venv\Scripts\python.exe .\manage_servers.py start --build # 构建后启动
 .\.venv\Scripts\python.exe .\manage_servers.py build         # 只构建镜像，也可用 compile
 .\.venv\Scripts\python.exe .\manage_servers.py stop          # 停止三台服务器，不删除数据卷
-.\.venv\Scripts\python.exe .\manage_servers.py status        # 查看 compose 状态
+.\.venv\Scripts\python.exe .\manage_servers.py clean         # 停止并清空三台服务器数据
+.\.venv\Scripts\python.exe .\manage_servers.py reset --build # 清空数据、构建并重新启动
+.\.venv\Scripts\python.exe .\manage_servers.py status        # 查看 compose 状态和健康检查
+.\.venv\Scripts\python.exe .\manage_servers.py health        # 只查看三台服务器健康摘要
 ```
 
 Linux：
@@ -116,7 +119,10 @@ python3 manage_servers.py start
 python3 manage_servers.py start --build
 python3 manage_servers.py build
 python3 manage_servers.py stop
+python3 manage_servers.py clean
+python3 manage_servers.py reset --build
 python3 manage_servers.py status
+python3 manage_servers.py health
 ```
 
 常用参数：
@@ -124,7 +130,11 @@ python3 manage_servers.py status
 - `--build`：启动或重启前先构建镜像；默认不构建，直接 `docker compose up -d --no-build`。
 - `--no-wait`：启动后不等待 `/health`。
 - `--timeout 600`：把每个服务的健康检查等待时间改为 600 秒。
-- `--volumes`：停止或重启时同时删除 compose 数据卷，会清空服务端持久化数据，谨慎使用。
+- `clean`：停止选中的服务器，执行 `docker compose down -v`，并清空 `data/preview_renderer`、`data/resource_processing_server` 等 bind mount 运行数据。
+- `reset`：等同于 `clean` 后再启动；可配合 `--build` 在表结构变更后重建镜像并重新建表。
+- `status`：输出每个 compose 项目的 `docker compose ps`，再汇总三个 `/health` 结果。
+- `health` / `check`：只输出三个服务器的 `/health` 汇总。
+- `--volumes`：停止或重启时同时删除 compose 数据卷；`clean` / `reset` 会默认启用这个行为。
 - `search` / `renderer` / `processor`：只操作指定服务组，例如 `python3 manage_servers.py restart renderer processor`。
 
 ### 1. 安装依赖
@@ -189,17 +199,19 @@ ResourceCrawler 来源使用拆分命令，不再使用旧的 `run_crawler_resou
 
 ```powershell
 cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts;G:\ResourceUpload\Tools"; .\.venv\Scripts\python.exe -m ResourceProcessor.tools.sync_pipeline_from_crawler_state --crawler-state-db "G:\ResourceCrawler\data\crawler_state.db" --crawler-output "K:\ResourceCrawler\output" --db-path "G:\ResourceUpload\data\databases\pipeline.db"
-cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts;G:\ResourceUpload\Tools"; .\.venv\Scripts\python.exe -m ResourceProcessor.upload_objects_to_storage --db-path "G:\ResourceUpload\data\databases\pipeline.db" --client-id "resource-crawler" --storage-profile-id "<profile-id>" --no-previews --missing-manifest-only --workers 8
+cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts;G:\ResourceUpload\Tools"; .\.venv\Scripts\python.exe -m ResourceProcessor.upload_objects_to_storage --db-path "G:\ResourceUpload\data\databases\pipeline.db" --client-id "resource-crawler" --missing-manifest-only --workers 8
 cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts;G:\ResourceUpload\Tools"; .\.venv\Scripts\python.exe -m ResourceProcessor.generate_previews --db-path "G:\ResourceUpload\data\databases\pipeline.db" --work-dir "G:\ResourceUpload\data" --resume --preview-mode renderer --preview-renderer "http://localhost:8200" --client-id "resource-crawler" --skip-missing-object-manifest
 cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts;G:\ResourceUpload\Tools"; .\.venv\Scripts\python.exe -m ResourceProcessor.generate_descriptions --db-path "G:\ResourceUpload\data\databases\pipeline.db" --resume
-cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts;G:\ResourceUpload\Tools"; .\.venv\Scripts\python.exe -m ResourceProcessor.upload_resources --db-path "G:\ResourceUpload\data\databases\pipeline.db" --client-id "resource-crawler" --storage-profile-id "<profile-id>" --processing-server "http://localhost:8100" --include-descriptions --manifest-out "G:\ResourceUpload\data\manifests\processing_manifest.jsonl" --workers 8
+cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts;G:\ResourceUpload\Tools"; .\.venv\Scripts\python.exe -m ResourceProcessor.upload_objects_to_storage --db-path "G:\ResourceUpload\data\databases\pipeline.db" --client-id "resource-crawler" --workers 8
+cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts;G:\ResourceUpload\Tools"; .\.venv\Scripts\python.exe -m ResourceProcessor.upload_resources --db-path "G:\ResourceUpload\data\databases\pipeline.db" --client-id "resource-crawler" --processing-server "http://localhost:8100" --manifest-out "G:\ResourceUpload\data\manifests\processing_manifest.jsonl"
 ```
 
 这条链路会执行：
 - 从 `crawler_state.db` 同步资源级记录到本地 `pipeline.db`。
 - 客户端先上传源对象到对象存储，并把 `storage_profile_id + object_key` manifest 保存到本地 DB。
 - `preview_renderer` 只接收调用方传入的对象读取 URL，返回预览数据；调用方负责保存和上传预览。
-- `upload_resources` 把资源 manifest、可选描述、可选预览、可选 `package_object` 提交给资源加工服务器。
+- 生成或刷新预览后再次运行 `upload_objects_to_storage`，补齐预览对象。
+- `upload_resources` 只读取已上传对象 manifest，按总指纹增量提交给资源加工服务器。
 - `pack` 只上传到对象存储并作为对应资源 manifest 的 `package_object`；不生成预览/描述，也不提交到加工服务器。
 
 当前已落地的资源预览策略（不含 `pack`）：

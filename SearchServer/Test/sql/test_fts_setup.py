@@ -40,8 +40,10 @@ class TestFTSSqlFileExists(unittest.TestCase):
         content = sql_path.read_text(encoding="utf-8")
         self.assertNotIn("resource_task_search_vector_trigger", content)
         self.assertIn("resource_description_search_vector_trigger", content)
+        self.assertIn("DROP TRIGGER IF EXISTS tsvector_update_resource_description", content)
+        self.assertNotIn("CREATE TRIGGER tsvector_update_resource_description", content)
         self.assertIn("pg_jieba", content)
-        self.assertIn("CREATE TRIGGER", content)
+        self.assertNotIn("CREATE TRIGGER", content)
 
     def test_fts_setup_sql_has_no_backfill(self):
         """Backfill should NOT run on every startup — use backfill_fts.py instead."""

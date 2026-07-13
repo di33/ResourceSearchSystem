@@ -24,6 +24,7 @@ from CloudService.search_client import (
 from app.config import settings
 from app.deps import get_reranker
 from app.models.tables import ResourceDescription, ResourceFile, ResourcePreview, ResourceTask
+from app.services.display_titles import display_title_for_task
 from app.services.embedding_client import generate_embedding
 from app.services.object_urls import ObjectUrlGenerator
 from resource_contracts.resource_types import PACK_RESOURCE_TYPE, normalize_resource_type
@@ -530,6 +531,7 @@ class MilvusSearchClient(BaseSearchClient):
 
         # Batch load descriptions
         descs_by_task: dict[int, str] = {}
+        desc_records_by_task: dict[int, ResourceDescription] = {}
         if task_ids:
             for d in (
                 await self.session.execute(
@@ -537,6 +539,7 @@ class MilvusSearchClient(BaseSearchClient):
                 )
             ).scalars().all():
                 descs_by_task[d.task_id] = d.main_content
+                desc_records_by_task[d.task_id] = d
 
         # Batch load files
         files_by_task: dict[int, list] = {}
@@ -611,7 +614,7 @@ class MilvusSearchClient(BaseSearchClient):
                 status=task.process_state,
                 preview_available=bool(preview_urls),
                 file_count=len(files),
-                title=task.title,
+                title=display_title_for_task(task, description=desc_records_by_task.get(task.id)),
                 source_resource_id=task.source_resource_id,
                 package_download_url=package_download_url,
                 vector_score=v_score,

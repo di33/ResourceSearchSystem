@@ -7,12 +7,13 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_db
 from app.middleware.auth import require_read_auth
 from app.models.tables import ResourcePreview, ResourceTask
+from app.services.display_titles import display_title_for_task
 from app.services.object_urls import ObjectUrlGenerator
 from resource_contracts.resource_types import OTHER_RESOURCE_TYPE
 
@@ -25,6 +26,7 @@ class BrowseResourceOut(BaseModel):
     resource_id: str
     source_resource_id: str = ""
     title: str = ""
+    display_title: str = ""
     content_md5: str
     resource_type: str
     process_state: str
@@ -76,27 +78,12 @@ def _browse_filters(
     *,
     resource_type: str | None = None,
     state: str | None = None,
-    q: str | None = None,
 ):
     filters = []
     if resource_type:
         filters.append(ResourceTask.resource_type == resource_type)
     if state:
         filters.append(ResourceTask.process_state == state)
-    if q:
-        pattern = f"%{q.strip()}%"
-        filters.append(or_(
-            ResourceTask.resource_id.ilike(pattern),
-            ResourceTask.source_resource_id.ilike(pattern),
-            ResourceTask.title.ilike(pattern),
-            ResourceTask.content_md5.ilike(pattern),
-            ResourceTask.resource_type.ilike(pattern),
-            ResourceTask.source_directory.ilike(pattern),
-            ResourceTask.pack_name.ilike(pattern),
-            ResourceTask.resource_path.ilike(pattern),
-            ResourceTask.category.ilike(pattern),
-            ResourceTask.tags_json.ilike(pattern),
-        ))
     return filters
 
 
@@ -119,10 +106,9 @@ async def browse_resources(
     session: AsyncSession = Depends(get_db),
 ):
     """Paginated resource listing for the browser grid UI."""
-    query_text = q.strip() if q else None
-    filters = _browse_filters(resource_type=resource_type, state=state, q=query_text)
-    type_filters = _browse_filters(state=state, q=query_text)
-    state_filters = _browse_filters(resource_type=resource_type, q=query_text)
+    filters = _browse_filters(resource_type=resource_type, state=state)
+    type_filters = _browse_filters(state=state)
+    state_filters = _browse_filters(resource_type=resource_type)
 
     total = (
         await session.execute(
@@ -145,6 +131,7 @@ async def browse_resources(
     for task in rows:
         rid = task.resource_id or task.content_md5
         previews = list(task.previews)
+        description = task.descriptions[0] if task.descriptions else None
         preview_url = ""
         if previews:
             preview = previews[0]
@@ -157,6 +144,7 @@ async def browse_resources(
             resource_id=rid,
             source_resource_id=task.source_resource_id,
             title=task.title,
+            display_title=display_title_for_task(task, description=description),
             content_md5=task.content_md5,
             resource_type=task.resource_type,
             process_state=task.process_state,

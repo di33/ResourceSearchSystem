@@ -17,12 +17,19 @@ services:
         required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://resource:resource@postgres:5432/resource_upload
+      DB_POOL_MIN: "48"
+      DB_POOL_MAX: "64"
       MILVUS_HOST: milvus
       MILVUS_PORT: "19530"
       SERVER_EMBEDDING_PROVIDER: ksyun
       SERVER_EMBEDDING_MODEL: qwen3-embedding-8b
       SERVER_EMBEDDING_DIMENSION: "4096"
       SERVER_EMBEDDING_BASE_URL: https://kspmas.ksyun.com/v1
+      SERVER_EMBEDDING_TIMEOUT_SECONDS: "120"
+      VECTOR_SYNC_WORKER_INTERVAL: "0.2"
+      VECTOR_SYNC_WORKER_BATCH_SIZE: "16"
+      VECTOR_SYNC_WORKER_CONCURRENCY: "2"
+      VECTOR_SYNC_FAILED_RETRY_SECONDS: "60"
       RERANKER_URL: http://reranker:8100
       DEBUG: "true"
     depends_on:

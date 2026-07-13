@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import sys
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -17,8 +18,19 @@ for _p in (str(_ROOT), str(_SERVER_DIR)):
         sys.path.insert(0, _p)
 
 from app.config import settings
-from app.models.tables import Base, ResourceDescription, ResourceEmbedding, ResourceFile, ResourcePreview, ResourceTask, VectorSyncJob
-from app.routers.ingest import DeleteResourceIn, UpsertResourceIn, delete_processed_resource, upsert_processed_resource
+from app.models.tables import Base, ResourceDescription, ResourceEmbedding, ResourceFile, ResourcePreview, ResourceTask, VectorSyncJob, _utcnow
+from app.routers import ingest as ingest_router
+from app.routers.ingest import (
+    DeleteResourceIn,
+    UpsertResourceIn,
+    _claim_next_vector_sync_jobs,
+    _backfill_fts_once,
+    _run_vector_sync_job,
+    delete_processed_resource,
+    start_vector_sync_worker,
+    stop_vector_sync_worker,
+    upsert_processed_resource,
+)
 
 
 class _FakeMilvus:
@@ -49,15 +61,32 @@ class TestIngestUpsert(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.engine.dispose()
 
-    async def test_upsert_processed_resource_persists_object_refs_and_client_metadata(self):
+    async def _upsert(self, body: UpsertResourceIn, session):
+        return await upsert_processed_resource(body, background_tasks=BackgroundTasks(), session=session)
+
+    async def _run_pending_vector_jobs(self, session):
+        jobs = (
+            await session.execute(
+                select(VectorSyncJob)
+                .where(VectorSyncJob.state.in_(["pending", "failed"]))
+                .order_by(VectorSyncJob.id)
+            )
+        ).scalars().all()
+        for job in jobs:
+            await _run_vector_sync_job(session, job)
+
+    async def test_upsert_processed_resource_persists_object_refs_and_classification(self):
         session = self.session_factory()
         fake_milvus = _FakeMilvus()
         body = UpsertResourceIn(
             client_id="client-a",
             client_resource_id="asset-1",
             resource_type="single_image",
-            client_metadata={"tags": ["crawler-tag"], "generation_prompt": "blue square"},
             title="",
+            client_metadata={
+                "display_title": "Blue Square",
+                "resource_path": "icons/blue_square.png",
+            },
             source_object={
                 "storage_profile_id": "default",
                 "object_key": "raw/source.png",
@@ -97,19 +126,26 @@ class TestIngestUpsert(unittest.IsolatedAsyncioTestCase):
                 "full": "full",
             },
             classification={
+                "category": "icon",
+                "tags": ["crawler-tag"],
                 "usage_space": "2D",
                 "usage_category": "物件",
                 "usage_subcategories": ["图标"],
             },
         )
 
+        embedding_mock = AsyncMock(return_value=[0.1, 0.2])
         with (
-            patch("app.routers.ingest.generate_embedding", new=AsyncMock(return_value=[0.1, 0.2])),
+            patch("app.routers.ingest.generate_embedding", new=embedding_mock),
             patch("app.routers.ingest.get_model_version", return_value="unit-embedding"),
             patch("app.routers.ingest.get_milvus", return_value=fake_milvus),
             patch.object(settings, "embedding_dimension", 2),
         ):
-            response = await upsert_processed_resource(body, session=session)
+            response = await self._upsert(body, session)
+            self.assertEqual(embedding_mock.await_count, 0)
+            self.assertEqual(fake_milvus.upsert_calls, [])
+            self.assertEqual((await session.execute(select(ResourceEmbedding))).scalars().all(), [])
+            await self._run_pending_vector_jobs(session)
 
         self.assertEqual(response.state, "committed")
         task = (await session.execute(select(ResourceTask))).scalar_one()
@@ -120,7 +156,12 @@ class TestIngestUpsert(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(task.source, "client-a")
         self.assertEqual(task.source_resource_id, "asset-1")
-        self.assertEqual(json.loads(task.client_metadata_json)["generation_prompt"], "blue square")
+        self.assertEqual(
+            json.loads(task.client_metadata_json),
+            {"display_title": "Blue Square", "resource_path": "icons/blue_square.png"},
+        )
+        self.assertEqual(task.category, "icon")
+        self.assertEqual(json.loads(task.tags_json), ["crawler-tag"])
         self.assertEqual(task.source_storage_profile_id, "default")
         self.assertEqual(task.source_object_key, "raw/source.png")
         self.assertEqual(task.package_storage_profile_id, "package-profile")
@@ -131,7 +172,11 @@ class TestIngestUpsert(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(preview_row.storage_profile_id, "default")
         self.assertEqual(preview_row.object_key, "processed/previews/asset-1.webp")
         self.assertEqual(desc.main_content, "blue square image")
+        self.assertEqual(desc.usage_space, "2D")
+        self.assertEqual(desc.usage_category, "物件")
+        self.assertEqual(json.loads(desc.usage_subcategories_json), ["图标"])
         self.assertEqual(emb.dimension, 2)
+        self.assertEqual(task.vector_state, "synced")
         self.assertEqual(fake_milvus.upsert_calls[0]["data"][0]["resource_id"], response.resource_id)
 
         await session.close()
@@ -175,20 +220,23 @@ class TestIngestUpsert(unittest.IsolatedAsyncioTestCase):
                 description={"summary": summary},
             )
 
+        embedding_mock = AsyncMock(return_value=[0.1, 0.2])
         with (
-            patch("app.routers.ingest.generate_embedding", new=AsyncMock(return_value=[0.1, 0.2])),
+            patch("app.routers.ingest.generate_embedding", new=embedding_mock),
             patch("app.routers.ingest.get_model_version", return_value="unit-embedding"),
             patch("app.routers.ingest.get_milvus", return_value=fake_milvus),
             patch.object(settings, "embedding_dimension", 2),
         ):
-            first = await upsert_processed_resource(
+            first = await self._upsert(
                 body("raw/source-v1.png", "processed/previews/asset-v1.webp", "first description"),
-                session=session,
+                session,
             )
-            second = await upsert_processed_resource(
+            second = await self._upsert(
                 body("raw/source-v2.png", "processed/previews/asset-v2.webp", "second description"),
-                session=session,
+                session,
             )
+            self.assertEqual(embedding_mock.await_count, 0)
+            await self._run_pending_vector_jobs(session)
 
         self.assertEqual(second.resource_id, first.resource_id)
         task = (await session.execute(select(ResourceTask))).scalar_one()
@@ -202,8 +250,10 @@ class TestIngestUpsert(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(descriptions), 1)
         self.assertEqual(descriptions[0].main_content, "second description")
         self.assertEqual(len(embeddings), 1)
-        self.assertEqual(len(fake_milvus.upsert_calls), 2)
-        self.assertEqual(fake_milvus.upsert_calls[1]["data"][0]["resource_id"], first.resource_id)
+        self.assertEqual(len(fake_milvus.upsert_calls), 1)
+        self.assertEqual(fake_milvus.upsert_calls[0]["data"][0]["resource_id"], first.resource_id)
+        jobs = (await session.execute(select(VectorSyncJob).order_by(VectorSyncJob.id))).scalars().all()
+        self.assertEqual([job.state for job in jobs], ["superseded", "completed"])
 
         await session.close()
 
@@ -254,7 +304,7 @@ class TestIngestUpsert(unittest.IsolatedAsyncioTestCase):
             patch("app.routers.ingest.get_milvus", return_value=fake_milvus),
             patch.object(settings, "embedding_dimension", 2),
         ):
-            created = await upsert_processed_resource(body, session=session)
+            created = await self._upsert(body, session)
             deleted = await delete_processed_resource(
                 DeleteResourceIn(client_id="client-a", client_resource_id="asset-delete"),
                 session=session,
@@ -294,7 +344,7 @@ class TestIngestUpsert(unittest.IsolatedAsyncioTestCase):
             patch("app.routers.ingest.get_milvus", return_value=fake_milvus),
             patch.object(settings, "embedding_dimension", 2),
         ):
-            created = await upsert_processed_resource(body, session=session)
+            created = await self._upsert(body, session)
             with self.assertRaises(HTTPException) as raised:
                 await delete_processed_resource(
                     DeleteResourceIn(client_id="client-b", resource_id=created.resource_id),
@@ -322,8 +372,10 @@ class TestIngestUpsert(unittest.IsolatedAsyncioTestCase):
             patch("app.routers.ingest.get_milvus", return_value=_FailingMilvus()),
             patch.object(settings, "embedding_dimension", 2),
         ):
+            await self._upsert(body, session)
+            job = (await session.execute(select(VectorSyncJob))).scalar_one()
             with self.assertRaises(HTTPException) as raised:
-                await upsert_processed_resource(body, session=session)
+                await _run_vector_sync_job(session, job)
 
         self.assertEqual(raised.exception.status_code, 502)
         task = (await session.execute(select(ResourceTask))).scalar_one()
@@ -332,6 +384,145 @@ class TestIngestUpsert(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job.state, "failed")
         self.assertIn("milvus down", job.last_error)
         await session.close()
+
+    async def test_upsert_processed_resource_accepts_long_prompt_version(self):
+        session = self.session_factory()
+        fake_milvus = _FakeMilvus()
+        body = UpsertResourceIn(
+            client_id="client-a",
+            client_resource_id="asset-long-prompt-version",
+            resource_type="single_image",
+            source_object={"storage_profile_id": "default", "object_key": "raw/source.png"},
+            source_files=[{"file_name": "source.png", "file_format": "png", "is_primary": True}],
+            description={"summary": "image asset", "detail": "detail", "full": "full"},
+            processing={"description_prompt_version": "prompt_v1+resource_processing_server"},
+        )
+
+        with (
+            patch("app.routers.ingest.generate_embedding", new=AsyncMock(return_value=[0.1, 0.2])),
+            patch("app.routers.ingest.get_model_version", return_value="unit-embedding"),
+            patch("app.routers.ingest.get_milvus", return_value=fake_milvus),
+            patch.object(settings, "embedding_dimension", 2),
+        ):
+            await self._upsert(body, session)
+
+        desc = (await session.execute(select(ResourceDescription))).scalar_one()
+        self.assertEqual(desc.prompt_version, "prompt_v1+resource_processing_server")
+        await session.close()
+
+    async def test_upsert_processed_resource_rejects_pack_resources(self):
+        session = self.session_factory()
+        body = UpsertResourceIn(
+            client_id="client-a",
+            client_resource_id="pack-rejected",
+            resource_type="pack",
+            source_object={"storage_profile_id": "default", "object_key": "raw/source.zip"},
+            source_files=[{"file_name": "source.zip", "file_format": "zip", "is_primary": True}],
+            description={"summary": "package only"},
+        )
+
+        with self.assertRaises(HTTPException) as raised:
+            await self._upsert(body, session)
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual((await session.execute(select(ResourceTask))).scalars().all(), [])
+        await session.close()
+
+    async def test_vector_sync_worker_claims_pending_jobs(self):
+        session = self.session_factory()
+        jobs = [
+            VectorSyncJob(
+                resource_id=f"res-worker-{i}",
+                action="upsert",
+                resource_type="single_image",
+                embedding_text=f"worker generated embedding {i}",
+                state="pending",
+            )
+            for i in range(3)
+        ]
+        session.add_all(jobs)
+        await session.commit()
+
+        claimed = await _claim_next_vector_sync_jobs(session, 2)
+
+        self.assertEqual(claimed, [jobs[0].id, jobs[1].id])
+        refreshed = (await session.execute(select(VectorSyncJob).order_by(VectorSyncJob.id))).scalars().all()
+        self.assertEqual([job.state for job in refreshed], ["running", "running", "pending"])
+        await session.close()
+
+    async def test_vector_sync_worker_defers_recent_failed_jobs(self):
+        session = self.session_factory()
+        now = _utcnow()
+        jobs = [
+            VectorSyncJob(
+                resource_id="res-pending",
+                action="upsert",
+                resource_type="single_image",
+                embedding_text="pending embedding",
+                state="pending",
+            ),
+            VectorSyncJob(
+                resource_id="res-failed-later",
+                action="upsert",
+                resource_type="single_image",
+                embedding_text="failed later embedding",
+                state="failed",
+                retry_after=now + timedelta(minutes=1),
+            ),
+            VectorSyncJob(
+                resource_id="res-failed-ready",
+                action="upsert",
+                resource_type="single_image",
+                embedding_text="failed ready embedding",
+                state="failed",
+                retry_after=now - timedelta(seconds=1),
+            ),
+        ]
+        session.add_all(jobs)
+        await session.commit()
+
+        claimed = await _claim_next_vector_sync_jobs(session, 3)
+
+        self.assertEqual(claimed, [jobs[0].id, jobs[2].id])
+        refreshed = (await session.execute(select(VectorSyncJob).order_by(VectorSyncJob.id))).scalars().all()
+        self.assertEqual([job.state for job in refreshed], ["running", "failed", "running"])
+        await session.close()
+
+    async def test_fts_worker_backfills_null_search_vectors(self):
+        session = self.session_factory()
+        description = ResourceDescription(
+            task_id=1,
+            full_description="blue square icon",
+            search_vector=None,
+        )
+        session.add(description)
+        await session.commit()
+
+        with patch.object(settings, "search_text_config", "simple"):
+            processed = await _backfill_fts_once(10, session)
+
+        self.assertEqual(processed, 1)
+        refreshed = await session.get(ResourceDescription, description.id)
+        self.assertTrue(refreshed.search_vector)
+        await session.close()
+
+    async def test_vector_sync_worker_starts_configured_concurrency(self):
+        stop_calls = []
+
+        async def _fake_worker(stop_event, worker_id=1):
+            stop_calls.append(worker_id)
+            await stop_event.wait()
+
+        with (
+            patch("app.routers.ingest._vector_sync_worker_loop", new=_fake_worker),
+            patch.object(settings, "vector_sync_worker_concurrency", 3),
+            patch.object(settings, "vector_sync_worker_enabled", True),
+        ):
+            start_vector_sync_worker()
+            self.assertEqual(len(ingest_router._vector_sync_worker_tasks), 3)
+            await stop_vector_sync_worker()
+
+        self.assertEqual(sorted(stop_calls), [1, 2, 3])
 
 
 if __name__ == "__main__":

@@ -60,7 +60,9 @@ ALTER TABLE resource_description ADD COLUMN IF NOT EXISTS search_vector tsvector
 CREATE INDEX IF NOT EXISTS ix_resource_description_search_vector
     ON resource_description USING gin (search_vector);
 
--- 4. Trigger function for resource_description (full_description only)
+-- 4. Trigger function retained for manual compatibility, but synchronous
+-- triggers are disabled for high-throughput ingestion. The API backfills
+-- search_vector in a background worker instead.
 CREATE OR REPLACE FUNCTION resource_description_search_vector_trigger() RETURNS trigger AS $$
 BEGIN
     NEW.search_vector :=
@@ -69,11 +71,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- 5. Create trigger (drop first for idempotency)
+-- 5. Drop the legacy synchronous trigger if it exists.
 DROP TRIGGER IF EXISTS tsvector_update_resource_description ON resource_description;
-CREATE TRIGGER tsvector_update_resource_description
-    BEFORE INSERT OR UPDATE ON resource_description
-    FOR EACH ROW EXECUTE FUNCTION resource_description_search_vector_trigger();
 
 -- Backfill: run manually via `python SearchServer/Scripts/backfill_fts.py` from the repo root,
 -- or `python Scripts/backfill_fts.py` from the server folder, when needed.

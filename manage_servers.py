@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -28,6 +29,7 @@ class Server:
     port_env: str
     health_env: str
     build_services: tuple[str, ...] = ()
+    data_dirs: tuple[Path, ...] = ()
 
     def health_url(self) -> str:
         configured = os.environ.get(self.health_env, "").strip()
@@ -56,6 +58,7 @@ SERVERS: tuple[Server, ...] = (
         default_port=8200,
         port_env="PR_PORT",
         health_env="PREVIEW_RENDERER_HEALTH_URL",
+        data_dirs=(REPO_ROOT / "data" / "preview_renderer",),
     ),
     Server(
         key="processor",
@@ -64,6 +67,7 @@ SERVERS: tuple[Server, ...] = (
         default_port=8100,
         port_env="RP_PORT",
         health_env="RESOURCE_PROCESSING_SERVER_HEALTH_URL",
+        data_dirs=(REPO_ROOT / "data" / "resource_processing_server",),
     ),
 )
 SERVER_BY_KEY = {server.key: server for server in SERVERS}
@@ -76,7 +80,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "action",
-        choices=("build", "compile", "start", "up", "stop", "down", "restart", "status"),
+        choices=(
+            "build",
+            "compile",
+            "start",
+            "up",
+            "stop",
+            "down",
+            "restart",
+            "clean",
+            "reset",
+            "status",
+            "health",
+            "check",
+        ),
         help="Operation to run for the selected services.",
     )
     parser.add_argument(
@@ -200,6 +217,48 @@ def status_server(server: Server, compose_cmd: list[str], *, dry_run: bool) -> N
     run_command([*compose_cmd, "ps"], cwd=server.compose_dir, env=compose_env(server), dry_run=dry_run)
 
 
+def probe_health(server: Server, *, timeout: int = 5) -> tuple[str, str]:
+    url = server.health_url()
+    try:
+        with request.urlopen(url, timeout=timeout) as response:
+            body = response.read()
+            if not 200 <= response.status < 300:
+                return "error", f"{url} HTTP {response.status}"
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return "error", f"{url} returned non-JSON health body"
+    except (error.URLError, TimeoutError, OSError) as exc:
+        return "error", f"{url} {exc}"
+
+    status = str(payload.get("status", "")).lower()
+    if status in {"ok", "healthy"}:
+        return "ok", url
+    if status == "degraded":
+        return "degraded", f"{url} {payload}"
+    return "error", f"{url} status={status or 'missing'} {payload}"
+
+
+def health_all(servers: list[Server], *, dry_run: bool) -> None:
+    print("\n== Health ==")
+    rows: list[tuple[str, str, str]] = []
+    for server in servers:
+        url = server.health_url()
+        if dry_run:
+            rows.append((server.label, "DRY-RUN", url))
+            continue
+        status, detail = probe_health(server)
+        label = "OK" if status == "ok" else ("WARN" if status == "degraded" else "ERROR")
+        rows.append((server.label, label, detail))
+
+    name_width = max([len("service"), *(len(row[0]) for row in rows)])
+    status_width = max([len("status"), *(len(row[1]) for row in rows)])
+    print(f"{'service':<{name_width}}  {'status':<{status_width}}  detail")
+    print(f"{'-' * name_width}  {'-' * status_width}  {'-' * 6}")
+    for name, status, detail in rows:
+        print(f"{name:<{name_width}}  {status:<{status_width}}  {detail}")
+
+
 def wait_for_health(server: Server, *, timeout: int, dry_run: bool) -> None:
     url = server.health_url()
     print(f"\n== Wait {server.label}: {url} ==")
@@ -262,6 +321,36 @@ def stop_all(servers: list[Server], compose_cmd: list[str], *, volumes: bool, dr
         stop_server(server, compose_cmd, volumes=volumes, dry_run=dry_run)
 
 
+def _assert_safe_data_dir(path: Path) -> Path:
+    root = REPO_ROOT.resolve()
+    data_root = (REPO_ROOT / "data").resolve()
+    resolved = path.resolve()
+    if resolved == root or resolved == data_root or root not in resolved.parents:
+        raise RuntimeError(f"Refusing to clean unsafe path: {resolved}")
+    if data_root not in resolved.parents:
+        raise RuntimeError(f"Refusing to clean path outside data directory: {resolved}")
+    return resolved
+
+
+def clean_data_dirs(servers: list[Server], *, dry_run: bool) -> None:
+    for server in servers:
+        if not server.data_dirs:
+            continue
+        print(f"\n== Clean host data for {server.label} ==")
+        for data_dir in server.data_dirs:
+            resolved = _assert_safe_data_dir(data_dir)
+            print(f"$ clear data directory {resolved}")
+            if dry_run:
+                continue
+            if not resolved.exists():
+                continue
+            for child in resolved.iterdir():
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv if argv is not None else sys.argv[1:])
     servers = selected_servers(args.services)
@@ -292,9 +381,26 @@ def main(argv: list[str] | None = None) -> int:
                 timeout=args.timeout,
                 dry_run=args.dry_run,
             )
+        elif action == "clean":
+            stop_all(servers, compose_cmd, volumes=True, dry_run=args.dry_run)
+            clean_data_dirs(servers, dry_run=args.dry_run)
+        elif action == "reset":
+            stop_all(servers, compose_cmd, volumes=True, dry_run=args.dry_run)
+            clean_data_dirs(servers, dry_run=args.dry_run)
+            start_all(
+                servers,
+                compose_cmd,
+                build=args.build,
+                no_wait=args.no_wait,
+                timeout=args.timeout,
+                dry_run=args.dry_run,
+            )
         elif action == "status":
             for server in servers:
                 status_server(server, compose_cmd, dry_run=args.dry_run)
+            health_all(servers, dry_run=args.dry_run)
+        elif action in {"health", "check"}:
+            health_all(servers, dry_run=args.dry_run)
     except (RuntimeError, subprocess.CalledProcessError, TimeoutError) as exc:
         print(f"\nERROR: {exc}", file=sys.stderr)
         if isinstance(exc, subprocess.CalledProcessError):

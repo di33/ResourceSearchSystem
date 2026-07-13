@@ -157,7 +157,6 @@ def check_detail(server: str, resource_id: str):
         print(f"  title:         {d.get('title', '')}")
         print(f"  source:        {d.get('source', '')}")
         print(f"  pack_name:     {d.get('pack_name', '')}")
-        print(f"  resource_path: {d.get('resource_path', '')}")
         print(f"  created_at:    {d.get('created_at')}")
         print(f"  updated_at:    {d.get('updated_at')}")
         print(f"  package_profile: {d.get('package_storage_profile_id', '')}")
