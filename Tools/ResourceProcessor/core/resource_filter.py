@@ -273,7 +273,7 @@ def copy_single_categorized_resource(file_path: str, work_dir: str) -> Optional[
     """
     categories = {
         "images": [".jpg", ".jpeg", ".png", ".gif"],
-        "models": [".obj", ".fbx", ".stl"],
+        "models": [".obj", ".fbx", ".stl", ".gltf", ".glb"],
         "others": [],
     }
     file_ext = Path(file_path).suffix.lower()
@@ -313,7 +313,7 @@ def copy_and_categorize_resources(resource_paths: List[str], work_dir: str) -> D
     """
     categories = {
         "images": [".jpg", ".jpeg", ".png", ".gif"],
-        "models": [".obj", ".fbx", ".stl"],
+        "models": [".obj", ".fbx", ".stl", ".gltf", ".glb"],
         "others": [],
     }
     for category in categories:

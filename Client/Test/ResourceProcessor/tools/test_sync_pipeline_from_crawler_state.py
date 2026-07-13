@@ -124,8 +124,6 @@ def _args(tmp_path, crawler_db: str, output_root: str, db_path, preview_dir):
         crawler_output=output_root,
         db_path=str(db_path),
         dry_run=False,
-        clear_first=False,
-        replace_db_file=False,
         no_backup=True,
         keep_preview_files=False,
         preview_dir=[str(preview_dir)],

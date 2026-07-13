@@ -120,6 +120,21 @@ class TestResourceFilter(unittest.TestCase):
         self.assertTrue((work_dir / "others" / "valid.txt").exists())
         self.assertTrue((work_dir / "others" / "invalid.exe").exists())
 
+    def test_copy_and_categorize_gltf_and_glb_as_models(self):
+        work_dir = Path(self.test_dir) / "model_output"
+        work_dir.mkdir(exist_ok=True)
+        gltf_file = os.path.join(self.test_dir, "scene.gltf")
+        glb_file = os.path.join(self.test_dir, "hero.glb")
+        with open(gltf_file, "w") as f:
+            f.write("gltf")
+        with open(glb_file, "wb") as f:
+            f.write(b"glb")
+
+        copy_and_categorize_resources([gltf_file, glb_file], str(work_dir))
+
+        self.assertTrue((work_dir / "models" / "scene.gltf").exists())
+        self.assertTrue((work_dir / "models" / "hero.glb").exists())
+
     def test_detect_malicious_file(self):
         """
         Test the malicious file detection functionality.

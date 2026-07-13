@@ -57,7 +57,7 @@ except Exception:  # pragma: no cover - optional dependency
     RECTPACK_SORT_AREA = None
     rectpack_new_packer = None
 
-RASTER_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
+RASTER_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".tga"}
 SVG_EXTS = {".svg"}
 FONT_EXTS = {".ttf", ".otf"}
 AUDIO_EXTS = {".ogg", ".wav", ".mp3", ".flac"}
@@ -5311,6 +5311,22 @@ class CrawlerThumbnailPolicy:
 
     async def _generate_animation_preview(self, entity: ResourceProcessingEntity) -> PreviewInfo:
         image_paths = [f.file_path for f in entity.files if Path(f.file_path).suffix.lower() in RASTER_EXTS]
+        if len(image_paths) == 1:
+            preview_path = self._output_dir_for(entity) / f"{entity.content_md5}_sequence.webp"
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                _save_existing_raster_preview,
+                image_paths[0],
+                preview_path,
+                self.max_size,
+            )
+            return self._preview_info(
+                str(preview_path),
+                PreviewStrategy.STATIC,
+                "source_image",
+                "high",
+                source_path_for_solid_check=image_paths[0],
+            )
         if len(image_paths) < 2:
             return await self._generate_metadata_preview(entity, mode="metadata_only")
 

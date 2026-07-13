@@ -3,14 +3,6 @@
 Default mode preserves unchanged resource_task rows and their generated
 previews/descriptions. Changed resources are invalidated just enough for the
 split pipeline to regenerate the affected downstream artifacts.
-
-Full rebuild mode is the same sync after clearing the current cache first:
-
-    python -m ResourceProcessor.tools.sync_pipeline_from_crawler_state \
-        --crawler-state-db G:/ResourceCrawler/data/crawler_state.db \
-        --crawler-output K:/ResourceCrawler/output \
-        --db-path G:/ResourceUpload/data/databases/pipeline.db \
-        --clear-first
 """
 
 from __future__ import annotations
@@ -19,7 +11,6 @@ import argparse
 import datetime
 import json
 import os
-import shutil
 import sqlite3
 import sys
 import time
@@ -852,44 +843,6 @@ def _backup_db(db_path: str, report: Report) -> str | None:
     return backup_path
 
 
-def _remove_sqlite_files(db_path: str) -> None:
-    for suffix in ("", "-wal", "-shm"):
-        path = db_path + suffix
-        if os.path.exists(path):
-            os.remove(path)
-
-
-def _clear_current_cache(
-    conn: sqlite3.Connection,
-    *,
-    stats: SyncStats,
-    record_object_delete_jobs: bool,
-    dry_run: bool,
-) -> tuple[int, list[str]]:
-    tasks = [dict(row) for row in conn.execute("SELECT * FROM resource_task").fetchall()]
-    task_ids = [int(task["id"]) for task in tasks]
-    if record_object_delete_jobs:
-        _enqueue_object_delete_jobs(
-            conn,
-            tasks,
-            stats,
-            reason="clear_first",
-            dry_run=dry_run,
-        )
-    preview_rows, preview_paths = _clear_downstream(
-        conn,
-        task_ids,
-        include_previews=True,
-        include_files=True,
-        include_object_manifests=True,
-        dry_run=dry_run,
-    )
-    _delete_resource_tasks(conn, task_ids, dry_run=dry_run)
-    if not dry_run:
-        conn.execute("DELETE FROM asset_index")
-    return preview_rows, preview_paths
-
-
 def _process_preview_changed_resource(
     conn: sqlite3.Connection,
     task: dict[str, Any],
@@ -1144,8 +1097,6 @@ def sync(args: argparse.Namespace) -> int:
     print(f"  Crawler Output: {crawler_output}")
     print(f"  目标数据库:     {db_path}")
     print(f"  模式:           {'dry-run' if args.dry_run else 'apply'}")
-    if args.clear_first:
-        print("  初始化:         clear-first")
     print("=" * 60)
 
     if not os.path.isfile(crawler_state_db):
@@ -1158,13 +1109,6 @@ def sync(args: argparse.Namespace) -> int:
         return 1
 
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
-    backup_done = False
-    if args.clear_first and not args.dry_run and os.path.exists(db_path) and args.replace_db_file:
-        if not args.no_backup:
-            _backup_db(db_path, report)
-            backup_done = True
-        _remove_sqlite_files(db_path)
-
     cache = LocalCacheStore(db_path)
     cache.close()
 
@@ -1172,7 +1116,7 @@ def sync(args: argparse.Namespace) -> int:
     if not preview_roots:
         preview_roots = _default_preview_roots(db_path)
 
-    if not args.dry_run and not args.no_backup and not backup_done:
+    if not args.dry_run and not args.no_backup:
         _backup_db(db_path, report)
 
     catalog = load_crawler_catalog(crawler_output, crawler_state_db=crawler_state_db)
@@ -1193,17 +1137,6 @@ def sync(args: argparse.Namespace) -> int:
             conn.execute("BEGIN IMMEDIATE")
 
         _ensure_asset_index(conn)
-
-        if args.clear_first:
-            preview_rows, preview_paths = _clear_current_cache(
-                conn,
-                stats=stats,
-                record_object_delete_jobs=record_object_delete_jobs,
-                dry_run=args.dry_run,
-            )
-            stats.preview_rows_deleted += preview_rows
-            preview_paths_to_delete.extend(preview_paths)
-            report.ok("清空当前缓存", "resource_task/resource_file/resource_preview/resource_description/asset_index")
 
         _sync_asset_index(
             conn,
@@ -1291,8 +1224,6 @@ def main() -> int:
     parser.add_argument("--crawler-output", default=DEFAULT_CRAWLER_OUTPUT, help="ResourceCrawler output 根目录")
     parser.add_argument("--db-path", default=str(default_db), help="目标 pipeline SQLite 路径")
     parser.add_argument("--dry-run", action="store_true", help="只统计差异，不写库、不删文件")
-    parser.add_argument("--clear-first", action="store_true", help="同步前清空当前 pipeline 表，相当于全量重建")
-    parser.add_argument("--replace-db-file", action="store_true", help="clear-first 时直接删除旧 SQLite 文件后重建")
     parser.add_argument("--no-backup", action="store_true", help="apply 前不备份目标数据库")
     parser.add_argument("--keep-preview-files", action="store_true", help="只删 resource_preview 记录，不删除预览文件")
     parser.add_argument(

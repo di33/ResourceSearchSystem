@@ -366,6 +366,9 @@ button:disabled { opacity: .55; cursor: default; }
 }
 .preview-grid { display: flex; flex-wrap: wrap; gap: 12px; }
 .preview-card {
+  display: inline-flex;
+  flex-direction: column;
+  width: var(--preview-display-width, fit-content);
   background: var(--panel2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -373,8 +376,10 @@ button:disabled { opacity: .55; cursor: default; }
   max-width: 360px;
 }
 .preview-zoom-trigger {
-  display: block;
-  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--preview-display-width, auto);
   border: 0;
   padding: 0;
   background: transparent;
@@ -382,16 +387,20 @@ button:disabled { opacity: .55; cursor: default; }
 }
 .preview-card img {
   display: block;
+  width: var(--preview-display-width, auto);
+  height: var(--preview-display-height, auto);
   max-width: 360px;
   max-height: 300px;
   object-fit: contain;
-  background: repeating-conic-gradient(#17171a 0% 25%, #202024 0% 50%) 0 0 / 18px 18px;
+  background: transparent;
 }
 .preview-card .label {
+  width: 100%;
   padding: 6px 10px;
   font-size: 11px;
   color: var(--text2);
   border-top: 1px solid var(--border);
+  overflow-wrap: anywhere;
 }
 
 .preview-lightbox {
@@ -411,9 +420,10 @@ button:disabled { opacity: .55; cursor: default; }
   position: relative;
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 10px;
-  width: min(96vw, 1600px);
-  max-width: min(96vw, 1600px);
+  width: auto;
+  max-width: calc(100vw - 56px);
   max-height: 92vh;
 }
 .preview-lightbox-close {
@@ -460,13 +470,15 @@ button:disabled { opacity: .55; cursor: default; }
   font-variant-numeric: tabular-nums;
 }
 .preview-lightbox-viewport {
-  width: 100%;
-  height: min(78vh, 900px);
+  width: fit-content;
+  height: fit-content;
+  max-width: calc(100vw - 56px);
   max-height: calc(92vh - 86px);
-  min-height: 240px;
+  min-width: 0;
+  min-height: 0;
   overflow: auto;
   border-radius: var(--radius);
-  background: repeating-conic-gradient(#17171a 0% 25%, #202024 0% 50%) 0 0 / 18px 18px;
+  background: transparent;
   overscroll-behavior: contain;
 }
 .preview-lightbox-viewport.is-draggable { cursor: grab; }
@@ -478,9 +490,11 @@ button:disabled { opacity: .55; cursor: default; }
   display: flex;
   align-items: center;
   justify-content: center;
-  min-width: 100%;
-  min-height: 100%;
-  padding: 12px;
+  min-width: 0;
+  min-height: 0;
+  width: fit-content;
+  height: fit-content;
+  padding: 0;
 }
 .preview-lightbox-image {
   flex: 0 0 auto;
@@ -583,7 +597,8 @@ button:disabled { opacity: .55; cursor: default; }
   .download-meta { max-width: 100%; }
   .preview-lightbox { padding: 16px; }
   .preview-lightbox-dialog {
-    width: 100%;
+    width: auto;
+    max-width: calc(100vw - 32px);
     max-height: calc(100vh - 32px);
   }
   .preview-lightbox-close {
@@ -596,7 +611,7 @@ button:disabled { opacity: .55; cursor: default; }
     overflow-x: auto;
   }
   .preview-lightbox-viewport {
-    height: calc(100vh - 132px);
+    max-width: calc(100vw - 32px);
     max-height: calc(100vh - 132px);
   }
 }
@@ -625,6 +640,18 @@ button:disabled { opacity: .55; cursor: default; }
           <label for="bm25WeightInput">BM25 Weight</label>
           <input id="bm25WeightInput" type="number" min="0" max="1" step="0.05" value="0.5">
         </div>
+        <div class="search-control search-control-wide">
+          <label for="formatFilterInput">Formats</label>
+          <input id="formatFilterInput" type="text" placeholder="All formats">
+        </div>
+        <div class="search-control">
+          <label for="searchModeSelect">Search Mode</label>
+          <select id="searchModeSelect">
+            <option value="hybrid">Hybrid</option>
+            <option value="vector">Vector</option>
+            <option value="bm25">BM25</option>
+          </select>
+        </div>
         <div class="search-control">
           <label for="rerankerSelect">Reranker</label>
           <select id="rerankerSelect">
@@ -632,10 +659,6 @@ button:disabled { opacity: .55; cursor: default; }
             <option value="true">On</option>
             <option value="false">Off</option>
           </select>
-        </div>
-        <div class="search-control search-control-wide">
-          <label for="formatFilterInput">Formats</label>
-          <input id="formatFilterInput" type="text" placeholder="All formats">
         </div>
       </div>
     </details>
@@ -649,7 +672,6 @@ button:disabled { opacity: .55; cursor: default; }
     <div class="toolbar">
       <div class="summary" id="resultSummary">Loading resources...</div>
       <select id="typeFilter"><option value="">All Types</option></select>
-      <select id="stateFilter"><option value="">All States</option></select>
     </div>
     <div class="resource-grid" id="resourceGrid"></div>
     <div class="pager">
@@ -693,12 +715,13 @@ const state = {
   total: 0,
   resources: [],
   typeCounts: {},
-  stateCounts: {},
+  searchTypeCounts: {},
+  searchTypeCountsKey: '',
   resourceType: '',
-  processState: '',
   query: '',
   topK: 36,
   similarityThreshold: 0.5,
+  searchMode: 'hybrid',
   bm25Weight: 0.5,
   enableReranker: '',
   formatFilter: '',
@@ -757,6 +780,14 @@ function shortObjectKey(value) {
   return text.length > 72 ? '...' + text.slice(-69) : text;
 }
 
+function resourceDownloadUrl(resourceId, kind) {
+  return `${API}/resources/${encodeURIComponent(resourceId)}/download?kind=${encodeURIComponent(kind)}`;
+}
+
+function resourceFileDownloadUrl(resourceId, fileId) {
+  return `${API}/resources/${encodeURIComponent(resourceId)}/files/${encodeURIComponent(fileId)}/download`;
+}
+
 function bindPreviewZoom(scope) {
   if (!scope) return;
   scope.querySelectorAll('[data-preview-src]').forEach(node => {
@@ -766,6 +797,18 @@ function bindPreviewZoom(scope) {
         node.getAttribute('data-preview-caption') || ''
       );
     });
+    const image = node.querySelector('img');
+    if (image) {
+      const syncPreviewCardSize = () => {
+        const card = node.closest('.preview-card');
+        if (!card || !image.naturalWidth || !image.naturalHeight) return;
+        const scale = Math.min(1, 360 / image.naturalWidth, 300 / image.naturalHeight);
+        card.style.setProperty('--preview-display-width', `${Math.round(image.naturalWidth * scale)}px`);
+        card.style.setProperty('--preview-display-height', `${Math.round(image.naturalHeight * scale)}px`);
+      };
+      if (image.complete) syncPreviewCardSize();
+      else image.addEventListener('load', syncPreviewCardSize, { once: true });
+    }
   });
 }
 
@@ -812,8 +855,8 @@ function fitPreviewZoom() {
   const viewport = lightbox.viewport;
   const fitZoom = Math.min(
     1,
-    (viewport.clientWidth - 24) / lightbox.naturalWidth,
-    (viewport.clientHeight - 24) / lightbox.naturalHeight
+    viewport.clientWidth / lightbox.naturalWidth,
+    viewport.clientHeight / lightbox.naturalHeight
   );
   applyPreviewZoom(fitZoom);
 }
@@ -915,8 +958,8 @@ function browseParams(page) {
   const params = new URLSearchParams();
   params.set('page', String(page));
   params.set('page_size', String(state.pageSize));
+  params.set('include_counts', page === 1 ? 'true' : 'false');
   if (state.resourceType) params.set('resource_type', state.resourceType);
-  if (state.processState) params.set('state', state.processState);
   return params;
 }
 
@@ -941,6 +984,7 @@ function searchBody() {
     format_filter: formatFilterValues(),
     top_k: state.topK,
     similarity_threshold: state.similarityThreshold,
+    search_mode: state.searchMode,
     bm25_weight: state.bm25Weight,
   };
   if (!body.format_filter.length) body.format_filter = null;
@@ -967,6 +1011,43 @@ function resultFromSearchItem(item) {
   };
 }
 
+function countResourceTypes(resources) {
+  const counts = {};
+  for (const item of resources) {
+    const type = item.resource_type || RESOURCE_TYPES.OTHER;
+    counts[type] = (counts[type] || 0) + 1;
+  }
+  return counts;
+}
+
+function searchTypeCountsKey() {
+  return JSON.stringify({
+    query: state.query,
+    topK: state.topK,
+    similarityThreshold: state.similarityThreshold,
+    searchMode: state.searchMode,
+    bm25Weight: state.bm25Weight,
+    enableReranker: state.enableReranker,
+    formatFilter: formatFilterValues(),
+  });
+}
+
+async function loadSearchTypeCounts(key) {
+  const body = searchBody();
+  body.resource_type = null;
+  const r = await fetch(API + '/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json();
+  const resources = (d.results || []).map(resultFromSearchItem);
+  state.searchTypeCounts = countResourceTypes(resources);
+  state.searchTypeCountsKey = key;
+  return state.searchTypeCounts;
+}
+
 async function loadSearchResults({ reset = false, sync = true } = {}) {
   if (reset) {
     state.page = 1;
@@ -981,21 +1062,25 @@ async function loadSearchResults({ reset = false, sync = true } = {}) {
   });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
-  let resources = (d.results || []).map(resultFromSearchItem);
-  if (state.processState) {
-    resources = resources.filter(item => item.process_state === state.processState);
-  }
-  state.total = state.processState ? resources.length : (d.total_count || resources.length);
+  const resources = (d.results || []).map(resultFromSearchItem);
+  state.total = d.total_count || resources.length;
   state.resources = resources;
-  state.typeCounts = {};
-  for (const item of resources) {
-    const type = item.resource_type || RESOURCE_TYPES.OTHER;
-    state.typeCounts[type] = (state.typeCounts[type] || 0) + 1;
-  }
-  state.stateCounts = {};
-  for (const item of resources) {
-    const status = item.process_state || 'unknown';
-    state.stateCounts[status] = (state.stateCounts[status] || 0) + 1;
+  const key = searchTypeCountsKey();
+  const currentTypeCounts = countResourceTypes(resources);
+  if (state.resourceType) {
+    if (state.searchTypeCountsKey !== key || !Object.keys(state.searchTypeCounts).length) {
+      try {
+        await loadSearchTypeCounts(key);
+      } catch {
+        state.searchTypeCounts = currentTypeCounts;
+        state.searchTypeCountsKey = key;
+      }
+    }
+    state.typeCounts = { ...state.searchTypeCounts };
+  } else {
+    state.searchTypeCounts = currentTypeCounts;
+    state.searchTypeCountsKey = key;
+    state.typeCounts = currentTypeCounts;
   }
   state.page = 2;
   populateFilters();
@@ -1017,23 +1102,31 @@ async function loadResources({ reset = false, sync = true } = {}) {
     if (state.query) {
       await loadSearchResults({ reset: false, sync });
     } else {
+      state.searchTypeCounts = {};
+      state.searchTypeCountsKey = '';
       const r = await fetch(API + `/browse/resources?${browseParams(state.page)}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
       state.total = d.total || 0;
-      state.typeCounts = d.type_counts || {};
-      state.stateCounts = d.state_counts || {};
-      state.resources = reset ? (d.resources || []) : state.resources.concat(d.resources || []);
+      if (d.type_counts) state.typeCounts = d.type_counts;
+      const newResources = d.resources || [];
+      state.resources = reset ? newResources : state.resources.concat(newResources);
       state.page += 1;
-      populateFilters();
-      renderGrid(false);
+      if (reset) populateFilters();
+      if (reset) {
+        renderGrid(false);
+      } else {
+        appendResourceCards(newResources);
+      }
       if (sync) syncBrowseUrl(false);
     }
     state.loading = false;
     setLoading('');
+    updateGridChrome();
   } catch(e) {
     state.loading = false;
     setLoading('Load failed');
+    updateGridChrome();
     document.getElementById('resourceGrid').innerHTML =
       `<div class="empty-state">Failed to load resources: ${escapeHtml(e.message)}</div>`;
   } finally {
@@ -1043,9 +1136,7 @@ async function loadResources({ reset = false, sync = true } = {}) {
 
 function populateFilters() {
   const typeSelect = document.getElementById('typeFilter');
-  const stateSelect = document.getElementById('stateFilter');
   const currentType = state.resourceType;
-  const currentState = state.processState;
 
   const typeEntries = Object.entries(state.typeCounts).sort((a, b) => {
     const ai = PREFERRED_RESOURCE_TYPES.indexOf(a[0]);
@@ -1054,27 +1145,40 @@ function populateFilters() {
     return a[0].localeCompare(b[0]);
   });
   if (currentType && !state.typeCounts[currentType]) typeEntries.unshift([currentType, 0]);
-  typeSelect.innerHTML = '<option value="">All Types</option>' +
+  const typeOptions = '<option value="">All Types</option>' +
     typeEntries.map(([type, count]) =>
       `<option value="${escapeAttr(type)}">${escapeHtml(typeLabel(type))} (${count})</option>`
     ).join('');
+  typeSelect.innerHTML = typeOptions;
   typeSelect.value = currentType;
-
-  const stateEntries = Object.entries(state.stateCounts).sort((a, b) => a[0].localeCompare(b[0]));
-  if (currentState && !state.stateCounts[currentState]) stateEntries.unshift([currentState, 0]);
-  stateSelect.innerHTML = '<option value="">All States</option>' +
-    stateEntries.map(([status, count]) =>
-      `<option value="${escapeAttr(status)}">${escapeHtml(status)} (${count})</option>`
-    ).join('');
-  stateSelect.value = currentState;
 }
 
-function renderGrid(isLoading) {
-  const grid = document.getElementById('resourceGrid');
+function updateGridChrome() {
   const shown = state.resources.length;
   const noun = state.query ? 'search results' : 'resources';
   document.getElementById('resultSummary').textContent =
     `${shown} / ${state.total} ${noun}${state.query ? ` for "${state.query}"` : ''}`;
+
+  const loadMore = document.getElementById('loadMoreButton');
+  loadMore.classList.toggle('hidden', !!state.query || shown >= state.total || state.total === 0);
+  loadMore.disabled = state.loading;
+}
+
+function appendResourceCards(resources) {
+  updateGridChrome();
+  if (!resources.length) return;
+  const grid = document.getElementById('resourceGrid');
+  if (!grid.querySelector('.resource-card')) {
+    grid.innerHTML = '';
+  }
+  const template = document.createElement('template');
+  template.innerHTML = resources.map(renderCard).join('');
+  grid.appendChild(template.content);
+}
+
+function renderGrid(isLoading) {
+  const grid = document.getElementById('resourceGrid');
+  updateGridChrome();
 
   if (isLoading) {
     grid.innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
@@ -1082,14 +1186,7 @@ function renderGrid(isLoading) {
     grid.innerHTML = '<div class="empty-state">No resources found</div>';
   } else {
     grid.innerHTML = state.resources.map(renderCard).join('');
-    grid.querySelectorAll('.resource-card').forEach(card => {
-      card.addEventListener('click', () => selectResource(card.dataset.id, true));
-    });
   }
-
-  const loadMore = document.getElementById('loadMoreButton');
-  loadMore.classList.toggle('hidden', !!state.query || shown >= state.total || state.total === 0);
-  loadMore.disabled = state.loading;
 }
 
 function renderCard(r) {
@@ -1155,18 +1252,18 @@ function renderDetail(d) {
   html += '</div>';
 
   const downloads = [];
-  if (d.source_download_url) {
+  if (rid && d.source_object_key) {
     downloads.push({
       label: 'Download Resource',
-      url: d.source_download_url,
+      url: resourceDownloadUrl(rid, 'source'),
       key: d.source_object_key,
       kind: 'resource',
     });
   }
-  if (d.package_download_url) {
+  if (rid && d.package_object_key) {
     downloads.push({
       label: 'Download Package',
-      url: d.package_download_url,
+      url: resourceDownloadUrl(rid, 'package'),
       key: d.package_object_key,
       kind: 'package',
     });
@@ -1176,7 +1273,7 @@ function renderDetail(d) {
     for (const item of downloads) {
       const buttonClass = item.kind === 'package' ? 'download-button package-download' : 'download-button';
       html += '<div class="download-action">';
-      html += `<a class="${buttonClass}" href="${escapeAttr(item.url)}" target="_blank" rel="noopener">${escapeHtml(item.label)}</a>`;
+      html += `<a class="${buttonClass}" href="${escapeAttr(item.url)}">${escapeHtml(item.label)}</a>`;
       if (item.key) {
         html += `<span class="download-meta" title="${escapeAttr(item.key)}">${escapeHtml(shortObjectKey(item.key))}</span>`;
       }
@@ -1244,7 +1341,7 @@ function renderDetail(d) {
     }
     for (const f of d.files) {
       const objectKey = f.object_key || '-';
-      const hasUrl = !!f.download_url;
+      const fileDownloadUrl = rid && f.file_id && f.object_key ? resourceFileDownloadUrl(rid, f.file_id) : '';
       html += '<tr>';
       html += `<td><b>${escapeHtml(f.file_name)}</b></td>`;
       html += `<td>${escapeHtml(f.file_format)}</td>`;
@@ -1252,7 +1349,7 @@ function renderDetail(d) {
       html += `<td>${escapeHtml(f.file_role)}</td>`;
       if (!isPack) {
         html += `<td><code style="font-size:11px;color:var(--text2)">${escapeHtml(objectKey.length > 50 ? '...' + objectKey.slice(-47) : objectKey)}</code></td>`;
-        html += `<td>${hasUrl ? '<a class="dl-link" href="' + escapeAttr(f.download_url) + '" target="_blank" rel="noopener">Download</a>' : ''}</td>`;
+        html += `<td>${fileDownloadUrl ? '<a class="dl-link" href="' + escapeAttr(fileDownloadUrl) + '">Download</a>' : ''}</td>`;
       }
       html += '</tr>';
     }
@@ -1269,10 +1366,10 @@ function syncBrowseUrl(push) {
   const params = new URLSearchParams();
   if (state.query) params.set('q', state.query);
   if (state.resourceType) params.set('resource_type', state.resourceType);
-  if (state.processState) params.set('state', state.processState);
   if (state.query) {
     if (state.topK !== 36) params.set('top_k', String(state.topK));
     if (state.similarityThreshold !== 0.5) params.set('threshold', String(state.similarityThreshold));
+    if (state.searchMode !== 'hybrid') params.set('search_mode', state.searchMode);
     if (state.bm25Weight !== 0.5) params.set('bm25_weight', String(state.bm25Weight));
     if (state.enableReranker) params.set('reranker', state.enableReranker);
     if (state.formatFilter) params.set('format_filter', state.formatFilter);
@@ -1291,17 +1388,17 @@ function applyFiltersFromUrl() {
   const params = new URLSearchParams(location.search);
   state.query = params.get('q') || '';
   state.resourceType = params.get('resource_type') || '';
-  state.processState = params.get('state') || '';
   state.topK = parseNumber(params.get('top_k'), 36, 1, 120);
   state.similarityThreshold = parseNumber(params.get('threshold'), 0.5, 0, 1);
+  state.searchMode = ['vector', 'bm25', 'hybrid'].includes(params.get('search_mode')) ? params.get('search_mode') : 'hybrid';
   state.bm25Weight = parseNumber(params.get('bm25_weight'), 0.5, 0, 1);
   state.enableReranker = params.get('reranker') || '';
   state.formatFilter = params.get('format_filter') || '';
   document.getElementById('searchInput').value = state.query;
   document.getElementById('typeFilter').value = state.resourceType;
-  document.getElementById('stateFilter').value = state.processState;
   document.getElementById('topKInput').value = String(state.topK);
   document.getElementById('thresholdInput').value = String(state.similarityThreshold);
+  document.getElementById('searchModeSelect').value = state.searchMode;
   document.getElementById('bm25WeightInput').value = String(state.bm25Weight);
   document.getElementById('rerankerSelect').value = state.enableReranker;
   document.getElementById('formatFilterInput').value = state.formatFilter;
@@ -1312,10 +1409,12 @@ function runSearch() {
   state.query = document.getElementById('searchInput').value.trim();
   state.topK = parseNumber(document.getElementById('topKInput').value, 36, 1, 120);
   state.similarityThreshold = parseNumber(document.getElementById('thresholdInput').value, 0.5, 0, 1);
+  state.searchMode = document.getElementById('searchModeSelect').value || 'hybrid';
   state.bm25Weight = parseNumber(document.getElementById('bm25WeightInput').value, 0.5, 0, 1);
   state.enableReranker = document.getElementById('rerankerSelect').value;
   state.formatFilter = document.getElementById('formatFilterInput').value.trim();
   document.getElementById('advancedSearch').open = false;
+  showGrid(false);
   loadResources({ reset: true });
 }
 
@@ -1331,11 +1430,11 @@ document.getElementById('typeFilter').addEventListener('change', e => {
   state.resourceType = e.target.value;
   loadResources({ reset: true });
 });
-document.getElementById('stateFilter').addEventListener('change', e => {
-  state.processState = e.target.value;
-  loadResources({ reset: true });
+document.getElementById('resourceGrid').addEventListener('click', e => {
+  const card = e.target.closest('.resource-card');
+  if (card) selectResource(card.dataset.id, true);
 });
-for (const id of ['topKInput', 'thresholdInput', 'bm25WeightInput', 'rerankerSelect', 'formatFilterInput']) {
+for (const id of ['topKInput', 'thresholdInput', 'searchModeSelect', 'bm25WeightInput', 'rerankerSelect', 'formatFilterInput']) {
   const node = document.getElementById(id);
   node.addEventListener('keydown', e => {
     if (e.key === 'Enter') runSearch();

@@ -8,6 +8,8 @@
     ".webp",
     ".fbx",
     ".obj",
-    ".stl"
+    ".stl",
+    ".gltf",
+    ".glb"
   ]
 }

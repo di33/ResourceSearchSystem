@@ -196,6 +196,33 @@ def _public_preview_ref(ref: dict[str, Any]) -> dict[str, Any]:
     return {key: ref[key] for key in keys if key in ref and _clean_value(ref[key])}
 
 
+def _public_source_file_ref(ref: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(ref, dict):
+        return {}
+    file_name = str(ref.get("file_name") or "").strip()
+    if not file_name:
+        return {}
+    keys = (
+        "storage_profile_id",
+        "object_key",
+        "file_name",
+        "file_format",
+        "size",
+        "file_size",
+        "checksum",
+        "path_in_package",
+        "is_primary",
+    )
+    public_ref: dict[str, Any] = {}
+    for key in keys:
+        if key not in ref:
+            continue
+        value = ref[key]
+        if key == "path_in_package" or _clean_value(value):
+            public_ref[key] = value
+    return public_ref
+
+
 def build_processing_manifest(
     entity: ResourceProcessingEntity,
     *,
@@ -209,6 +236,11 @@ def build_processing_manifest(
 ) -> dict[str, Any]:
     client_resource_id = resource_identity(entity)
     public_package_object = _public_object_ref(package_object)
+    public_source_files = [
+        item
+        for item in (_public_source_file_ref(item) for item in (source_files or []) if isinstance(item, dict))
+        if item
+    ]
     public_previews = [_public_preview_ref(item) for item in (previews or []) if isinstance(item, dict)]
     manifest = {
         "request_id": f"{client_id}:{client_resource_id}",
@@ -217,6 +249,8 @@ def build_processing_manifest(
         "source_object": _public_object_ref(source_object),
         "client_metadata": client_metadata_from_entity(entity),
     }
+    if public_source_files:
+        manifest["source_files"] = public_source_files
     if public_previews:
         manifest["previews"] = public_previews
     if description is not None:

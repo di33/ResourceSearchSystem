@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query
@@ -12,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_db
 from app.middleware.auth import require_read_auth
-from app.models.tables import ResourcePreview, ResourceTask
+from app.models.tables import ResourceDescription, ResourceEmbedding, ResourceFile, ResourcePreview, ResourceTask
 from app.services.display_titles import display_title_for_task
 from app.services.object_urls import ObjectUrlGenerator
 from resource_contracts.resource_types import OTHER_RESOURCE_TYPE
@@ -20,6 +21,20 @@ from resource_contracts.resource_types import OTHER_RESOURCE_TYPE
 router = APIRouter(tags=["browse"], dependencies=[Depends(require_read_auth)])
 
 _HTML_PATH = Path(__file__).resolve().parent.parent / "static" / "browse.html"
+
+
+@dataclass
+class _BrowseTitleTask:
+    resource_type: str
+    client_metadata_json: str
+    title: str
+    source_resource_id: str
+    resource_id: str
+    content_md5: str
+    source_directory: str = ""
+    pack_name: str = ""
+    source_description: str = ""
+    source_object_file_name: str = ""
 
 
 class BrowseResourceOut(BaseModel):
@@ -58,10 +73,10 @@ def _ts(dt) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _preview_object_key(resource_id: str, preview: ResourcePreview) -> str:
-    if preview.object_key:
-        return preview.object_key
-    name = str(preview.path or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+def _preview_object_key(resource_id: str, object_key: str = "", path: str = "") -> str:
+    if object_key:
+        return object_key
+    name = str(path or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
     return f"previews/{resource_id}/{name}" if name else ""
 
 
@@ -103,6 +118,7 @@ async def browse_resources(
     resource_type: str | None = Query(None),
     state: str | None = Query(None),
     q: str | None = Query(None),
+    include_counts: bool = Query(True),
     session: AsyncSession = Depends(get_db),
 ):
     """Paginated resource listing for the browser grid UI."""
@@ -118,49 +134,136 @@ async def browse_resources(
 
     rows = (
         await session.execute(
-            select(ResourceTask)
+            select(
+                ResourceTask.id,
+                ResourceTask.resource_id,
+                ResourceTask.source_resource_id,
+                ResourceTask.title,
+                ResourceTask.client_metadata_json,
+                ResourceTask.content_md5,
+                ResourceTask.resource_type,
+                ResourceTask.process_state,
+                ResourceTask.updated_at,
+            )
             .where(*filters)
             .order_by(ResourceTask.updated_at.desc(), ResourceTask.id.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
-    ).scalars().all()
+    ).mappings().all()
+    task_ids = [int(row["id"]) for row in rows]
+
+    file_counts = {}
+    preview_counts = {}
+    description_ids = set()
+    embedding_ids = set()
+    previews_by_task = {}
+    if task_ids:
+        file_counts = {
+            int(task_id): int(count or 0)
+            for task_id, count in (
+                await session.execute(
+                    select(ResourceFile.task_id, func.count(ResourceFile.id))
+                    .where(ResourceFile.task_id.in_(task_ids))
+                    .group_by(ResourceFile.task_id)
+                )
+            ).all()
+        }
+        preview_counts = {
+            int(task_id): int(count or 0)
+            for task_id, count in (
+                await session.execute(
+                    select(ResourcePreview.task_id, func.count(ResourcePreview.id))
+                    .where(ResourcePreview.task_id.in_(task_ids))
+                    .group_by(ResourcePreview.task_id)
+                )
+            ).all()
+        }
+        description_ids = {
+            int(task_id)
+            for (task_id,) in (
+                await session.execute(
+                    select(ResourceDescription.task_id)
+                    .where(ResourceDescription.task_id.in_(task_ids))
+                    .group_by(ResourceDescription.task_id)
+                )
+            ).all()
+        }
+        embedding_ids = {
+            int(task_id)
+            for (task_id,) in (
+                await session.execute(
+                    select(ResourceEmbedding.task_id)
+                    .where(ResourceEmbedding.task_id.in_(task_ids))
+                    .group_by(ResourceEmbedding.task_id)
+                )
+            ).all()
+        }
+        preview_rows = (
+            await session.execute(
+                select(
+                    ResourcePreview.task_id,
+                    ResourcePreview.role,
+                    ResourcePreview.path,
+                    ResourcePreview.storage_profile_id,
+                    ResourcePreview.object_key,
+                    ResourcePreview.id,
+                )
+                .where(ResourcePreview.task_id.in_(task_ids))
+                .order_by(ResourcePreview.task_id, ResourcePreview.role.desc(), ResourcePreview.id)
+            )
+        ).mappings().all()
+        for preview in preview_rows:
+            task_id = int(preview["task_id"])
+            if task_id not in previews_by_task or preview["role"] == "primary":
+                previews_by_task[task_id] = preview
 
     urls = ObjectUrlGenerator()
     resources = []
-    for task in rows:
-        rid = task.resource_id or task.content_md5
-        previews = list(task.previews)
-        description = task.descriptions[0] if task.descriptions else None
+    for row in rows:
+        task_id = int(row["id"])
+        rid = row["resource_id"] or row["content_md5"]
+        preview = previews_by_task.get(task_id) or {}
+        preview_key = _preview_object_key(
+            rid,
+            str(preview.get("object_key") or ""),
+            str(preview.get("path") or ""),
+        )
         preview_url = ""
-        if previews:
-            preview = previews[0]
+        if preview_key:
             preview_url = _object_url(
                 urls,
-                _preview_object_key(rid, preview),
-                preview.storage_profile_id,
+                preview_key,
+                str(preview.get("storage_profile_id") or ""),
             )
         resources.append(BrowseResourceOut(
             resource_id=rid,
-            source_resource_id=task.source_resource_id,
-            title=task.title,
-            display_title=display_title_for_task(task, description=description),
-            content_md5=task.content_md5,
-            resource_type=task.resource_type,
-            process_state=task.process_state,
-            file_count=len(task.files),
-            preview_count=len(previews),
-            has_description=len(task.descriptions) > 0,
-            has_embedding=len(task.embeddings) > 0,
+            source_resource_id=row["source_resource_id"],
+            title=row["title"],
+            display_title=display_title_for_task(_BrowseTitleTask(
+                resource_type=row["resource_type"],
+                client_metadata_json=row["client_metadata_json"],
+                title=row["title"],
+                source_resource_id=row["source_resource_id"],
+                resource_id=rid,
+                content_md5=row["content_md5"],
+            )),
+            content_md5=row["content_md5"],
+            resource_type=row["resource_type"],
+            process_state=row["process_state"],
+            file_count=file_counts.get(task_id, 0),
+            preview_count=preview_counts.get(task_id, 0),
+            has_description=task_id in description_ids,
+            has_embedding=task_id in embedding_ids,
             preview_url=preview_url,
-            updated_at=_ts(task.updated_at),
+            updated_at=_ts(row["updated_at"]),
         ))
 
     return BrowseResourceListOut(
         total=total,
         page=page,
         page_size=page_size,
-        type_counts=await _count_by(session, ResourceTask.resource_type, type_filters),
-        state_counts=await _count_by(session, ResourceTask.process_state, state_filters),
+        type_counts=await _count_by(session, ResourceTask.resource_type, type_filters) if include_counts else {},
+        state_counts=await _count_by(session, ResourceTask.process_state, state_filters) if include_counts else {},
         resources=resources,
     )

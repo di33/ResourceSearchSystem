@@ -18,6 +18,7 @@ from resource_contracts.resource_types import (
     FONT_FILE_RESOURCE_TYPE,
     IMAGE_RESOURCE_TYPE,
     MODEL_3D_RESOURCE_TYPE,
+    MODEL_RESOURCE_TYPE,
     OTHER_RESOURCE_TYPE,
 )
 
@@ -77,6 +78,7 @@ def validate_description_keywords(
     """校验描述是否包含资源类型或等价词。"""
     type_keywords = {
         IMAGE_RESOURCE_TYPE: ["图片", "图像", "image", "照片", "插画"],
+        MODEL_RESOURCE_TYPE: ["模型", "3D", "3d", "model", "mesh"],
         MODEL_3D_RESOURCE_TYPE: ["模型", "3D", "3d", "model", "mesh"],
         DESIGN_FILE_RESOURCE_TYPE: ["设计", "design", "源文件", "画板"],
         AUDIO_FILE_RESOURCE_TYPE: ["音频", "audio", "音乐", "声音", "sound"],

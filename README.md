@@ -258,7 +258,7 @@ SearchServer 读接口使用 `SEARCH_READ_API_KEYS` / JWT；写入口使用 `SEA
 {
   "supported_extensions": [
     ".png", ".jpg", ".jpeg", ".gif", ".tga", ".webp",
-    ".fbx", ".obj", ".stl"
+    ".fbx", ".obj", ".stl", ".gltf", ".glb"
   ]
 }
 ```

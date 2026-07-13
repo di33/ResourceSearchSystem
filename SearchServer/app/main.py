@@ -189,6 +189,10 @@ def _ensure_additive_schema(sync_conn) -> None:
             "CREATE INDEX IF NOT EXISTS ix_resource_description_task_id "
             "ON resource_description (task_id)"
         ))
+        sync_conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_resource_task_browse_updated_id "
+            "ON resource_task (updated_at DESC, id DESC)"
+        ))
         if sync_conn.dialect.name == "postgresql":
             sync_conn.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_resource_description_pending_fts "

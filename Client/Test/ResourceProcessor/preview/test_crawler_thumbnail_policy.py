@@ -1353,6 +1353,83 @@ async def test_animation_sequence_crops_frame_padding(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_animation_sequence_single_image_uses_source_preview(tmp_path):
+    image_path = tmp_path / "chest.png"
+    image = Image.new("RGBA", (128, 32), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    for idx, color in enumerate(["red", "green", "blue", "yellow"]):
+        draw.rectangle((idx * 32 + 4, 8, idx * 32 + 27, 27), fill=color)
+    image.save(image_path)
+
+    entity = ResourceProcessingEntity(
+        resource_type="animation_sequence",
+        source_directory=str(tmp_path),
+        pack_name="Sprite Pack",
+        title="Chest",
+        content_md5="single-sheet-md5",
+        files=[
+            FileInfo(
+                file_path=str(image_path),
+                file_name=image_path.name,
+                file_size=image_path.stat().st_size,
+                file_format="png",
+                content_md5="single-sheet-file-md5",
+                file_role="frame",
+                is_primary=True,
+            )
+        ],
+    )
+
+    policy = CrawlerThumbnailPolicy(str(tmp_path / "previews"))
+    previews = await policy.generate_previews(entity)
+    assert len(previews) == 1
+    assert previews[0].strategy.value == "static"
+    assert previews[0].mode == "source_image"
+    assert previews[0].format == "webp"
+    assert previews[0].width == 128
+    assert previews[0].height == 32
+    assert Path(previews[0].path).is_file()
+
+
+@pytest.mark.asyncio
+async def test_animation_sequence_supports_tga_frames(tmp_path):
+    files = []
+    for idx, color in enumerate(["red", "green", "blue"]):
+        image_path = tmp_path / f"walk_{idx:02d}.tga"
+        with Image.new("RGBA", (48, 48), (0, 0, 0, 0)) as image:
+            ImageDraw.Draw(image).ellipse((8 + idx, 8, 39 + idx, 39), fill=color)
+            image.save(image_path)
+        files.append(
+            FileInfo(
+                file_path=str(image_path),
+                file_name=image_path.name,
+                file_size=image_path.stat().st_size,
+                file_format="tga",
+                content_md5=f"tga-md5-{idx}",
+                file_role="frame",
+                is_primary=(idx == 0),
+            )
+        )
+
+    entity = ResourceProcessingEntity(
+        resource_type="animation_sequence",
+        source_directory=str(tmp_path),
+        pack_name="Sprite Pack",
+        title="Walk",
+        content_md5="tga-sequence-md5",
+        files=files,
+    )
+
+    policy = CrawlerThumbnailPolicy(str(tmp_path / "previews"))
+    previews = await policy.generate_previews(entity)
+    assert len(previews) == 1
+    assert previews[0].strategy.value == "gif"
+    assert previews[0].mode == "composed"
+    assert previews[0].format == "gif"
+    assert Path(previews[0].path).is_file()
+
+
+@pytest.mark.asyncio
 async def test_pack_generates_collage_preview(tmp_path):
     files = []
     for idx, color in enumerate(["red", "green", "blue", "yellow"]):

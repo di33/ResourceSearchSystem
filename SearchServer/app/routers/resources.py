@@ -7,12 +7,16 @@ SearchServer only returns metadata and URLs generated from storage profiles.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, List, Optional
+from urllib.parse import quote
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.responses import StreamingResponse
 
 from app.deps import get_db
 from app.middleware.auth import require_read_auth
@@ -30,6 +34,7 @@ router = APIRouter(prefix="/resources", tags=["resources"], dependencies=[Depend
 
 
 class ResourceFileOut(BaseModel):
+    file_id: int = 0
     file_name: str
     file_format: str
     file_size: int
@@ -176,6 +181,169 @@ def _preview_object_key(resource_id: str, preview: ResourcePreview) -> str:
     return f"previews/{resource_id}/{name}" if name else ""
 
 
+def _safe_download_filename(value: str, fallback: str = "resource") -> str:
+    name = str(value or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].strip()
+    name = re.sub(r"[\x00-\x1f\x7f\r\n]+", "_", name).strip(" .")
+    return name or fallback
+
+
+def _content_disposition_header(filename: str) -> str:
+    safe_name = _safe_download_filename(filename)
+    ascii_name = safe_name.encode("ascii", "ignore").decode("ascii").strip() or "download"
+    ascii_name = ascii_name.replace("\\", "_").replace('"', "'")
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(safe_name)}"
+
+
+def _download_target(task: ResourceTask, kind: str) -> tuple[str, str, str, int]:
+    if kind == "source":
+        if not task.source_object_key:
+            raise HTTPException(status_code=404, detail="Resource source object is not available")
+        return (
+            task.source_object_key,
+            task.source_storage_profile_id,
+            _safe_download_filename(task.source_object_file_name or task.source_object_key),
+            task.source_object_file_size,
+        )
+    if kind == "package":
+        if not task.package_object_key:
+            raise HTTPException(status_code=404, detail="Resource package object is not available")
+        return (
+            task.package_object_key,
+            task.package_storage_profile_id,
+            _safe_download_filename(task.package_object_key, fallback="package.zip"),
+            0,
+        )
+    raise HTTPException(status_code=400, detail="kind must be source or package")
+
+
+async def _stream_download_response(
+    download_url: str,
+    file_name: str,
+    *,
+    file_size: int = 0,
+    client: httpx.AsyncClient | None = None,
+) -> StreamingResponse:
+    owns_client = client is None
+    http_client = client or httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0),
+    )
+    request = http_client.build_request(
+        "GET",
+        download_url,
+        headers={"Accept": "*/*", "Accept-Encoding": "identity"},
+    )
+    try:
+        upstream = await http_client.send(request, stream=True)
+    except httpx.HTTPError as exc:
+        if owns_client:
+            await http_client.aclose()
+        raise HTTPException(status_code=502, detail=f"Download upstream request failed: {exc}") from exc
+
+    if upstream.status_code >= 400:
+        await upstream.aclose()
+        if owns_client:
+            await http_client.aclose()
+        raise HTTPException(status_code=502, detail=f"Download upstream returned HTTP {upstream.status_code}")
+
+    async def body_iter():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await upstream.aclose()
+            if owns_client:
+                await http_client.aclose()
+
+    headers = {
+        "Content-Disposition": _content_disposition_header(file_name),
+        "X-Content-Type-Options": "nosniff",
+    }
+    content_length = upstream.headers.get("content-length") or (str(file_size) if file_size else "")
+    if content_length:
+        headers["Content-Length"] = content_length
+
+    return StreamingResponse(
+        body_iter(),
+        media_type=upstream.headers.get("content-type") or "application/octet-stream",
+        headers=headers,
+    )
+
+
+@router.get("/{resource_id}/download", include_in_schema=False)
+async def download_resource_object(
+    resource_id: str,
+    kind: str = Query("source", pattern="^(source|package)$"),
+    expire_seconds: int = Query(3600, ge=1, le=86400),
+    session: AsyncSession = Depends(get_db),
+):
+    """Stream a resource object as an attachment so browsers save images instead of opening them."""
+    task = (
+        await session.execute(
+            select(ResourceTask).where(ResourceTask.resource_id == resource_id)
+        )
+    ).scalar_one_or_none()
+
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Resource {resource_id} not found")
+
+    key, storage_profile_id, file_name, file_size = _download_target(task, kind)
+    try:
+        download_url = ObjectUrlGenerator().generate_download_url(
+            key,
+            expires=expire_seconds,
+            storage_profile_id=storage_profile_id,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not generate download URL: {exc}") from exc
+
+    return await _stream_download_response(download_url, file_name, file_size=file_size)
+
+
+@router.get("/{resource_id}/files/{file_id}/download", include_in_schema=False)
+async def download_resource_file(
+    resource_id: str,
+    file_id: int,
+    expire_seconds: int = Query(3600, ge=1, le=86400),
+    session: AsyncSession = Depends(get_db),
+):
+    """Stream an individual resource file as an attachment."""
+    task = (
+        await session.execute(
+            select(ResourceTask).where(ResourceTask.resource_id == resource_id)
+        )
+    ).scalar_one_or_none()
+
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Resource {resource_id} not found")
+
+    file_record = (
+        await session.execute(
+            select(ResourceFile).where(
+                ResourceFile.id == file_id,
+                ResourceFile.task_id == task.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not file_record or not file_record.object_key:
+        raise HTTPException(status_code=404, detail="Resource file object is not available")
+
+    try:
+        download_url = ObjectUrlGenerator().generate_download_url(
+            file_record.object_key,
+            expires=expire_seconds,
+            storage_profile_id=file_record.storage_profile_id,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not generate download URL: {exc}") from exc
+
+    return await _stream_download_response(
+        download_url,
+        file_record.file_name,
+        file_size=file_record.file_size,
+    )
+
+
 @router.get("", response_model=ResourceListOut)
 async def list_resources(
     page: int = Query(1, ge=1),
@@ -246,6 +414,7 @@ async def get_resource_detail(resource_id: str, session: AsyncSession = Depends(
     for f in task.files:
         key = f.object_key or ""
         files.append(ResourceFileOut(
+            file_id=f.id,
             file_name=f.file_name,
             file_format=f.file_format,
             file_size=f.file_size,

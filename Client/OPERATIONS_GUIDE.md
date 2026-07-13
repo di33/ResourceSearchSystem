@@ -32,20 +32,12 @@ dry-run 看差异：
 & $py -m ResourceProcessor.tools.sync_pipeline_from_crawler_state --dry-run
 ```
 
-全量重建：
-
-```powershell
-& $py -m ResourceProcessor.tools.sync_pipeline_from_crawler_state --clear-first
-```
-
 参数：
 
 - `--crawler-state-db`：ResourceCrawler 状态库。默认 `G:\ResourceCrawler\data\crawler_state.db`。
 - `--crawler-output`：ResourceCrawler 输出目录。默认 `K:\ResourceCrawler\output`。
 - `--db-path`：目标 pipeline SQLite。默认 `G:\ResourceUpload\data\databases\pipeline.db`。
 - `--dry-run`：只统计差异，不写库、不删文件。默认关闭。
-- `--clear-first`：同步前清空当前 pipeline 表。默认关闭。
-- `--replace-db-file`：配合 `--clear-first`，直接删除旧 SQLite 文件后重建。默认关闭。
 - `--no-backup`：执行前不备份目标数据库。默认关闭，即默认会备份。
 - `--keep-preview-files`：只删 `resource_preview` 记录，不删磁盘预览文件。默认关闭。
 - `--no-object-delete-jobs`：删除本地资源时不写入对象存储删除队列。默认关闭，即默认会写入删除队列。
