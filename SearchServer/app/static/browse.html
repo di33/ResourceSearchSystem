@@ -946,9 +946,10 @@ async function loadStats() {
   try {
     const r = await fetch(API + '/stats');
     const d = await r.json();
+    const effectiveVectorCount = d.db_embedding_count ?? d.milvus_vector_count;
     document.getElementById('stats').innerHTML =
       `<span>DB: <span class="stat-val">${d.db_resource_count}</span></span>` +
-      `<span>Vectors: <span class="stat-val">${d.milvus_vector_count}</span></span>`;
+      `<span>Vectors: <span class="stat-val">${effectiveVectorCount}</span></span>`;
   } catch(e) {
     document.getElementById('stats').textContent = 'Failed to load stats';
   }
