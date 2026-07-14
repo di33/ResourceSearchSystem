@@ -99,7 +99,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "services",
         nargs="*",
-        choices=tuple(SERVER_BY_KEY),
         help="Optional subset: search, renderer, processor. Defaults to all three.",
     )
     parser.add_argument(
@@ -135,6 +134,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Print docker commands without running them.",
     )
     args = parser.parse_args(argv)
+    invalid_services = [service for service in args.services if service not in SERVER_BY_KEY]
+    if invalid_services:
+        parser.error(
+            "argument services: invalid choice: "
+            f"{invalid_services[0]!r} (choose from {', '.join(repr(key) for key in SERVER_BY_KEY)})"
+        )
     if args.timeout <= 0:
         parser.error("--timeout must be greater than 0")
     if args.build and args.no_build:
