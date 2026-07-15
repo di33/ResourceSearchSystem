@@ -13,8 +13,10 @@ services:
       - path: .env.local
         required: false
     environment:
-      DB_POOL_MIN: "48"
-      DB_POOL_MAX: "64"
+      # Gunicorn runs four API processes. Pool sizes are per process, so keep
+      # the aggregate API budget at 32 warm / 64 maximum connections.
+      DB_POOL_MIN: "8"
+      DB_POOL_MAX: "16"
       MILVUS_HOST: milvus
       MILVUS_PORT: "19530"
       SERVER_EMBEDDING_PROVIDER: ksyun
@@ -22,10 +24,9 @@ services:
       SERVER_EMBEDDING_DIMENSION: "4096"
       SERVER_EMBEDDING_BASE_URL: https://kspmas.ksyun.com/v1
       SERVER_EMBEDDING_TIMEOUT_SECONDS: "120"
-      VECTOR_SYNC_WORKER_INTERVAL: "0.2"
-      VECTOR_SYNC_WORKER_BATCH_SIZE: "16"
-      VECTOR_SYNC_WORKER_CONCURRENCY: "2"
-      VECTOR_SYNC_FAILED_RETRY_SECONDS: "60"
+      # Background queues are drained by the single background-worker service.
+      VECTOR_SYNC_WORKER_ENABLED: "false"
+      FTS_WORKER_ENABLED: "false"
       RERANKER_URL: http://reranker:8100
       DEBUG: "false"
     depends_on:
@@ -35,6 +36,56 @@ services:
         condition: service_healthy
       reranker:
         condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  background-worker:
+    image: searchserver-api
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      # This is a single process, so these are also the aggregate pool limits.
+      DB_POOL_MIN: "4"
+      DB_POOL_MAX: "8"
+      MILVUS_HOST: milvus
+      MILVUS_PORT: "19530"
+      SERVER_EMBEDDING_PROVIDER: ksyun
+      SERVER_EMBEDDING_MODEL: qwen3-embedding-8b
+      SERVER_EMBEDDING_DIMENSION: "4096"
+      SERVER_EMBEDDING_BASE_URL: https://kspmas.ksyun.com/v1
+      SERVER_EMBEDDING_TIMEOUT_SECONDS: "120"
+      VECTOR_SYNC_WORKER_ENABLED: "true"
+      VECTOR_SYNC_WORKER_INTERVAL: "0.5"
+      VECTOR_SYNC_WORKER_BATCH_SIZE: "16"
+      VECTOR_SYNC_WORKER_CONCURRENCY: "2"
+      VECTOR_SYNC_FAILED_RETRY_SECONDS: "60"
+      FTS_WORKER_ENABLED: "true"
+      RERANKER_URL: http://reranker:8100
+      DEBUG: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+      reranker:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     logging:
       driver: json-file
       options:

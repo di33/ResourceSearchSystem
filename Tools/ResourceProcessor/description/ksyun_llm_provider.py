@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import logging
 import mimetypes
 import os
@@ -264,6 +265,50 @@ def _description_response_schema() -> dict[str, Any]:
         },
         "required": ["main_content", "detail_content", "description_quality_score"],
     }
+
+
+class InvalidDescriptionResponse(ValueError):
+    """The model response does not match the required description contract."""
+
+
+def _parse_description_response_strict(text: str) -> tuple[str, str, float | None]:
+    """Validate the description JSON locally before it can enter the pipeline."""
+    try:
+        data = json.loads(str(text or ""))
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise InvalidDescriptionResponse("description response is not valid JSON") from exc
+
+    if not isinstance(data, dict):
+        raise InvalidDescriptionResponse("description response must be a JSON object")
+
+    required = {"main_content", "detail_content", "description_quality_score"}
+    missing = required - set(data)
+    extra = set(data) - required
+    if missing:
+        raise InvalidDescriptionResponse(
+            f"description response is missing required fields: {', '.join(sorted(missing))}"
+        )
+    if extra:
+        raise InvalidDescriptionResponse(
+            f"description response contains unexpected fields: {', '.join(sorted(extra))}"
+        )
+
+    main = data["main_content"]
+    detail = data["detail_content"]
+    score = data["description_quality_score"]
+    if not isinstance(main, str) or not main.strip():
+        raise InvalidDescriptionResponse("main_content must be a non-empty string")
+    if not isinstance(detail, str) or not detail.strip():
+        raise InvalidDescriptionResponse("detail_content must be a non-empty string")
+    if score is not None and (
+        isinstance(score, bool)
+        or not isinstance(score, (int, float))
+        or not 0 <= score <= 1
+    ):
+        raise InvalidDescriptionResponse(
+            "description_quality_score must be null or a number between 0 and 1"
+        )
+    return main.strip(), detail.strip(), float(score) if score is not None else None
 
 
 def _build_user_content(input_data: DescriptionInput) -> list[dict[str, Any]]:
@@ -526,7 +571,7 @@ class KsyunLLMProvider(BaseMultiModalLLMProvider):
         self, input_data: DescriptionInput
     ) -> DescriptionResult:
         raw_text = await _run_in_daemon_thread(self._call_sync, input_data)
-        main, detail, score, _description_classification = parse_description_response(raw_text)
+        main, detail, score = _parse_description_response_strict(raw_text)
         return build_description_result(
             input_data,
             main_content=main,
@@ -539,7 +584,7 @@ class KsyunLLMProvider(BaseMultiModalLLMProvider):
         self, input_data: DescriptionInput
     ) -> DescriptionResult:
         raw_text = await _run_in_daemon_thread(self._call_sync, input_data)
-        main, detail, score, _description_classification = parse_description_response(raw_text)
+        main, detail, score = _parse_description_response_strict(raw_text)
         classification = await self.classify_usage(input_data, main, detail)
         return build_description_result(
             input_data,

@@ -21,8 +21,9 @@ services:
       RP_WORK_DIR: /app/data/resource_processing_server
       RP_SNAPSHOT_DB_PATH: /app/data/resource_processing_server/snapshots.db
       RP_DATABASE_POOL_MIN_SIZE: ${RP_DATABASE_POOL_MIN_SIZE:-2}
-      RP_DATABASE_POOL_MAX_SIZE: ${RP_DATABASE_POOL_MAX_SIZE:-48}
-      RP_JOB_WORKER_CONCURRENCY: ${RP_JOB_WORKER_CONCURRENCY:-32}
+      RP_DATABASE_POOL_MAX_SIZE: ${RP_DATABASE_POOL_MAX_SIZE:-12}
+      # Keep downstream SearchServer writes bounded during large imports.
+      RP_JOB_WORKER_CONCURRENCY: ${RP_JOB_WORKER_CONCURRENCY:-4}
       RP_JOB_WORKER_IDLE_SECONDS: ${RP_JOB_WORKER_IDLE_SECONDS:-0.2}
       RP_MIGRATE_LEGACY_SQLITE: ${RP_MIGRATE_LEGACY_SQLITE:-true}
       RP_SHARED_RESOURCE_PROCESSOR_PATH: /app/Tools

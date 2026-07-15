@@ -16,12 +16,14 @@ from ResourceProcessor.description.description_generator import (  # noqa: E402
     generate_resource_description,
 )
 from ResourceProcessor.description.ksyun_llm_provider import (  # noqa: E402
+    InvalidDescriptionResponse,
     KsyunLLMProvider,
     LLMFactory,
     PROMPT_VERSION,
     _build_classification_user_content,
     _build_user_content,
     _prepare_audio_input,
+    _parse_description_response_strict,
     _parse_response,
     _run_in_daemon_thread,
 )
@@ -49,6 +51,41 @@ def test_parse_response_normal():
     main, detail = _parse_response(text)
     assert "游戏贴图" in main
     assert "PNG" in detail
+
+
+def test_parse_description_response_strict_accepts_valid_contract():
+    main, detail, score = _parse_description_response_strict(
+        '{"main_content":"像素水晶图标","detail_content":"蓝色透明晶体。",'
+        '"description_quality_score":0.8}'
+    )
+    assert main == "像素水晶图标"
+    assert detail == "蓝色透明晶体。"
+    assert score == 0.8
+
+
+@pytest.mark.parametrize(
+    "response, message",
+    [
+        ("The request was rejected because it was considered high risk", "not valid JSON"),
+        ('{"main_content":"主体","description_quality_score":0.5}', "missing required fields"),
+        ('{"main_content":"主体","detail_content":"细节","description_quality_score":2}', "between 0 and 1"),
+        ('{"main_content":"","detail_content":"细节","description_quality_score":null}', "main_content"),
+        ('{"main_content":"主体","detail_content":"细节","description_quality_score":null,"error":"x"}', "unexpected fields"),
+    ],
+)
+def test_parse_description_response_strict_rejects_invalid_contract(response, message):
+    with pytest.raises(InvalidDescriptionResponse, match=message):
+        _parse_description_response_strict(response)
+
+
+def test_generate_description_text_rejects_plain_text_response():
+    provider = KsyunLLMProvider(api_key="ks-test")
+    with patch.object(
+        provider,
+        "_call_sync",
+        return_value="The request was rejected because it was considered high risk",
+    ), pytest.raises(InvalidDescriptionResponse, match="not valid JSON"):
+        _run(provider.generate_description_text(_make_input()))
 
 
 def test_build_user_content_without_image():

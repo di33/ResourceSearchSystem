@@ -65,7 +65,7 @@ DASHSCOPE_API_KEY=你的DashScopeKey
 
 ## 2. 服务端
 
-SearchServer 只部署搜索 API、Postgres、Milvus、reranker 等搜索侧依赖。docker compose 里的 MinIO 仅供 Milvus standalone 内部使用，不作为资源文件桶。资源加工服务器单独部署，通过 HTTP 调用 SearchServer 的 `/resources/upsert`、`/resources/delete` 等接口，不要求和 SearchServer 在同一台物理机。搜索结果中的包下载入口是 `package_download_url`；父子资源字段已从搜索响应和资源详情响应中移除。
+SearchServer 只部署搜索 API、单实例后台 worker、Postgres、Milvus、reranker 等搜索侧依赖。API 的 Gunicorn 进程不再重复启动向量同步和 FTS worker；`background-worker` 独立消费持久队列，避免多进程将数据库连接和后台并发成倍放大。docker compose 里的 MinIO 仅供 Milvus standalone 内部使用，不作为资源文件桶。资源加工服务器单独部署，通过 HTTP 调用 SearchServer 的 `/resources/upsert`、`/resources/delete` 等接口，不要求和 SearchServer 在同一台物理机。搜索结果中的包下载入口是 `package_download_url`；父子资源字段已从搜索响应和资源详情响应中移除。
 
 ### Windows
 
@@ -133,6 +133,12 @@ docker compose up -d --no-build
 docker compose logs -f api
 ```
 
+跟随向量同步和 FTS 后台任务日志：
+
+```bash
+docker compose logs -f background-worker
+```
+
 清空 Postgres、Milvus（含 Milvus 内部 MinIO 数据卷）后重启：
 
 ```bash
@@ -143,6 +149,7 @@ docker compose down -v && docker compose up -d --build
 
 - `up -d --build`：构建镜像并后台启动容器。
 - `logs -f api`：持续输出 `api` 服务日志。
+- `logs -f background-worker`：持续输出唯一的向量同步和 FTS worker 日志。
 - `down -v`：停止容器并删除数据卷，会清空服务端持久化数据。
 
 ### 通用检查

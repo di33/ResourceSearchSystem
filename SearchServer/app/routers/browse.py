@@ -116,7 +116,6 @@ async def browse_resources(
     page_size: int = Query(72, ge=1, le=120),
     resource_type: str | None = Query(None),
     state: str | None = Query(None),
-    q: str | None = Query(None),
     include_counts: bool = Query(True),
     session: AsyncSession = Depends(get_db),
 ):

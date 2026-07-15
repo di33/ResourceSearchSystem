@@ -280,7 +280,8 @@ class MilvusSearchClient(BaseSearchClient):
         if normalized_resource_type:
             search_filter = f'resource_type == "{normalized_resource_type}"'
 
-        hits = self.milvus.search(
+        hits = await asyncio.to_thread(
+            self.milvus.search,
             collection_name=settings.milvus_collection,
             data=[query_vector],
             limit=limit,

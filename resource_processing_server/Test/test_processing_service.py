@@ -4,6 +4,7 @@ import asyncio
 import shutil
 import time
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from PIL import Image, ImageDraw
@@ -23,6 +24,7 @@ from resource_processing_server.app.models import (
 from resource_processing_server.app.processor import JobStore, ProcessingService
 from resource_processing_server.app.preview_renderer_client import RenderedPreviewFile
 from resource_processing_server.app.snapshots import ProcessedSnapshotStore
+from ResourceProcessor.description.ksyun_llm_provider import InvalidDescriptionResponse
 
 
 class FakeStorage:
@@ -125,6 +127,49 @@ class FakePreviewRenderer:
 
 class DisabledPreviewRenderer:
     enabled = False
+
+
+@pytest.mark.asyncio
+async def test_invalid_description_response_marks_job_failed_without_search_upsert(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "work_dir", str(tmp_path / "work"))
+
+    source_path = tmp_path / "source.png"
+    preview_path = tmp_path / "preview.png"
+    _write_test_image(source_path)
+    _write_test_image(preview_path)
+    storage = FakeStorage(
+        {
+            ("default", "raw/source.png"): source_path,
+            ("default", "provided/preview.png"): preview_path,
+        },
+        tmp_path / "uploaded",
+    )
+    search = FakeSearchClient()
+    service = ProcessingService(
+        storage=storage,
+        search_client=search,
+        snapshot_store=ProcessedSnapshotStore(str(tmp_path / "snapshots.db")),
+        store=JobStore(),
+    )
+    service.description_batcher.describe = AsyncMock(
+        side_effect=InvalidDescriptionResponse("description response is not valid JSON")
+    )
+    manifest = ResourceManifest(
+        client_resource_id="asset-invalid-description",
+        resource_type="single_image",
+        source_object=ObjectRef(object_key="raw/source.png", file_name="source.png"),
+        source_files=[SourceFileRef(file_name="source.png", is_primary=True)],
+        previews=[PreviewRef(object_key="provided/preview.png", origin="provided")],
+    )
+
+    created = await service.create_job(client_id="client-a", manifest=manifest)
+    await service.run_job(created.job_id)
+    job = await service.get_job(created.job_id, client_id="client-a")
+
+    assert job is not None
+    assert job.state == JobState.FAILED
+    assert "not valid JSON" in (job.error or "")
+    assert search.payloads == []
 
 
 def _write_test_image(path: Path) -> None:

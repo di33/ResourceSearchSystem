@@ -40,8 +40,10 @@ allowed_origins = [
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `DATABASE_URL` | `postgresql+asyncpg://resource:resource@localhost:5432/resource_upload` | 数据库连接串 |
-| `DB_POOL_MIN` | `10` | 连接池最小连接数 |
-| `DB_POOL_MAX` | `50` | 连接池最大连接数 |
+| `DB_POOL_MIN` | `8`（Compose API） | 每个进程的连接池常驻连接数；Gunicorn 多进程会按进程数累加 |
+| `DB_POOL_MAX` | `16`（Compose API） | 每个进程的连接池最大连接数；4 个 API 进程合计最多 64 |
+
+Compose 使用独立的单进程 `background-worker` 消费向量同步和 FTS 持久队列，连接池为 `4..8`。API 容器设置 `VECTOR_SYNC_WORKER_ENABLED=false` 和 `FTS_WORKER_ENABLED=false`，避免每个 Gunicorn 进程重复启动后台任务。
 
 ### 2.2 Milvus（向量数据库）
 

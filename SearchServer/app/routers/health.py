@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import func, select, text
@@ -12,6 +14,7 @@ from app.config import settings
 from app.models.tables import ResourceEmbedding, ResourceTask
 
 router = APIRouter(tags=["health"])
+_MILVUS_HEALTH_TIMEOUT_SECONDS = 5.0
 
 
 class ComponentHealth(BaseModel):
@@ -39,7 +42,10 @@ async def health_check(session: AsyncSession = Depends(get_db)):
 
     try:
         client = get_milvus()
-        client.list_collections()
+        await asyncio.wait_for(
+            asyncio.to_thread(client.list_collections),
+            timeout=_MILVUS_HEALTH_TIMEOUT_SECONDS,
+        )
     except Exception as exc:
         mv = ComponentHealth(status="error", detail=str(exc))
 
@@ -92,8 +98,14 @@ async def server_stats(session: AsyncSession = Depends(get_db)):
         client = get_milvus()
         coll_name = settings.milvus_collection
         result.milvus_collection = coll_name
-        if client.has_collection(coll_name):
-            stats = client.get_collection_stats(coll_name)
+        if await asyncio.wait_for(
+            asyncio.to_thread(client.has_collection, coll_name),
+            timeout=_MILVUS_HEALTH_TIMEOUT_SECONDS,
+        ):
+            stats = await asyncio.wait_for(
+                asyncio.to_thread(client.get_collection_stats, coll_name),
+                timeout=_MILVUS_HEALTH_TIMEOUT_SECONDS,
+            )
             result.milvus_vector_count = int(stats.get("row_count", 0))
     except Exception:
         pass
