@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -19,7 +20,7 @@ from urllib import error, request
 
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_TIMEOUT_SECONDS = 300
-DEFAULT_BUILD_TIMEOUT_SECONDS = 1800
+DEFAULT_BUILD_TIMEOUT_SECONDS = 3600
 
 
 @dataclass(frozen=True)
@@ -190,11 +191,113 @@ def command_text(command: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in command)
 
 
+def _content_tag(repository: str, paths: tuple[Path, ...], variants: tuple[str, ...] = ()) -> str:
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(path.relative_to(REPO_ROOT).as_posix().encode())
+        digest.update(path.read_bytes())
+    for variant in variants:
+        digest.update(b"\0")
+        digest.update(variant.encode())
+    return f"{repository}:{digest.hexdigest()[:16]}"
+
+
+def _configured_value(server: Server, name: str, default: str) -> str:
+    values = {
+        **_load_dotenv(server.compose_dir / ".env"),
+        **_load_dotenv(server.compose_dir / ".env.local"),
+        **os.environ,
+    }
+    return values.get(name, default)
+
+
+def processing_base_image(server: Server) -> str:
+    docker_dir = REPO_ROOT / "resource_processing_server" / "docker"
+    paths = (
+        docker_dir / "ProcessingBase.Dockerfile",
+        docker_dir / "apt-packages.txt",
+        docker_dir / "apt-packages.blender.txt",
+        docker_dir / "vendor" / "apt" / "manifest.json",
+        docker_dir / "vendor" / "pip" / "manifest.json",
+        docker_dir / "vendor" / "npm" / "manifest.json",
+        REPO_ROOT / "Tools" / "requirements.txt",
+        REPO_ROOT / "Tools" / "spine_preview" / "package-lock.json",
+        REPO_ROOT / "preview_renderer" / "requirements.txt",
+        REPO_ROOT / "resource_processing_server" / "requirements.txt",
+    )
+    variants = tuple(
+        f"{name}={_configured_value(server, name, default)}"
+        for name, default in (
+            ("INSTALL_BLENDER", "false"),
+            ("RP_APT_VENDOR_MODE", "auto"),
+            ("RP_EXTRA_APT_PACKAGES", ""),
+        )
+    )
+    return _content_tag("resource-upload/processing-base", paths, variants)
+
+
+def reranker_base_image(server: Server) -> str:
+    reranker_dir = REPO_ROOT / "SearchServer" / "docker" / "reranker"
+    paths = (reranker_dir / "RerankerBase.Dockerfile", reranker_dir / "requirements.txt")
+    variants = tuple(
+        f"{name}={_configured_value(server, name, default)}"
+        for name, default in (
+            ("DEBIAN_MIRROR", "https://deb.debian.org/debian"),
+            ("DEBIAN_SECURITY_MIRROR", "https://deb.debian.org/debian-security"),
+        )
+    )
+    return _content_tag("resource-upload/reranker-base", paths, variants)
+
+
 def compose_env(server: Server) -> dict[str, str]:
     env = os.environ.copy()
     if server.key == "search":
-        env.setdefault("COMPOSE_PARALLEL_LIMIT", "1")
+        env["RERANKER_BASE_IMAGE"] = reranker_base_image(server)
+    elif server.key in {"renderer", "processor"}:
+        env["PROCESSING_BASE_IMAGE"] = processing_base_image(server)
     return env
+
+
+def image_exists(image: str, *, dry_run: bool) -> bool:
+    if dry_run:
+        return False
+    return subprocess.run(
+        ["docker", "image", "inspect", image],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
+
+
+def ensure_base_image(server: Server, *, build_timeout: int, dry_run: bool) -> None:
+    if server.key == "search":
+        image = reranker_base_image(server)
+        dockerfile = "SearchServer/docker/reranker/RerankerBase.Dockerfile"
+        args = (
+            ("DEBIAN_MIRROR", "https://deb.debian.org/debian"),
+            ("DEBIAN_SECURITY_MIRROR", "https://deb.debian.org/debian-security"),
+        )
+    elif server.key in {"renderer", "processor"}:
+        image = processing_base_image(server)
+        dockerfile = "resource_processing_server/docker/ProcessingBase.Dockerfile"
+        args = (
+            ("INSTALL_BLENDER", "false"),
+            ("RP_APT_VENDOR_MODE", "auto"),
+            ("RP_EXTRA_APT_PACKAGES", ""),
+        )
+    else:
+        return
+
+    if image_exists(image, dry_run=dry_run):
+        print(f"Dependency image cached: {image}")
+        return
+
+    print(f"\n== Build dependency image {image} ==")
+    command = ["docker", "build", "--progress=plain", "-f", dockerfile, "-t", image]
+    for name, default in args:
+        command.extend(["--build-arg", f"{name}={_configured_value(server, name, default)}"])
+    command.append(".")
+    run_command(command, cwd=REPO_ROOT, env=os.environ.copy(), dry_run=dry_run, timeout=build_timeout)
 
 
 def run_command(
@@ -246,6 +349,7 @@ def build_server(
     dry_run: bool,
 ) -> None:
     print(f"\n== Build {server.label} ==")
+    ensure_base_image(server, build_timeout=build_timeout, dry_run=dry_run)
     env = compose_env(server)
     if server.build_services:
         for service in server.build_services:

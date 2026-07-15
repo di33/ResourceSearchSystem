@@ -1,0 +1,11 @@
+**
+!Tools/requirements.txt
+!Tools/spine_preview/package.json
+!Tools/spine_preview/package-lock.json
+!preview_renderer/requirements.txt
+!resource_processing_server/requirements.txt
+!resource_processing_server/docker/apt-packages.txt
+!resource_processing_server/docker/apt-packages.blender.txt
+!resource_processing_server/docker/vendor/apt/**
+!resource_processing_server/docker/vendor/pip/**
+!resource_processing_server/docker/vendor/npm/**

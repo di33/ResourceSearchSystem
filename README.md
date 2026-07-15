@@ -36,6 +36,11 @@ Linux / macOS：
 python3 manage_servers.py start --build
 ```
 
+构建脚本会把 reranker 的大体积 Python 依赖，以及 preview-renderer / resource-processor
+共用的系统、Python 和 Node.js 依赖保存为带内容指纹的本地基础镜像。首次构建仍需安装依赖；
+依赖文件没有变化时，后续构建会直接复用基础镜像，只重新复制业务代码。请优先通过
+`manage_servers.py build` 构建，不要直接清理 `resource-upload/*-base:*` 镜像。
+
 每个镜像构建默认最多等待 30 分钟，超时会终止完整的 Docker/Buildx
 子进程树并明确报错，不会无限挂起。可按需调整，例如：
 

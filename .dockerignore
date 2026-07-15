@@ -18,6 +18,7 @@ data
 SearchServer/docker/postgres/vendor
 Tools/spine_preview/node_modules
 resource_processing_server/docker/vendor/**/*.partial
+resource_processing_server/docker/vendor
 resource_processing_server/docker/vendor/apt/.indexes
 resource_processing_server/docker/vendor/npm/.work
 *.pyc

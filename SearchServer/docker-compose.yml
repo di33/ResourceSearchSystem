@@ -161,6 +161,7 @@ services:
       context: ./docker/reranker
       dockerfile: Dockerfile
       args:
+        RERANKER_BASE_IMAGE: ${RERANKER_BASE_IMAGE:-resource-upload/reranker-base:local}
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-https://deb.debian.org/debian}
         DEBIAN_SECURITY_MIRROR: ${DEBIAN_SECURITY_MIRROR:-https://deb.debian.org/debian-security}
         DOWNLOAD_MODEL: ${DOWNLOAD_RERANKER_MODEL:-false}
