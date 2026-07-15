@@ -6,7 +6,7 @@ services:
       args:
         PROCESSING_BASE_IMAGE: ${PROCESSING_BASE_IMAGE:-resource-upload/processing-base:local}
         INSTALL_BLENDER: ${INSTALL_BLENDER:-false}
-        RP_APT_VENDOR_MODE: ${RP_APT_VENDOR_MODE:-auto}
+        RP_VENDOR_MODE: ${RP_VENDOR_MODE:-auto}
         RP_EXTRA_APT_PACKAGES: ${RP_EXTRA_APT_PACKAGES:-}
     image: resource-upload/preview-renderer:dev
     ports:

@@ -147,7 +147,7 @@ cd G:\ResourceUpload
 
 ```powershell
 cd G:\ResourceUpload\resource_processing_server
-$env:RP_APT_VENDOR_MODE="required"
+$env:RP_VENDOR_MODE="required"
 docker compose build
 ```
 
@@ -157,7 +157,8 @@ docker compose build
 - `resource_processing_server\docker\vendor\pip`
 - `resource_processing_server\docker\vendor\npm`
 
-Dockerfile 只有在对应目录存在 `manifest.json` 时才使用 vendor；如果下载中断导致 manifest 缺失，构建会回退到在线安装，或者在 `RP_APT_VENDOR_MODE=required` 时直接失败。
+默认 `RP_VENDOR_MODE=auto`：对应 vendor 载荷完整时使用离线依赖，载荷未随仓库部署时自动在线安装。
+设置为 `required` 会要求 apt、pip、npm 三层 vendor 都完整，否则立即失败；设置为 `online` 会忽略 vendor，始终从在线源安装。
 
 Spine 预览工具已放在 `Tools\spine_preview`。其中 `spine-webgl-3.8.js` 是渲染器运行时文件，会随 Docker 镜像复制；Node 依赖由镜像构建时按 `package-lock.json` 安装；如果 `vendor\npm` 已准备好，则使用本地 npm cache 离线安装。
 

@@ -35,9 +35,12 @@ if the apt vendor layer has not been prepared completely:
 
 ```powershell
 cd resource_processing_server
-$env:RP_APT_VENDOR_MODE = "required"
+$env:RP_VENDOR_MODE = "required"
 docker compose build
 ```
+
+`RP_VENDOR_MODE` supports `auto` (prefer vendor and fall back online), `required`
+(fail if any vendor payload is incomplete), and `online` (ignore vendor).
 
 The apt package list is intentionally kept in `../apt-packages.txt` and
 `../apt-packages.blender.txt` so the Dockerfile and the prefetch script use the

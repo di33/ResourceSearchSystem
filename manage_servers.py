@@ -211,6 +211,53 @@ def _configured_value(server: Server, name: str, default: str) -> str:
     return values.get(name, default)
 
 
+def _vendor_mode(server: Server) -> str:
+    mode = _configured_value(
+        server,
+        "RP_VENDOR_MODE",
+        _configured_value(server, "RP_APT_VENDOR_MODE", "auto"),
+    ).strip().lower()
+    if mode not in {"auto", "required", "online"}:
+        raise RuntimeError("RP_VENDOR_MODE must be one of: auto, required, online")
+    return mode
+
+
+def _vendor_payload(kind: str) -> tuple[bool, str]:
+    root = REPO_ROOT / "resource_processing_server" / "docker" / "vendor" / kind
+    if kind == "apt":
+        files = sorted(root.glob("*.deb"))
+        complete = (root / "manifest.json").is_file() and (root / "Packages").is_file() and bool(files)
+    elif kind == "pip":
+        files = sorted(path for path in root.iterdir() if path.is_file() and path.name.endswith((".whl", ".tar.gz", ".zip")))
+        complete = bool(files)
+    elif kind == "npm":
+        cache = root / "_cacache"
+        files = sorted(path for path in cache.rglob("*") if path.is_file()) if cache.is_dir() else []
+        complete = bool(files)
+    else:
+        raise ValueError(f"Unknown vendor kind: {kind}")
+
+    digest = hashlib.sha256()
+    for path in files:
+        stat = path.stat()
+        digest.update(path.relative_to(root).as_posix().encode())
+        digest.update(f":{stat.st_size}".encode())
+    state = "present" if complete else "absent"
+    return complete, f"{kind}={state}:{len(files)}:{digest.hexdigest()[:12]}"
+
+
+def _processing_dependency_sources(server: Server) -> tuple[tuple[str, str], ...]:
+    mode = _vendor_mode(server)
+    sources: list[tuple[str, str]] = []
+    for kind in ("apt", "pip", "npm"):
+        present, _ = _vendor_payload(kind)
+        source = "vendor" if mode != "online" and present else "online"
+        if mode == "required" and not present:
+            source = "MISSING (required)"
+        sources.append((kind, source))
+    return tuple(sources)
+
+
 def processing_base_image(server: Server) -> str:
     docker_dir = REPO_ROOT / "resource_processing_server" / "docker"
     paths = (
@@ -229,10 +276,11 @@ def processing_base_image(server: Server) -> str:
         f"{name}={_configured_value(server, name, default)}"
         for name, default in (
             ("INSTALL_BLENDER", "false"),
-            ("RP_APT_VENDOR_MODE", "auto"),
             ("RP_EXTRA_APT_PACKAGES", ""),
         )
     )
+    variants += (f"RP_VENDOR_MODE={_vendor_mode(server)}",)
+    variants += tuple(_vendor_payload(kind)[1] for kind in ("apt", "pip", "npm"))
     return _content_tag("resource-upload/processing-base", paths, variants)
 
 
@@ -282,11 +330,19 @@ def ensure_base_image(server: Server, *, build_timeout: int, dry_run: bool) -> N
         dockerfile = "resource_processing_server/docker/ProcessingBase.Dockerfile"
         args = (
             ("INSTALL_BLENDER", "false"),
-            ("RP_APT_VENDOR_MODE", "auto"),
             ("RP_EXTRA_APT_PACKAGES", ""),
         )
+        extra_args = (("RP_VENDOR_MODE", _vendor_mode(server)),)
     else:
         return
+
+    if server.key == "search":
+        extra_args = ()
+
+    if server.key in {"renderer", "processor"}:
+        print("Processing dependency sources:")
+        for kind, source in _processing_dependency_sources(server):
+            print(f"  {kind}: {source}")
 
     if image_exists(image, dry_run=dry_run):
         print(f"Dependency image cached: {image}")
@@ -296,6 +352,8 @@ def ensure_base_image(server: Server, *, build_timeout: int, dry_run: bool) -> N
     command = ["docker", "build", "--progress=plain", "-f", dockerfile, "-t", image]
     for name, default in args:
         command.extend(["--build-arg", f"{name}={_configured_value(server, name, default)}"])
+    for name, value in extra_args:
+        command.extend(["--build-arg", f"{name}={value}"])
     command.append(".")
     run_command(command, cwd=REPO_ROOT, env=os.environ.copy(), dry_run=dry_run, timeout=build_timeout)
 

@@ -41,6 +41,9 @@ python3 manage_servers.py start --build
 依赖文件没有变化时，后续构建会直接复用基础镜像，只重新复制业务代码。请优先通过
 `manage_servers.py build` 构建，不要直接清理 `resource-upload/*-base:*` 镜像。
 
+依赖来源可通过 `RP_VENDOR_MODE` 控制：默认 `auto` 在 vendor 不完整时自动在线安装；
+`required` 适用于已准备完整 apt/pip/npm vendor 的离线环境；`online` 强制忽略 vendor。
+
 每个镜像构建默认最多等待 30 分钟，超时会终止完整的 Docker/Buildx
 子进程树并明确报错，不会无限挂起。可按需调整，例如：
 
