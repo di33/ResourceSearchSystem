@@ -41,7 +41,7 @@ def _load_dotenv(path: Path) -> None:
 
 
 _load_dotenv(_TOOLS_ROOT / ".env")
-_load_dotenv(_TOOLS_ROOT / ".env.local")
+_load_dotenv(_REPO_ROOT / "Client" / ".env.local")
 
 from ResourceProcessor.core.deps import ensure_requirements  # noqa: E402
 

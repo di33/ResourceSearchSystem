@@ -24,7 +24,7 @@ Windows 下不要直接使用裸 `python`：它可能命中 WindowsApps 的 Pyth
 .\.venv\Scripts\python.exe -m pip install -r resource_processing_server\requirements.txt
 ```
 
-生成预览、生成描述、用途分类等 ResourceProcessor 工具配置在 `Tools/.env`，私有 LLM Key 放在 `Tools/.env.local`。
+客户端 ResourceProcessor 公开配置在 `Tools/.env`，客户端私有 LLM Key 在 `Client/.env.local`。服务端描述生成使用 `resource_processing_server/.env` 中的 `RP_LLM_PROVIDER` / `RP_LLM_MODEL`，对应私有 LLM Key 放在 `resource_processing_server/.env.local`。
 
 资源加工服务器自身配置放在 `resource_processing_server/.env` 和 `resource_processing_server/.env.local`。对象存储 profile 放在 `resource_processing_server/storage_profiles.jsonc`，其中包含 bucket、endpoint、region、CDN、URL 模式等稳定配置；密钥通过环境变量注入。公开项可放 `.env`，密钥只放 `.env.local`。加工服务器需要下载源对象，所以它使用的 profile 必须配置 `endpoint`。
 
@@ -33,7 +33,7 @@ Windows 下不要直接使用裸 `python`：它可能命中 WindowsApps 的 Pyth
 ```env
 # resource_processing_server/.env
 RP_SEARCH_SERVER_URL=http://localhost:8000
-RP_DATABASE_URL=postgresql://resource_processor:resource_processor@localhost:5433/resource_processing
+RP_DATABASE_URL=postgresql://resource_processor:<从.env.local读取的强密码>@localhost:5433/resource_processing
 RP_GENERATED_PREVIEW_PREFIX=
 RP_WORK_DIR=G:\ResourceUpload\data\resource_processing_server
 RP_SNAPSHOT_DB_PATH=G:\ResourceUpload\data\resource_processing_server\snapshots.db
@@ -51,6 +51,7 @@ OBJECT_STORAGE_SECRET_KEY=minioadmin
 OBJECT_STORAGE_CDN_AUTH_KEY_PRIMARY=你的 CDN 主鉴权密钥
 OBJECT_STORAGE_CDN_AUTH_KEY_SECONDARY=你的 CDN 备鉴权密钥
 RP_SEARCH_SERVER_API_KEY=你的SearchServer API Key
+KSPMAS_API_KEY=你的金山云API Key
 ```
 
 如果 SearchServer 使用 Bearer Token：
@@ -332,8 +333,8 @@ SearchServer upsert 失败：
 描述没有生成：
 
 - 如果 manifest 里有 `provided_description`，服务端会跳过描述生成。
-- 检查 `Tools/.env` 中的 `CLIENT_LLM_PROVIDER` 和模型配置。
-- 检查 `Tools/.env.local` 中的 API Key。
+- 检查 `resource_processing_server/.env` 中的 `RP_LLM_PROVIDER` 和 `RP_LLM_MODEL`。
+- 检查 `resource_processing_server/.env.local` 中对应 provider 的 API Key。
 
 预览没有生成：
 

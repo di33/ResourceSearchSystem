@@ -15,7 +15,13 @@ Responsibilities:
 
 The service is intentionally deployed separately from the search server. It does not write the search database directly.
 
-ResourceProcessor preview/description configuration is loaded from `Tools/.env` and `Tools/.env.local`. Keep processing-server-only settings such as object storage and search server URLs in `resource_processing_server/.env`.
+The processing service reads its deployment configuration from
+`resource_processing_server/.env` and secrets from
+`resource_processing_server/.env.local`. Set `RP_LLM_PROVIDER` /
+`RP_LLM_MODEL` in the former and the selected provider API key in the latter.
+`Tools/.env` remains public client-tool configuration and is copied with the
+code. Client-only secrets stay in `Client/.env.local`; it is not a server
+deployment file.
 
 Snapshots are stored in `RP_SNAPSHOT_DB_PATH` and contain replayable metadata only: source object refs, selected preview refs, selected description, client metadata, optional `package_object`, and SearchServer upsert status. They do not store binaries or embeddings.
 

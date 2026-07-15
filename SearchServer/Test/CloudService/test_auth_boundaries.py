@@ -6,7 +6,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 from app.config import settings
 from app.middleware.auth import create_access_token, require_ingest_auth, require_read_auth
-from app.routers import browse, resources
+from app.routers import browse, ingest, resources, search
 
 
 @pytest.mark.asyncio
@@ -63,9 +63,10 @@ async def test_ingest_bearer_jwt_requires_ingest_grant(monkeypatch):
     assert auth["auth_mode"] == "jwt"
 
 
-def test_browse_router_requires_read_auth():
-    assert any(dependency.dependency is require_read_auth for dependency in browse.router.dependencies)
+def test_public_read_routers_do_not_require_auth():
+    for router in (browse.router, resources.router, search.router):
+        assert router.dependencies == []
 
 
-def test_resources_router_requires_read_auth():
-    assert any(dependency.dependency is require_read_auth for dependency in resources.router.dependencies)
+def test_ingest_router_still_requires_ingest_auth():
+    assert any(dependency.dependency is require_ingest_auth for dependency in ingest.router.dependencies)

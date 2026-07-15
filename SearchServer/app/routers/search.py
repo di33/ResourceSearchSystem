@@ -4,17 +4,16 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_db, get_milvus
-from app.middleware.auth import require_read_auth
 from app.services.object_urls import ObjectUrlGenerator
 from app.services.milvus_search_client import MilvusSearchClient
 from CloudService.search_client import DownloadLinkRequest, SearchRequest
 
-router = APIRouter(tags=["search"], dependencies=[Depends(require_read_auth)])
+router = APIRouter(tags=["search"])
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +149,11 @@ async def search_resources(body: SearchBody, session: AsyncSession = Depends(get
 
 @router.post("/download", response_model=DownloadOut)
 async def download_resource(body: DownloadBody, session: AsyncSession = Depends(get_db)):
+    if body.return_base64:
+        raise HTTPException(
+            status_code=400,
+            detail="Base64 downloads are disabled; use the returned download URL or streaming download endpoint.",
+        )
     client = _build_search_client(session)
     req = DownloadLinkRequest(
         resource_id=body.resource_id,

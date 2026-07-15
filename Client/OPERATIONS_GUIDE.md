@@ -1,7 +1,8 @@
 # ResourceUpload 客户端命令指南
 
-本文只介绍这 5 个客户端命令：
+本文介绍这 6 个客户端命令。日常完整同步优先使用 `refresh_from_crawler_state`；需要排障或分段重跑时再使用后面的子命令：
 
+- `refresh_from_crawler_state`
 - `sync_pipeline_from_crawler_state`
 - `upload_objects_to_storage`
 - `generate_previews`
@@ -14,9 +15,77 @@
 cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts;G:\ResourceUpload\Tools"; $py = ".\.venv\Scripts\python.exe"
 ```
 
-下面示例都省略默认参数。命令默认读取 `Tools\.env`、`Tools\.env.local`、`client\.env`、`client\.env.local`。
+下面示例都省略默认参数。命令默认读取 `Tools\.env`、`client\.env` 和 `client\.env.local`；公开模型配置放在 `Tools\.env`，客户端私有密钥统一放在 `client\.env.local`。
 
-## 1. sync_pipeline_from_crawler_state
+## 1. refresh_from_crawler_state
+
+从 ResourceCrawler 状态库一键刷新到加工服务器。默认同步源是 `G:\ResourceCrawler\data\crawler_state.db`。
+
+默认执行顺序：
+
+`sync_pipeline_from_crawler_state -> upload_objects_to_storage -> flush_object_delete_jobs -> generate_previews -> generate_descriptions -> upload_resources`
+
+其中 `generate_previews` 默认走 renderer 模式，会生成新预览并上传到对象存储、写回 `pipeline.db`。因此一键流程不会在预览后再额外执行一次 `upload_objects_to_storage`。
+
+正式执行：
+
+```powershell
+& $py -m ResourceProcessor.tools.refresh_from_crawler_state
+```
+
+只打印将要执行的子命令，不真正运行：
+
+```powershell
+& $py -m ResourceProcessor.tools.refresh_from_crawler_state --print-only
+```
+
+只处理指定资源类型：
+
+```powershell
+& $py -m ResourceProcessor.tools.refresh_from_crawler_state --resource-type single_image
+```
+
+限制每个支持 `--limit` 的子步骤最多处理 100 个资源：
+
+```powershell
+& $py -m ResourceProcessor.tools.refresh_from_crawler_state --limit 100
+```
+
+如果只想从预览阶段继续跑：
+
+```powershell
+& $py -m ResourceProcessor.tools.refresh_from_crawler_state --skip-sync --skip-object-upload --skip-object-delete-flush
+```
+
+参数：
+
+- `--crawler-state-db`：ResourceCrawler 状态库。默认 `G:\ResourceCrawler\data\crawler_state.db`。
+- `--crawler-output`：ResourceCrawler 输出目录。默认 `K:\ResourceCrawler\output`。
+- `--db-path`：目标 pipeline SQLite。默认 `G:\ResourceUpload\data\databases\pipeline.db`。
+- `--work-dir`：预览工作目录。默认 `G:\ResourceUpload\data`。
+- `--client-id`：客户端命名空间。默认读取 `CLIENT_ID`，未配置则 `resource-crawler`。
+- `--limit`：传给支持该参数的子步骤；每步最多处理多少个资源。默认不限制。
+- `--resource-type`：传给支持该参数的子步骤；只处理指定资源类型。默认空。
+- `--source-filter`：传给支持该参数的子步骤；只处理指定来源站点。默认空。
+- `--python`：用于执行子命令的 Python 解释器。默认使用当前解释器。
+- `--print-only`：只打印将执行的子命令，不真正运行。默认关闭。
+- `--skip-sync`：跳过 `sync_pipeline_from_crawler_state`。默认关闭。
+- `--skip-object-upload`：跳过 `upload_objects_to_storage`。默认关闭。
+- `--skip-object-delete-flush`：跳过旧对象删除队列清理。默认关闭。
+- `--skip-previews`：跳过 `generate_previews`。默认关闭。
+- `--skip-descriptions`：跳过 `generate_descriptions`。默认关闭。
+- `--skip-upload-resources`：跳过 `upload_resources`。默认关闭。
+- `--no-backup`、`--keep-preview-files`、`--no-object-delete-jobs`、`--preview-dir`、`--sync-commit-every`、`--asset-batch-size`：传给同步阶段。
+- `--storage-profile-id`、`--key-prefix`、`--object-upload-workers`、`--missing-manifest-only`：传给对象上传阶段。
+- `--object-delete-limit`、`--object-delete-max-attempts`、`--object-delete-batch-size`、`--object-delete-progress-every`：传给旧对象删除队列清理阶段。
+- `--flush-object-deletes-after-previews`：预览生成可能入队旧预览对象清理；开启后在预览后再清一次队列。默认关闭。
+- `--preview-mode`、`--preview-renderer`、`--preview-api-key`、`--preview-progress-every`、`--preview-status-file`：传给预览生成阶段。
+- `--llm-provider`、`--audio-llm-provider`、`--description-concurrency`、`--retry-failed-descriptions`：传给描述生成阶段。
+- `--processing-server`、`--processing-api-key`、`--manifest-out`、`--upload-resources-concurrency`、`--poll-interval`、`--wait-timeout`、`--no-wait`、`--wait`：传给资源提交阶段。
+
+说明：该命令只是编排已有子命令，不重新实现业务逻辑；任一步失败会立即退出并返回失败码。修复问题后可直接重跑，子命令会按各自的断点续跑和指纹判断继续处理。
+
+## 2. sync_pipeline_from_crawler_state
 
 从 ResourceCrawler 的 `crawler_state.db` 同步到本地 `pipeline.db`。
 
@@ -45,7 +114,7 @@ dry-run 看差异：
 - `--commit-every`：每处理 N 条新增或变更资源提交一次。默认 `1000`。
 - `--asset-batch-size`：同步 `asset_index` 的批大小。默认 `10000`。
 
-## 2. upload_objects_to_storage
+## 3. upload_objects_to_storage
 
 把本地资源文件/预览上传到对象存储，并把对象引用 manifest 保存到 `pipeline.db`。它负责对象桶副作用，包括上传新对象、清理旧对象，并在对象引用变化后刷新资源总指纹；不提交加工服务器。推荐在远程生成预览前先跑一次源对象上传，生成或刷新预览后再跑一次补齐预览对象。
 
@@ -99,7 +168,7 @@ dry-run 看差异：
 
 说明：`pack` 任务只上传包对象并保存 manifest，不会提交加工服务器。
 
-## 3. generate_previews
+## 4. generate_previews
 
 生成预览并写回 `pipeline.db`。默认使用 renderer 模式，因此需要先有对象存储 manifest。
 
@@ -145,7 +214,7 @@ dry-run 看差异：
 - `--status-file`：状态日志文件。默认空。
 - `--skip-missing-object-manifest`：renderer 模式下跳过没有对象存储 manifest 的任务。默认关闭。
 
-## 4. generate_descriptions
+## 5. generate_descriptions
 
 读取预览结果，生成描述并写回 `pipeline.db`。
 
@@ -183,7 +252,7 @@ dry-run 看差异：
 
 常用环境变量：`KSPMAS_LLM_TIMEOUT` 控制 Ksyun LLM 请求超时，未配置时由 provider 默认值决定；大批量视觉描述常用 `180`。
 
-## 5. upload_resources
+## 6. upload_resources
 
 读取已上传对象 manifest，按当前总指纹判断是否需要提交，临时生成最终加工 manifest，并提交到 resource-processing-server。该命令不上传对象、不清理旧对象；对象桶更新由 `upload_objects_to_storage` 完成。
 

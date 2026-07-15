@@ -36,6 +36,17 @@ Linux / macOS：
 python3 manage_servers.py start --build
 ```
 
+每个镜像构建默认最多等待 30 分钟，超时会终止完整的 Docker/Buildx
+子进程树并明确报错，不会无限挂起。可按需调整，例如：
+
+```bash
+python3 manage_servers.py start --build --build-timeout 3600
+```
+
+启动 SearchServer 或 resource-processing-server 时，管理脚本会先单独启动
+对应 PostgreSQL，并把已有数据卷中的角色密码同步为各服务
+`.env.local` 中的 `POSTGRES_PASSWORD`。因此修改密码后不需要删除已有数据卷。
+
 ## 常用管理命令
 
 Windows PowerShell：

@@ -1,11 +1,10 @@
-"""JWT + API Key authentication middleware.
+"""JWT + API Key authentication for write and administrative endpoints.
 
-In development mode (``settings.debug == True``), auth is bypassed so
-Swagger UI works without tokens.  In production, every request must
-carry a valid ``Authorization: Bearer <token>`` header (JWT) or
-``X-API-Key`` header (API Key).
+Public browse, search, resource-detail, preview, and download endpoints do
+not use these dependencies. Write/ingest endpoints must carry a valid
+``Authorization: Bearer <token>`` header (JWT) or ``X-API-Key`` header.
 
-Search endpoints additionally accept API Key authentication via:
+Protected endpoints accept API Key authentication via:
 - ``X-API-Key: <key>`` header
 - ``Authorization: ApiKey <key>`` header
 """

@@ -12,13 +12,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_db
-from app.middleware.auth import require_read_auth
 from app.models.tables import ResourceDescription, ResourceEmbedding, ResourceFile, ResourcePreview, ResourceTask
 from app.services.display_titles import display_title_for_task
 from app.services.object_urls import ObjectUrlGenerator
 from resource_contracts.resource_types import OTHER_RESOURCE_TYPE
 
-router = APIRouter(tags=["browse"], dependencies=[Depends(require_read_auth)])
+router = APIRouter(tags=["browse"])
 
 _HTML_PATH = Path(__file__).resolve().parent.parent / "static" / "browse.html"
 

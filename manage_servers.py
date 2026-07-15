@@ -8,6 +8,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -18,6 +19,7 @@ from urllib import error, request
 
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_TIMEOUT_SECONDS = 300
+DEFAULT_BUILD_TIMEOUT_SECONDS = 1800
 
 
 @dataclass(frozen=True)
@@ -128,6 +130,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Seconds to wait for each selected service health endpoint.",
     )
     parser.add_argument(
+        "--build-timeout",
+        type=int,
+        default=DEFAULT_BUILD_TIMEOUT_SECONDS,
+        help="Maximum seconds allowed for each individual Docker image build.",
+    )
+    parser.add_argument(
         "--volumes",
         "-v",
         action="store_true",
@@ -147,6 +155,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         )
     if args.timeout <= 0:
         parser.error("--timeout must be greater than 0")
+    if args.build_timeout <= 0:
+        parser.error("--build-timeout must be greater than 0")
     if args.build and args.no_build:
         parser.error("--build and --no-build cannot be used together")
     return args
@@ -193,22 +203,164 @@ def run_command(
     cwd: Path,
     env: dict[str, str],
     dry_run: bool,
+    timeout: int | None = None,
 ) -> None:
     print(f"$ {command_text(command)}")
     print(f"  cwd: {cwd}")
     if dry_run:
         return
-    subprocess.run(command, cwd=str(cwd), env=env, check=True)
+    popen_kwargs: dict[str, object] = {}
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+    process = subprocess.Popen(command, cwd=str(cwd), env=env, **popen_kwargs)
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        else:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+        duration = f" after {timeout}s" if timeout is not None else ""
+        raise RuntimeError(f"Command timed out{duration}: {command_text(command)}") from exc
+    if returncode != 0:
+        raise subprocess.CalledProcessError(returncode, command)
 
 
-def build_server(server: Server, compose_cmd: list[str], *, dry_run: bool) -> None:
+def build_server(
+    server: Server,
+    compose_cmd: list[str],
+    *,
+    build_timeout: int,
+    dry_run: bool,
+) -> None:
     print(f"\n== Build {server.label} ==")
     env = compose_env(server)
     if server.build_services:
         for service in server.build_services:
-            run_command([*compose_cmd, "build", service], cwd=server.compose_dir, env=env, dry_run=dry_run)
+            run_command(
+                [*compose_cmd, "build", "--progress=plain", service],
+                cwd=server.compose_dir,
+                env=env,
+                dry_run=dry_run,
+                timeout=build_timeout,
+            )
     else:
-        run_command([*compose_cmd, "build"], cwd=server.compose_dir, env=env, dry_run=dry_run)
+        run_command(
+            [*compose_cmd, "build", "--progress=plain"],
+            cwd=server.compose_dir,
+            env=env,
+            dry_run=dry_run,
+            timeout=build_timeout,
+        )
+
+
+def _load_dotenv(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.is_file():
+        return values
+    with path.open(encoding="utf-8") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            values[key.strip()] = value.strip().strip("'\"")
+    return values
+
+
+def sync_postgres_password(server: Server, compose_cmd: list[str], *, dry_run: bool) -> None:
+    if server.key not in {"search", "processor"}:
+        return
+
+    values = {
+        **_load_dotenv(server.compose_dir / ".env"),
+        **_load_dotenv(server.compose_dir / ".env.local"),
+    }
+    if server.key == "search":
+        user = values.get("POSTGRES_USER", "resource")
+        database = values.get("POSTGRES_DB", "resource_upload")
+    else:
+        user = values.get("RP_POSTGRES_USER", "resource_processor")
+        database = values.get("RP_POSTGRES_DB", "resource_processing")
+    password = values.get("POSTGRES_PASSWORD", "")
+
+    if not password:
+        raise RuntimeError(f"{server.label}: POSTGRES_PASSWORD is missing from .env.local")
+    if not user.replace("_", "").isalnum():
+        raise RuntimeError(f"{server.label}: unsafe PostgreSQL role name: {user!r}")
+
+    print(f"\n== Sync {server.label} PostgreSQL password ==")
+    env = compose_env(server)
+    run_command(
+        [*compose_cmd, "up", "-d", "--no-build", "postgres"],
+        cwd=server.compose_dir,
+        env=env,
+        dry_run=dry_run,
+    )
+    if dry_run:
+        return
+
+    sql_password = password.replace("'", "''")
+    sql = f'ALTER ROLE "{user}" WITH PASSWORD \'{sql_password}\';'
+    deadline = time.monotonic() + 120
+    last_error = ""
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            [*compose_cmd, "exec", "-T", "postgres", "psql", "-v", "ON_ERROR_STOP=1", "-U", user, "-d", database, "-c", sql],
+            cwd=str(server.compose_dir),
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        if result.returncode == 0:
+            verify = subprocess.run(
+                [
+                    *compose_cmd,
+                    "exec",
+                    "-T",
+                    "-e",
+                    f"PGPASSWORD={password}",
+                    "postgres",
+                    "psql",
+                    "-h",
+                    "127.0.0.1",
+                    "-v",
+                    "ON_ERROR_STOP=1",
+                    "-U",
+                    user,
+                    "-d",
+                    database,
+                    "-tAc",
+                    "SELECT 1",
+                ],
+                cwd=str(server.compose_dir),
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            if verify.returncode == 0 and verify.stdout.strip() == "1":
+                print(f"{server.label} PostgreSQL password is synchronized and verified over TCP.")
+                return
+            last_error = verify.stdout.strip().splitlines()[-1] if verify.stdout.strip() else "TCP password verification failed"
+            time.sleep(2)
+            continue
+        last_error = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else f"exit {result.returncode}"
+        time.sleep(2)
+    raise RuntimeError(f"{server.label}: could not synchronize PostgreSQL password: {last_error}")
 
 
 def start_server(server: Server, compose_cmd: list[str], *, dry_run: bool) -> None:
@@ -324,9 +476,15 @@ def wait_for_health(server: Server, *, timeout: int, dry_run: bool, wait_reranke
     raise TimeoutError(f"{server.label} did not become healthy within {timeout}s: {last_error}")
 
 
-def build_all(servers: list[Server], compose_cmd: list[str], *, dry_run: bool) -> None:
+def build_all(
+    servers: list[Server],
+    compose_cmd: list[str],
+    *,
+    build_timeout: int,
+    dry_run: bool,
+) -> None:
     for server in servers:
-        build_server(server, compose_cmd, dry_run=dry_run)
+        build_server(server, compose_cmd, build_timeout=build_timeout, dry_run=dry_run)
 
 
 def start_all(
@@ -334,14 +492,16 @@ def start_all(
     compose_cmd: list[str],
     *,
     build: bool,
+    build_timeout: int,
     no_wait: bool,
     timeout: int,
     wait_reranker: bool,
     dry_run: bool,
 ) -> None:
     if build:
-        build_all(servers, compose_cmd, dry_run=dry_run)
+        build_all(servers, compose_cmd, build_timeout=build_timeout, dry_run=dry_run)
     for server in servers:
+        sync_postgres_password(server, compose_cmd, dry_run=dry_run)
         start_server(server, compose_cmd, dry_run=dry_run)
     if not no_wait:
         for server in servers:
@@ -391,12 +551,13 @@ def main(argv: list[str] | None = None) -> int:
         compose_cmd = ["docker", "compose"] if args.dry_run else detect_compose_command()
         action = args.action
         if action in {"build", "compile"}:
-            build_all(servers, compose_cmd, dry_run=args.dry_run)
+            build_all(servers, compose_cmd, build_timeout=args.build_timeout, dry_run=args.dry_run)
         elif action in {"start", "up"}:
             start_all(
                 servers,
                 compose_cmd,
                 build=args.build,
+                build_timeout=args.build_timeout,
                 no_wait=args.no_wait,
                 timeout=args.timeout,
                 wait_reranker=args.wait_reranker,
@@ -410,6 +571,7 @@ def main(argv: list[str] | None = None) -> int:
                 servers,
                 compose_cmd,
                 build=args.build,
+                build_timeout=args.build_timeout,
                 no_wait=args.no_wait,
                 timeout=args.timeout,
                 wait_reranker=args.wait_reranker,
@@ -425,6 +587,7 @@ def main(argv: list[str] | None = None) -> int:
                 servers,
                 compose_cmd,
                 build=args.build,
+                build_timeout=args.build_timeout,
                 no_wait=args.no_wait,
                 timeout=args.timeout,
                 wait_reranker=args.wait_reranker,

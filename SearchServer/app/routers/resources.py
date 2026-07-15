@@ -19,7 +19,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 
 from app.deps import get_db
-from app.middleware.auth import require_read_auth
 from app.models.tables import (
     ResourceDescription,
     ResourceEmbedding,
@@ -30,7 +29,7 @@ from app.models.tables import (
 from app.services.display_titles import display_title_for_task
 from app.services.object_urls import ObjectUrlGenerator
 
-router = APIRouter(prefix="/resources", tags=["resources"], dependencies=[Depends(require_read_auth)])
+router = APIRouter(prefix="/resources", tags=["resources"])
 
 
 class ResourceFileOut(BaseModel):

@@ -3,20 +3,16 @@ services:
     build:
       context: ..
       dockerfile: SearchServer/Dockerfile
-      target: dev
+      target: prod
       args:
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-https://deb.debian.org/debian}
         DEBIAN_SECURITY_MIRROR: ${DEBIAN_SECURITY_MIRROR:-https://deb.debian.org/debian-security}
     ports:
       - "8000:8000"
-    volumes:
-      - .:/app
-      - ../resource_contracts:/app/resource_contracts:ro
     env_file:
       - path: .env.local
         required: false
     environment:
-      DATABASE_URL: postgresql+asyncpg://resource:resource@postgres:5432/resource_upload
       DB_POOL_MIN: "48"
       DB_POOL_MAX: "64"
       MILVUS_HOST: milvus
@@ -31,7 +27,7 @@ services:
       VECTOR_SYNC_WORKER_CONCURRENCY: "2"
       VECTOR_SYNC_FAILED_RETRY_SECONDS: "60"
       RERANKER_URL: http://reranker:8100
-      DEBUG: "true"
+      DEBUG: "false"
     depends_on:
       postgres:
         condition: service_healthy
@@ -39,10 +35,6 @@ services:
         condition: service_healthy
       reranker:
         condition: service_healthy
-    command: >
-      uvicorn app.main:app
-      --host 0.0.0.0 --port 8000 --reload
-      --reload-dir /app
     logging:
       driver: json-file
       options:
@@ -58,10 +50,12 @@ services:
         DEBIAN_SECURITY_MIRROR: ${DEBIAN_SECURITY_MIRROR:-https://deb.debian.org/debian-security}
         POSTGRES_APT_MIRROR: ${POSTGRES_APT_MIRROR:-https://apt.postgresql.org/pub/repos/apt}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
+    env_file:
+      - path: .env.local
+        required: true
     environment:
       POSTGRES_USER: resource
-      POSTGRES_PASSWORD: resource
       POSTGRES_DB: resource_upload
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -106,15 +100,22 @@ services:
 
   milvus:
     image: milvusdb/milvus:v2.5.6
-    command: ["milvus", "run", "standalone"]
+    command:
+      - sh
+      - -c
+      - |
+        export MINIO_ACCESS_KEY_ID="$${MINIO_ROOT_USER}"
+        export MINIO_SECRET_ACCESS_KEY="$${MINIO_ROOT_PASSWORD}"
+        exec milvus run standalone
     ports:
-      - "19530:19530"
-      - "9091:9091"
+      - "127.0.0.1:19530:19530"
+      - "127.0.0.1:9091:9091"
+    env_file:
+      - path: .env.local
+        required: true
     environment:
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
     volumes:
       - milvusdata:/var/lib/milvus
     depends_on:
@@ -138,9 +139,9 @@ services:
   # file bucket and is intentionally not published to the host.
   minio:
     image: minio/minio:latest
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+    env_file:
+      - path: .env.local
+        required: true
     volumes:
       - miniodata:/data
     command: minio server /data --console-address ":9001"
@@ -164,6 +165,7 @@ services:
         DEBIAN_SECURITY_MIRROR: ${DEBIAN_SECURITY_MIRROR:-https://deb.debian.org/debian-security}
         DOWNLOAD_MODEL: ${DOWNLOAD_RERANKER_MODEL:-false}
         RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+    image: searchserver-reranker
     # Internal-only service. The API container reaches it via http://reranker:8100.
     # Do not publish host port 8100; it is reserved for resource_processing_server.
     environment:

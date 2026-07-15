@@ -32,8 +32,12 @@ WORKDIR /app
 FROM base AS deps
 
 COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    pip install -r requirements.txt
+RUN --mount=type=cache,id=resource-upload-reranker-pip,target=/root/.cache/pip,sharing=shared \
+    python -m pip install \
+        --index-url https://download.pytorch.org/whl/cpu \
+        --extra-index-url https://pypi.org/simple \
+        torch==2.12.1+cpu \
+    && python -m pip install -r requirements.txt
 
 ARG DOWNLOAD_MODEL=false
 ARG RERANKER_MODEL=BAAI/bge-reranker-v2-m3

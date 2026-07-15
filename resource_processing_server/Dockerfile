@@ -9,8 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app:/app/Tools \
     RP_SHARED_RESOURCE_PROCESSOR_PATH=/app/Tools \
     RP_WORK_DIR=/app/data/resource_processing_server \
-    RP_SNAPSHOT_DB_PATH=/app/data/resource_processing_server/snapshots.db \
-    RP_DATABASE_URL=postgresql://resource_processor:resource_processor@postgres:5432/resource_processing
+    RP_SNAPSHOT_DB_PATH=/app/data/resource_processing_server/snapshots.db
 
 COPY resource_processing_server/docker/apt-packages*.txt /tmp/resource-processing-apt/
 COPY resource_processing_server/docker/vendor/apt/ /opt/resource-processing-vendor/apt/

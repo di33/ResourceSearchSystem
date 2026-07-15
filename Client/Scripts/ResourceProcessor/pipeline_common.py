@@ -47,7 +47,6 @@ def _load_dotenv_files(*paths: Path) -> dict[str, str]:
 def init_env() -> dict[str, str]:
     dotenv = _load_dotenv_files(
         _TOOLS_ROOT / ".env",
-        _TOOLS_ROOT / ".env.local",
         _CLIENT_ROOT / ".env",
         _CLIENT_ROOT / ".env.local",
     )
