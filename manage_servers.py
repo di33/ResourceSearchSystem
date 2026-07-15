@@ -117,6 +117,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="For start/restart, do not wait for /health endpoints.",
     )
     parser.add_argument(
+        "--wait-reranker",
+        action="store_true",
+        help="For start/restart, wait until SearchServer reports reranker.status=ok instead of accepting degraded health.",
+    )
+    parser.add_argument(
         "--timeout",
         type=int,
         default=DEFAULT_TIMEOUT_SECONDS,
@@ -240,7 +245,15 @@ def probe_health(server: Server, *, timeout: int = 5) -> tuple[str, str]:
     if status in {"ok", "healthy"}:
         return "ok", url
     if status == "degraded":
-        return "degraded", f"{url} {payload}"
+        detail = ""
+        if server.key == "search":
+            reranker = payload.get("reranker", {}) if isinstance(payload, dict) else {}
+            reranker_status = reranker.get("status", "unknown")
+            reranker_detail = reranker.get("detail", "")
+            detail = f" reranker={reranker_status}"
+            if reranker_detail:
+                detail += f" detail={reranker_detail}"
+        return "degraded", f"{url}{detail}"
     return "error", f"{url} status={status or 'missing'} {payload}"
 
 
@@ -264,7 +277,7 @@ def health_all(servers: list[Server], *, dry_run: bool) -> None:
         print(f"{name:<{name_width}}  {status:<{status_width}}  {detail}")
 
 
-def wait_for_health(server: Server, *, timeout: int, dry_run: bool) -> None:
+def wait_for_health(server: Server, *, timeout: int, dry_run: bool, wait_reranker: bool = False) -> None:
     url = server.health_url()
     print(f"\n== Wait {server.label}: {url} ==")
     if dry_run:
@@ -281,11 +294,24 @@ def wait_for_health(server: Server, *, timeout: int, dry_run: bool) -> None:
                         payload = json.loads(body.decode("utf-8"))
                         status = str(payload.get("status", "")).lower()
                     except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+                        payload = None
                         status = ""
                     if status in {"ok", "healthy"}:
                         print(f"{server.label} is healthy.")
                         return
-                    last_error = f"health status={status or 'missing'}"
+                    if status == "degraded":
+                        if wait_reranker and server.key == "search":
+                            reranker = payload.get("reranker", {}) if isinstance(payload, dict) else {}
+                            reranker_status = reranker.get("status", "unknown")
+                            reranker_detail = reranker.get("detail", "")
+                            last_error = f"reranker status={reranker_status}"
+                            if reranker_detail:
+                                last_error += f" detail={reranker_detail}"
+                        else:
+                            print(f"{server.label} is degraded but accepting requests: {payload}")
+                            return
+                    else:
+                        last_error = f"health status={status or 'missing'}"
                 else:
                     last_error = f"HTTP {response.status}"
         except (error.URLError, TimeoutError, OSError) as exc:
@@ -310,6 +336,7 @@ def start_all(
     build: bool,
     no_wait: bool,
     timeout: int,
+    wait_reranker: bool,
     dry_run: bool,
 ) -> None:
     if build:
@@ -318,7 +345,7 @@ def start_all(
         start_server(server, compose_cmd, dry_run=dry_run)
     if not no_wait:
         for server in servers:
-            wait_for_health(server, timeout=timeout, dry_run=dry_run)
+            wait_for_health(server, timeout=timeout, dry_run=dry_run, wait_reranker=wait_reranker)
 
 
 def stop_all(servers: list[Server], compose_cmd: list[str], *, volumes: bool, dry_run: bool) -> None:
@@ -372,6 +399,7 @@ def main(argv: list[str] | None = None) -> int:
                 build=args.build,
                 no_wait=args.no_wait,
                 timeout=args.timeout,
+                wait_reranker=args.wait_reranker,
                 dry_run=args.dry_run,
             )
         elif action in {"stop", "down"}:
@@ -384,6 +412,7 @@ def main(argv: list[str] | None = None) -> int:
                 build=args.build,
                 no_wait=args.no_wait,
                 timeout=args.timeout,
+                wait_reranker=args.wait_reranker,
                 dry_run=args.dry_run,
             )
         elif action == "clean":
@@ -398,6 +427,7 @@ def main(argv: list[str] | None = None) -> int:
                 build=args.build,
                 no_wait=args.no_wait,
                 timeout=args.timeout,
+                wait_reranker=args.wait_reranker,
                 dry_run=args.dry_run,
             )
         elif action == "status":

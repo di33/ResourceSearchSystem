@@ -60,7 +60,7 @@ while ($elapsed -lt $maxWait) {
 
     try {
         $resp = Invoke-RestMethod -Uri "http://localhost:8000/health" -Method Get -TimeoutSec 5
-        if ($resp.status -eq "ok") {
+        if ($resp.status -eq "ok" -or $resp.status -eq "degraded") {
             $ready = $true
             break
         }

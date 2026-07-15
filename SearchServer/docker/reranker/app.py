@@ -185,7 +185,7 @@ def _should_retry_load() -> bool:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if _load_on_startup:
-        _load_model()
+        threading.Thread(target=_load_model, name="reranker-model-loader", daemon=True).start()
     yield
 
 

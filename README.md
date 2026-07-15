@@ -74,6 +74,13 @@ python3 manage_servers.py restart renderer processor
 
 - `--no-wait`：启动后不等待健康检查。
 - `--timeout 600`：将健康检查等待时间设置为 600 秒。
+- `--wait-reranker`：启动 SearchServer 时等待 reranker 模型完全加载成功；不加时允许 SearchServer 先以 `degraded` 状态启动。
 - `--volumes`：停止或重启时同时删除 Docker Compose 数据卷。
 - `clean`：停止服务器并清空相关运行数据。
 - `reset --build`：清空数据、重新构建并启动全部服务器。
+
+查看 reranker 是否已完全就绪：
+
+```bash
+python3 manage_servers.py health search
+```
