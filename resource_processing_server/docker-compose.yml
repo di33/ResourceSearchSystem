@@ -10,7 +10,7 @@ services:
         RP_EXTRA_APT_PACKAGES: ${RP_EXTRA_APT_PACKAGES:-}
     image: resource-upload/resource-processing-server:dev
     ports:
-      - "${RP_BIND_HOST:-0.0.0.0}:${RP_PORT:-8100}:8100"
+      - "${RP_BIND_HOST:-0.0.0.0}:${RP_PORT:-9000}:8100"
     env_file:
       - path: .env
         required: false

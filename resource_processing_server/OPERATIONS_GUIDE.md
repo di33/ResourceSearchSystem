@@ -67,19 +67,19 @@ RP_SEARCH_SERVER_BEARER_TOKEN=你的BearerToken
 开发模式启动：
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn resource_processing_server.app.main:app --reload --host 0.0.0.0 --port 8100
+.\.venv\Scripts\python.exe -m uvicorn resource_processing_server.app.main:app --reload --host 0.0.0.0 --port 9000
 ```
 
 生产模式启动：
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn resource_processing_server.app.main:app --host 0.0.0.0 --port 8100
+.\.venv\Scripts\python.exe -m uvicorn resource_processing_server.app.main:app --host 0.0.0.0 --port 9000
 ```
 
 健康检查：
 
 ```powershell
-$server = "http://localhost:8100"; Invoke-RestMethod -Uri "$server/health" -Method Get
+$server = "http://localhost:9000"; Invoke-RestMethod -Uri "$server/health" -Method Get
 ```
 
 ### 2.2 Docker 独立部署
@@ -118,7 +118,7 @@ cd G:\ResourceUpload\resource_processing_server; $env:RP_SEARCH_SERVER_URL="http
 
 ```powershell
 $env:RP_BIND_HOST="0.0.0.0"
-$env:RP_PORT="8100"
+$env:RP_PORT="9000"
 ```
 
 需要 Blender 时再打开可选镜像层，默认不安装以避免镜像过重：
@@ -202,7 +202,7 @@ cd G:\ResourceUpload
 单资源提交示例：
 
 ```powershell
-$server = "http://localhost:8100"; $body = @{ client_resource_id = "asset-1"; resource_type = "single_image"; source_object = @{ storage_profile_id = "default"; object_key = "resource-crawler/files/asset-1/asset-1.png"; file_name = "asset-1.png"; file_format = "png" }; source_files = @(@{ file_name = "asset-1.png"; file_format = "png"; is_primary = $true }); package_object = @{ storage_profile_id = "default"; object_key = "resource-crawler/files/pack-1/source.zip" }; client_metadata = @{ title = "asset-1" } } | ConvertTo-Json -Depth 20; Invoke-RestMethod -Uri "$server/processing-jobs" -Method Post -Headers @{ "X-Client-Id" = "resource-crawler" } -ContentType "application/json" -Body $body
+$server = "http://localhost:9000"; $body = @{ client_resource_id = "asset-1"; resource_type = "single_image"; source_object = @{ storage_profile_id = "default"; object_key = "resource-crawler/files/asset-1/asset-1.png"; file_name = "asset-1.png"; file_format = "png" }; source_files = @(@{ file_name = "asset-1.png"; file_format = "png"; is_primary = $true }); package_object = @{ storage_profile_id = "default"; object_key = "resource-crawler/files/pack-1/source.zip" }; client_metadata = @{ title = "asset-1" } } | ConvertTo-Json -Depth 20; Invoke-RestMethod -Uri "$server/processing-jobs" -Method Post -Headers @{ "X-Client-Id" = "resource-crawler" } -ContentType "application/json" -Body $body
 ```
 
 带客户端已有预览：
@@ -245,19 +245,19 @@ $server = "http://localhost:8100"; $body = @{ client_resource_id = "asset-1"; re
 查询任务：
 
 ```powershell
-$server = "http://localhost:8100"; Invoke-RestMethod -Uri "$server/processing-jobs/job_xxx" -Method Get -Headers @{ "X-Client-Id" = "resource-crawler" }
+$server = "http://localhost:9000"; Invoke-RestMethod -Uri "$server/processing-jobs/job_xxx" -Method Get -Headers @{ "X-Client-Id" = "resource-crawler" }
 ```
 
 重试任务：
 
 ```powershell
-$server = "http://localhost:8100"; Invoke-RestMethod -Uri "$server/processing-jobs/job_xxx/retry" -Method Post -Headers @{ "X-Client-Id" = "resource-crawler" }
+$server = "http://localhost:9000"; Invoke-RestMethod -Uri "$server/processing-jobs/job_xxx/retry" -Method Post -Headers @{ "X-Client-Id" = "resource-crawler" }
 ```
 
 删除资源：
 
 ```powershell
-$server = "http://localhost:8100"; $body = @{ client_resource_id = "asset-1"; reason = "client delete" } | ConvertTo-Json; Invoke-RestMethod -Uri "$server/processed-resources/delete" -Method Post -Headers @{ "X-Client-Id" = "resource-crawler" } -ContentType "application/json" -Body $body
+$server = "http://localhost:9000"; $body = @{ client_resource_id = "asset-1"; reason = "client delete" } | ConvertTo-Json; Invoke-RestMethod -Uri "$server/processed-resources/delete" -Method Post -Headers @{ "X-Client-Id" = "resource-crawler" } -ContentType "application/json" -Body $body
 ```
 
 客户端统一使用删除接口，不需要判断资源当前是否已经提交到 SearchServer。服务端会先取消同一 `client_id + client_resource_id` 下仍在排队或加工中的任务；如果资源可能已经入库，会向 SearchServer 发起幂等删除；对象清理仅限加工服务器生成的预览，不删除客户端上传的源文件或客户端提供的预览。
@@ -267,13 +267,13 @@ $server = "http://localhost:8100"; $body = @{ client_resource_id = "asset-1"; re
 批量接口只是批量创建任务；内部仍然是一个资源一个 job。
 
 ```powershell
-$server = "http://localhost:8100"; $body = @{ request_id = "batch-1"; manifests = @(@{ client_resource_id = "asset-1"; resource_type = "single_image"; source_object = @{ storage_profile_id = "default"; object_key = "resource-crawler/files/asset-1/asset-1.png"; file_name = "asset-1.png"; file_format = "png" }; source_files = @(@{ file_name = "asset-1.png"; file_format = "png"; is_primary = $true }) }, @{ client_resource_id = "asset-2"; resource_type = "single_image"; source_object = @{ storage_profile_id = "default"; object_key = "resource-crawler/files/asset-2/asset-2.png"; file_name = "asset-2.png"; file_format = "png" }; source_files = @(@{ file_name = "asset-2.png"; file_format = "png"; is_primary = $true }) }) } | ConvertTo-Json -Depth 20; Invoke-RestMethod -Uri "$server/processing-jobs/batch" -Method Post -Headers @{ "X-Client-Id" = "resource-crawler" } -ContentType "application/json" -Body $body
+$server = "http://localhost:9000"; $body = @{ request_id = "batch-1"; manifests = @(@{ client_resource_id = "asset-1"; resource_type = "single_image"; source_object = @{ storage_profile_id = "default"; object_key = "resource-crawler/files/asset-1/asset-1.png"; file_name = "asset-1.png"; file_format = "png" }; source_files = @(@{ file_name = "asset-1.png"; file_format = "png"; is_primary = $true }) }, @{ client_resource_id = "asset-2"; resource_type = "single_image"; source_object = @{ storage_profile_id = "default"; object_key = "resource-crawler/files/asset-2/asset-2.png"; file_name = "asset-2.png"; file_format = "png" }; source_files = @(@{ file_name = "asset-2.png"; file_format = "png"; is_primary = $true }) }) } | ConvertTo-Json -Depth 20; Invoke-RestMethod -Uri "$server/processing-jobs/batch" -Method Post -Headers @{ "X-Client-Id" = "resource-crawler" } -ContentType "application/json" -Body $body
 ```
 
 客户端也可以从本地 DB 中读取已保存 manifest 并批量提交：
 
 ```powershell
-.\.venv\Scripts\python.exe .\client\Scripts\submit_processing_manifest.py --db-path "G:\ResourceUpload\data\databases\pipeline.db" --processing-server "http://localhost:8100" --client-id "resource-crawler" --batch-size 50
+.\.venv\Scripts\python.exe .\client\Scripts\submit_processing_manifest.py --db-path "G:\ResourceUpload\data\databases\pipeline.db" --processing-server "http://localhost:9000" --client-id "resource-crawler" --batch-size 50
 ```
 
 ## 5. 快照与回放
@@ -283,25 +283,25 @@ $server = "http://localhost:8100"; $body = @{ request_id = "batch-1"; manifests 
 回放单个资源：
 
 ```powershell
-$server = "http://localhost:8100"; Invoke-RestMethod -Uri "$server/processed-resource-snapshots/asset-1/replay" -Method Post -Headers @{ "X-Client-Id" = "resource-crawler" }
+$server = "http://localhost:9000"; Invoke-RestMethod -Uri "$server/processed-resource-snapshots/asset-1/replay" -Method Post -Headers @{ "X-Client-Id" = "resource-crawler" }
 ```
 
 批量回放全部快照：
 
 ```powershell
-$server = "http://localhost:8100"; Invoke-RestMethod -Uri "$server/processed-resource-snapshots/replay" -Method Post -Headers @{ "X-Client-Id" = "resource-crawler" }
+$server = "http://localhost:9000"; Invoke-RestMethod -Uri "$server/processed-resource-snapshots/replay" -Method Post -Headers @{ "X-Client-Id" = "resource-crawler" }
 ```
 
 只回放上次 upsert 失败的快照：
 
 ```powershell
-$server = "http://localhost:8100"; Invoke-RestMethod -Uri "$server/processed-resource-snapshots/replay?search_upsert_state=upsert_failed" -Method Post -Headers @{ "X-Client-Id" = "resource-crawler" }
+$server = "http://localhost:9000"; Invoke-RestMethod -Uri "$server/processed-resource-snapshots/replay?search_upsert_state=upsert_failed" -Method Post -Headers @{ "X-Client-Id" = "resource-crawler" }
 ```
 
 限制回放数量：
 
 ```powershell
-$server = "http://localhost:8100"; Invoke-RestMethod -Uri "$server/processed-resource-snapshots/replay?limit=100" -Method Post -Headers @{ "X-Client-Id" = "resource-crawler" }
+$server = "http://localhost:9000"; Invoke-RestMethod -Uri "$server/processed-resource-snapshots/replay?limit=100" -Method Post -Headers @{ "X-Client-Id" = "resource-crawler" }
 ```
 
 ## 6. 描述批处理

@@ -681,7 +681,7 @@ def main() -> int:
     parser = make_arg_parser(
         "提交已上传对象资源到资源加工服务器",
         extra_args=[
-            ("--processing-server", {"default": None, "help": "资源加工服务器地址，默认 RP_PROCESSING_SERVER_URL 或 http://localhost:8100"}),
+            ("--processing-server", {"default": None, "help": "资源加工服务器地址，默认 RP_PROCESSING_SERVER_URL 或 http://localhost:9000"}),
             ("--client-id", {"default": None, "help": "客户端 ID，会作为资源 ID 命名空间"}),
             ("--api-key", {"default": None, "help": "资源加工服务器 API key，默认 RP_PROCESSING_SERVER_API_KEY/RP_API_KEY"}),
             ("--direct-search-upsert", {"action": "store_true", "default": _env_bool("RP_DIRECT_SEARCH_UPSERT", False), "help": "已废弃：客户端只提交到资源加工服务器"}),
@@ -709,7 +709,7 @@ def main() -> int:
         parser.error("--force 必须配合 --resource-type 或 --resource-types，避免误重提所有资源类型")
 
     report = Report(label="加工任务提交")
-    processing_server = args.processing_server or env("RP_PROCESSING_SERVER_URL", "http://localhost:8100")
+    processing_server = args.processing_server or env("RP_PROCESSING_SERVER_URL", "http://localhost:9000")
     client_id = args.client_id or env("CLIENT_ID", "client")
     api_key = args.api_key or env("RP_PROCESSING_SERVER_API_KEY", env("RP_API_KEY", ""))
     cache = LocalCacheStore(args.db_path)

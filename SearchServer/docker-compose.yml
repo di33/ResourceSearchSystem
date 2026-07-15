@@ -135,8 +135,8 @@ services:
         max-size: "50m"
         max-file: "3"
 
-  # Milvus standalone internal object store only. This is not the resource
-  # file bucket and is intentionally not published to the host.
+  # Milvus 的内部对象存储后端，保存向量索引数据。它不是业务资源文件桶，
+  # SearchServer API 不直接调用它，并且不会向宿主机发布 9000 端口。
   minio:
     image: minio/minio:latest
     env_file:
@@ -168,7 +168,7 @@ services:
         RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
     image: searchserver-reranker
     # Internal-only service. The API container reaches it via http://reranker:8100.
-    # Do not publish host port 8100; it is reserved for resource_processing_server.
+    # Do not publish this internal port; resource_processing_server uses host port 9000.
     environment:
       RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
       RERANKER_MODEL_PATH: ${RERANKER_MODEL_PATH:-}

@@ -294,7 +294,7 @@ dry-run 看差异：
 - `--resource-types`：只提交多个资源类型，支持逗号分隔或重复传入。默认空，即不按多个类型过滤。
 - `--source-filter`：只提交指定来源站点。默认空，即不过滤来源。
 - `--resume`：通用断点续跑参数。默认关闭；该命令按总指纹自动跳过已提交资源。
-- `--processing-server`：资源加工服务器地址。默认读取 `RP_PROCESSING_SERVER_URL`，未配置则 `http://localhost:8100`。
+- `--processing-server`：资源加工服务器地址。默认读取 `RP_PROCESSING_SERVER_URL`，未配置则 `http://localhost:9000`。
 - `--client-id`：客户端命名空间。默认读取 `CLIENT_ID`，未配置则 `client`。
 - `--api-key`：资源加工服务器 API key。默认读取 `RP_PROCESSING_SERVER_API_KEY` / `RP_API_KEY`，未配置则空。
 - `--manifest-out`：导出 JSONL manifest 文件。默认空，即不额外导出文件。

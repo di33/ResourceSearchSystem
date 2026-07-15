@@ -286,7 +286,7 @@ def main() -> int:
         "提交已有加工 manifest 到资源加工服务器",
         extra_args=[
             ("--manifest", {"action": "append", "default": [], "help": "manifest JSON/JSONL 文件，可重复传入；未传则从本地 DB 读取"}),
-            ("--processing-server", {"default": None, "help": "资源加工服务器地址，默认 RP_PROCESSING_SERVER_URL 或 http://localhost:8100"}),
+            ("--processing-server", {"default": None, "help": "资源加工服务器地址，默认 RP_PROCESSING_SERVER_URL 或 http://localhost:9000"}),
             ("--client-id", {"default": None, "help": "客户端 ID，会写入 X-Client-Id 请求头"}),
             ("--api-key", {"default": None, "help": "资源加工服务器 API key，默认 RP_PROCESSING_SERVER_API_KEY/RP_API_KEY"}),
             ("--submit-state", {"default": "pending", "help": "从 DB 读取时筛选提交状态，默认 pending；传空字符串则不过滤"}),
@@ -300,7 +300,7 @@ def main() -> int:
     args = parser.parse_args()
 
     report = Report(label="加工任务提交")
-    processing_server = args.processing_server or env("RP_PROCESSING_SERVER_URL", "http://localhost:8100")
+    processing_server = args.processing_server or env("RP_PROCESSING_SERVER_URL", "http://localhost:9000")
     client_id = args.client_id or env("CLIENT_ID", "client")
     api_key = args.api_key or env("RP_PROCESSING_SERVER_API_KEY", env("RP_API_KEY", ""))
     cache = None

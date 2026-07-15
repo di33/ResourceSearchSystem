@@ -40,7 +40,7 @@ Description generation can be coalesced by count and wait time with:
 Run locally:
 
 ```powershell
-uvicorn resource_processing_server.app.main:app --reload --port 8100
+uvicorn resource_processing_server.app.main:app --reload --port 9000
 ```
 
 Run as an independent Docker service:

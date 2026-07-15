@@ -126,7 +126,7 @@ def main() -> int:
     parser = make_arg_parser(
         "删除已加工资源",
         extra_args=[
-            ("--processing-server", {"default": None, "help": "资源加工服务器地址，默认 RP_PROCESSING_SERVER_URL 或 http://localhost:8100"}),
+            ("--processing-server", {"default": None, "help": "资源加工服务器地址，默认 RP_PROCESSING_SERVER_URL 或 http://localhost:9000"}),
             ("--client-id", {"default": None, "help": "客户端 ID，会写入 X-Client-Id 请求头"}),
             ("--api-key", {"default": None, "help": "资源加工服务器 API key，默认 RP_PROCESSING_SERVER_API_KEY/RP_API_KEY"}),
             ("--client-resource-id", {"action": "append", "default": [], "help": "客户端资源 ID；支持逗号分隔或重复传入"}),
@@ -145,7 +145,7 @@ def main() -> int:
         parser.error("必须传 --client-resource-id 或 --resource-id")
 
     report = Report(label="删除已加工资源")
-    processing_server = args.processing_server or env("RP_PROCESSING_SERVER_URL", "http://localhost:8100")
+    processing_server = args.processing_server or env("RP_PROCESSING_SERVER_URL", "http://localhost:9000")
     client_id = args.client_id or env("CLIENT_ID", "client")
     api_key = args.api_key or env("RP_PROCESSING_SERVER_API_KEY", env("RP_API_KEY", ""))
     delete_objects = not args.no_delete_objects

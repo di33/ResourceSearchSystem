@@ -296,7 +296,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--description-concurrency", type=int, default=None, help="描述生成并发数")
     parser.add_argument("--retry-failed-descriptions", action="store_true", help="描述阶段重试失败任务")
 
-    parser.add_argument("--processing-server", default=env("RP_PROCESSING_SERVER_URL", "http://localhost:8100"), help="资源加工服务器地址")
+    parser.add_argument("--processing-server", default=env("RP_PROCESSING_SERVER_URL", "http://localhost:9000"), help="资源加工服务器地址")
     parser.add_argument("--processing-api-key", default="", help="资源加工服务器 API key；默认由子命令读取 RP_PROCESSING_SERVER_API_KEY/RP_API_KEY")
     parser.add_argument("--manifest-out", default="", help="提交阶段额外导出 JSONL manifest")
     parser.add_argument("--upload-resources-concurrency", type=int, default=None, help="提交加工服务器并发数")
