@@ -178,6 +178,9 @@ services:
       # One mix-compaction job consumes eight slots by default. Keep exactly
       # one job schedulable; maxParallelTaskNum above enforces the concurrency.
       DATANODE_SLOT_SLOTCAP: "8"
+      # Stream already-sorted segments through a multi-way merge during mix
+      # compaction. Milvus automatically falls back when a plan is ineligible.
+      DATANODE_COMPACTION_USEMERGESORT: "true"
       # A large compaction on 4096-dimensional vectors can stall the Go
       # runtime long enough to miss the default 30-second etcd lease. Keep
       # enough margin for GC without masking a permanently unavailable etcd.

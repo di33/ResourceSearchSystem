@@ -67,7 +67,7 @@ DASHSCOPE_API_KEY=你的DashScopeKey
 
 SearchServer 只部署搜索 API、单实例后台 worker、Postgres、Milvus、reranker 等搜索侧依赖。API 的 Gunicorn 进程不再重复启动向量同步和 FTS worker；`background-worker` 独立消费持久队列，避免多进程将数据库连接和后台并发成倍放大。docker compose 里的 MinIO 仅供 Milvus standalone 内部使用，不作为资源文件桶。资源加工服务器单独部署，通过 HTTP 调用 SearchServer 的 `/resources/upsert`、`/resources/delete` 等接口，不要求和 SearchServer 在同一台物理机。搜索结果中的包下载入口是 `package_download_url`；父子资源字段已从搜索响应和资源详情响应中移除。
 
-当前 Compose 保留双向量 worker的既有吞吐，只将 Milvus standalone 的 compaction 并发限制为一个任务，并提高 etcd session 对长时间 GC 暂停的容忍度。生产环境仍建议至少 16 GiB内存并配置 swap；未经过持续写入和 compaction压测，不要提高 compaction并发。
+当前 Compose 保留双向量 worker的既有吞吐，将 Milvus standalone 的 compaction并发限制为一个任务，默认对符合条件的有序 segment使用流式 merge-sort，并提高 etcd session对长时间 GC暂停的容忍度。生产环境仍建议至少16 GiB内存；未经过持续写入和 compaction压测，不要提高 compaction并发。
 
 reranker 会读取挂载的 Hugging Face 缓存中 `hub/models--BAAI--bge-reranker-v2-m3/refs/main`，自动解析当前 `snapshots/<hash>` 目录，无需在 `.env` 写死 `RERANKER_MODEL_PATH`。缓存不存在或不完整时才回退到 Hugging Face 模型名和 ModelScope 路径。
 
@@ -115,6 +115,14 @@ docker compose up -d --build
 - `-Clean`：执行 `docker compose down -v`，会删除服务端数据卷，再重新启动服务。仅在确认要清空服务端数据时使用。
 
 ### Linux
+
+首次部署或小内存主机升级前，以 root身份执行幂等的主机内存初始化脚本。Swap 文件名默认使用相对值 `swapfile`，脚本会将它解析到默认数据目录 `/data`，即实际创建并持久启用 8 GiB 的 `/data/swapfile`，同时设置 `vm.swappiness=10`；已有且已启用的 Swap不会重复创建：
+
+```bash
+bash tools/setup_linux_host.sh
+```
+
+可通过环境变量覆盖默认值，例如 `DATA_DIR=/mnt/data SWAP_FILE=searchserver.swap SWAP_SIZE_GIB=16 SWAPPINESS=10 bash tools/setup_linux_host.sh`。`SWAP_FILE` 也兼容绝对路径。
 
 启动或重启，保留现有数据：
 
