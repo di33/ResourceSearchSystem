@@ -943,15 +943,22 @@ function setLoading(text) {
 }
 
 async function loadStats() {
+  const stats = document.getElementById('stats');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  stats.textContent = 'Loading stats...';
   try {
-    const r = await fetch(API + '/stats');
+    const r = await fetch(API + '/stats', { signal: controller.signal });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json();
     const effectiveVectorCount = d.db_embedding_count ?? d.milvus_vector_count;
-    document.getElementById('stats').innerHTML =
+    stats.innerHTML =
       `<span>DB: <span class="stat-val">${d.db_resource_count}</span></span>` +
       `<span>Vectors: <span class="stat-val">${effectiveVectorCount}</span></span>`;
   } catch(e) {
-    document.getElementById('stats').textContent = 'Failed to load stats';
+    stats.textContent = e.name === 'AbortError' ? 'Stats timed out' : 'Failed to load stats';
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -15,6 +16,9 @@ from app.models.tables import ResourceEmbedding, ResourceTask
 
 router = APIRouter(tags=["health"])
 _MILVUS_HEALTH_TIMEOUT_SECONDS = 5.0
+_STATS_CACHE_TTL_SECONDS = 30.0
+_stats_cache: tuple[float, "StatsOut"] | None = None
+_stats_cache_lock = asyncio.Lock()
 
 
 class ComponentHealth(BaseModel):
@@ -74,6 +78,26 @@ class StatsOut(BaseModel):
 @router.get("/stats", response_model=StatsOut)
 async def server_stats(session: AsyncSession = Depends(get_db)):
     """Aggregate counts across DB and Milvus."""
+    global _stats_cache
+
+    now = time.monotonic()
+    if _stats_cache is not None and now - _stats_cache[0] < _STATS_CACHE_TTL_SECONDS:
+        return _stats_cache[1]
+
+    # Several browser tabs commonly request stats at the same time. Only let
+    # one request perform the database scans and Milvus call for each cache
+    # window; the others reuse its result.
+    async with _stats_cache_lock:
+        now = time.monotonic()
+        if _stats_cache is not None and now - _stats_cache[0] < _STATS_CACHE_TTL_SECONDS:
+            return _stats_cache[1]
+
+        result = await _collect_stats(session)
+        _stats_cache = (time.monotonic(), result)
+        return result
+
+
+async def _collect_stats(session: AsyncSession) -> StatsOut:
     result = StatsOut()
 
     try:
