@@ -151,7 +151,9 @@ services:
         max-file: "3"
 
   milvus:
-    image: milvusdb/milvus:v2.5.6
+    # Stay on the data-compatible 2.5 line while picking up the reliability
+    # and background-scheduling fixes released after 2.5.6.
+    image: milvusdb/milvus:v2.5.25
     restart: unless-stopped
     command:
       - sh
@@ -169,6 +171,17 @@ services:
     environment:
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
+      # Milvus normalizes environment keys by removing dots/underscores and
+      # ignoring case. Run only one compaction task at a time to prevent
+      # multiple large merges from competing for memory on standalone.
+      DATACOORD_COMPACTION_MAXPARALLELTASKNUM: "1"
+      # One mix-compaction job consumes eight slots by default. Keep exactly
+      # one job schedulable; maxParallelTaskNum above enforces the concurrency.
+      DATANODE_SLOT_SLOTCAP: "8"
+      # A large compaction on 4096-dimensional vectors can stall the Go
+      # runtime long enough to miss the default 30-second etcd lease. Keep
+      # enough margin for GC without masking a permanently unavailable etcd.
+      COMMON_SESSION_TTL: "180"
     volumes:
       - milvusdata:/var/lib/milvus
     depends_on:
