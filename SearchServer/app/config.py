@@ -88,7 +88,7 @@ class Settings(BaseSettings):
     ksc_api_key: str = Field(default="", alias="KSC_API_KEY")
     vector_sync_worker_enabled: bool = Field(default=True, alias="VECTOR_SYNC_WORKER_ENABLED")
     vector_sync_worker_interval: float = Field(default=0.2, alias="VECTOR_SYNC_WORKER_INTERVAL")
-    vector_sync_worker_batch_size: int = Field(default=16, alias="VECTOR_SYNC_WORKER_BATCH_SIZE")
+    vector_sync_worker_batch_size: int = Field(default=32, alias="VECTOR_SYNC_WORKER_BATCH_SIZE")
     vector_sync_worker_concurrency: int = Field(default=8, alias="VECTOR_SYNC_WORKER_CONCURRENCY")
     vector_sync_worker_stale_seconds: int = Field(default=600, alias="VECTOR_SYNC_WORKER_STALE_SECONDS")
     vector_sync_failed_retry_seconds: int = Field(default=60, alias="VECTOR_SYNC_FAILED_RETRY_SECONDS")
