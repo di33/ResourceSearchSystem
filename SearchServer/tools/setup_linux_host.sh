@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DATA_DIR="${DATA_DIR:-/data}"
+DATA_DIR="${DATA_DIR:-/data/ResourceLibrary/swapfile}"
 SWAP_FILE="${SWAP_FILE:-swapfile}"
 SWAP_SIZE_GIB="${SWAP_SIZE_GIB:-8}"
 SWAPPINESS="${SWAPPINESS:-10}"
