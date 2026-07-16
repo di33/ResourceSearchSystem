@@ -116,7 +116,7 @@ docker compose up -d --build
 
 ### Linux
 
-首次部署或小内存主机升级前，以 root身份执行幂等的主机内存初始化脚本。Swap 文件名默认使用相对值 `swapfile`，脚本会将它解析到默认目录 `/data/ResourceLibrary/swapfile/`，即实际创建并持久启用 8 GiB 的 `/data/ResourceLibrary/swapfile/swapfile`，同时设置 `vm.swappiness=10`；已有且已启用的 Swap不会重复创建：
+首次部署或小内存主机升级前，以 root身份执行幂等的主机内存初始化脚本。Swap 文件名默认使用相对值 `swapfile`，脚本会将它解析到默认目录 `/data/ResourceLibrary/`，即实际创建并持久启用 8 GiB 的 `/data/ResourceLibrary/swapfile`，同时设置 `vm.swappiness=10`；已有且已启用的 Swap不会重复创建：
 
 ```bash
 bash tools/setup_linux_host.sh
