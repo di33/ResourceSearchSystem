@@ -22,6 +22,7 @@ from ResourceProcessor.description.ksyun_llm_provider import (  # noqa: E402
     PROMPT_VERSION,
     _build_classification_user_content,
     _build_user_content,
+    _encode_image_data_uri,
     _prepare_audio_input,
     _parse_description_response_strict,
     _parse_response,
@@ -63,10 +64,48 @@ def test_parse_description_response_strict_accepts_valid_contract():
     assert score == 0.8
 
 
+def test_parse_description_response_strict_allows_missing_quality_score():
+    main, detail, score = _parse_description_response_strict(
+        '{"main_content":"像素水晶图标","detail_content":"蓝色透明晶体。"}'
+    )
+    assert main == "像素水晶图标"
+    assert detail == "蓝色透明晶体。"
+    assert score is None
+
+
+def test_parse_description_response_strict_uses_json_after_think_close_tag():
+    response = (
+        '{"main_content":"草稿主体","detail_content":"草稿细节"}'
+        '</think>'
+        '{"main_content":"最终主体","detail_content":"最终细节"}'
+    )
+
+    main, detail, score = _parse_description_response_strict(response)
+
+    assert main == "最终主体"
+    assert detail == "最终细节"
+    assert score is None
+
+
+def test_parse_description_response_strict_rejects_invalid_json_after_think_close_tag():
+    response = (
+        '{"main_content":"草稿主体","detail_content":"草稿细节"}'
+        '</think>not-json'
+    )
+
+    with pytest.raises(InvalidDescriptionResponse, match="not valid JSON") as caught:
+        _parse_description_response_strict(response)
+
+    assert caught.value.raw_response == response
+
+
 @pytest.mark.parametrize(
     "response, message",
     [
         ("The request was rejected because it was considered high risk", "not valid JSON"),
+        ('{"main_content":"The request was rejected because it was considered high risk",'
+         '"detail_content":"The request was rejected because it was considered high risk"}',
+         "contains a refusal"),
         ('{"main_content":"主体","description_quality_score":0.5}', "missing required fields"),
         ('{"main_content":"主体","detail_content":"细节","description_quality_score":2}', "between 0 and 1"),
         ('{"main_content":"","detail_content":"细节","description_quality_score":null}', "main_content"),
@@ -84,8 +123,11 @@ def test_generate_description_text_rejects_plain_text_response():
         provider,
         "_call_sync",
         return_value="The request was rejected because it was considered high risk",
-    ), pytest.raises(InvalidDescriptionResponse, match="not valid JSON"):
+    ), pytest.raises(InvalidDescriptionResponse, match="not valid JSON") as caught:
         _run(provider.generate_description_text(_make_input()))
+    assert caught.value.raw_response == (
+        "The request was rejected because it was considered high risk"
+    )
 
 
 def test_build_user_content_without_image():
@@ -100,6 +142,24 @@ def test_build_user_content_without_image():
     assert "resolution: 512x512" in text
     assert "描述提示词：" not in text
     assert "可用分类规则" not in text
+
+
+@pytest.mark.parametrize(
+    "file_name, expected_prefix",
+    [
+        ("preview.png", "data:image/png;base64,"),
+        ("preview.JPG", "data:image/jpeg;base64,"),
+        ("preview.webp", "data:image/webp;base64,"),
+        ("preview.gif", "data:image/gif;base64,"),
+        ("preview.bmp", "data:image/bmp;base64,"),
+        ("preview.unknown", "data:application/octet-stream;base64,"),
+    ],
+)
+def test_encode_image_data_uri_uses_explicit_mime_mapping(tmp_path, file_name, expected_prefix):
+    image_path = tmp_path / file_name
+    image_path.write_bytes(b"image-bytes")
+
+    assert _encode_image_data_uri(str(image_path)).startswith(expected_prefix)
 
 
 def test_build_user_content_with_audio(tmp_path):

@@ -597,7 +597,7 @@ async def _run_vector_sync_jobs_batch(job_ids: list[int]) -> int:
                             f"embedding failed: {exc}",
                             raise_on_error=False,
                         )
-            return len(batch_items) + len(fallback_ids)
+            return 0
 
         valid_rows: list[tuple[VectorSyncJob, int, str, list[float]]] = []
         async with async_session_factory() as session:
@@ -636,7 +636,7 @@ async def _run_vector_sync_jobs_batch(job_ids: list[int]) -> int:
             if error:
                 for job, _task_id, _text, _vector in valid_rows:
                     await _fail_vector_sync_job(session, job, error, raise_on_error=False)
-                return len(batch_items) + len(fallback_ids)
+                return 0
 
             for job, task_id, text, _vector in valid_rows:
                 job.state = "completed"

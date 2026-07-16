@@ -25,6 +25,7 @@ from app.routers.ingest import (
     UpsertResourceIn,
     _claim_next_vector_sync_jobs,
     _backfill_fts_once,
+    _run_vector_sync_jobs_batch,
     _run_vector_sync_job,
     delete_processed_resource,
     start_vector_sync_worker,
@@ -449,6 +450,40 @@ class TestIngestUpsert(unittest.IsolatedAsyncioTestCase):
         refreshed = (await session.execute(select(VectorSyncJob).order_by(VectorSyncJob.id))).scalars().all()
         self.assertEqual([job.state for job in refreshed], ["running", "running", "pending"])
         await session.close()
+
+    async def test_vector_sync_batch_does_not_count_failed_writes_as_processed(self):
+        session = self.session_factory()
+        task = ResourceTask(
+            resource_id="res-batch-write-failure",
+            content_md5="batch-write-failure",
+            resource_type="single_image",
+            process_state="committed",
+        )
+        job = VectorSyncJob(
+            resource_id=task.resource_id,
+            action="upsert",
+            resource_type=task.resource_type,
+            embedding_text="embedding text",
+            state="running",
+        )
+        session.add_all([task, job])
+        await session.commit()
+        job_id = job.id
+        await session.close()
+
+        with (
+            patch("app.routers.ingest.async_session_factory", self.session_factory),
+            patch("app.routers.ingest.generate_embeddings", new=AsyncMock(return_value=[[0.1, 0.2]])),
+            patch("app.routers.ingest._write_vectors", return_value="vector insert failed: unavailable"),
+            patch.object(settings, "embedding_dimension", 2),
+        ):
+            processed = await _run_vector_sync_jobs_batch([job_id])
+
+        self.assertEqual(processed, 0)
+        verify = self.session_factory()
+        refreshed = await verify.get(VectorSyncJob, job_id)
+        self.assertEqual(refreshed.state, "failed")
+        await verify.close()
 
     async def test_vector_sync_worker_defers_recent_failed_jobs(self):
         session = self.session_factory()

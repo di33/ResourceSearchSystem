@@ -64,7 +64,13 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 # Milvus client — proxy with automatic reconnection
 # ---------------------------------------------------------------------------
 
-_CONNECTION_ERRORS = ("closed", "unavailable", "failed to connect", "connection refused")
+_CONNECTION_ERRORS = (
+    "closed",
+    "unavailable",
+    "failed to connect",
+    "connection refused",
+    "should create connection first",
+)
 
 
 def _is_connection_error(exc: BaseException) -> bool:

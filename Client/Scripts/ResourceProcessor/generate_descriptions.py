@@ -8,8 +8,12 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import random
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
 
@@ -17,6 +21,7 @@ from ResourceProcessor.pipeline_common import (
     Report,
     env,
     make_arg_parser,
+    state_ge,
 )
 from resource_contracts.resource_types import (
     AUDIO_FILE_RESOURCE_TYPE,
@@ -47,6 +52,37 @@ except Exception:
 
 
 _CODEX_PROVIDERS = {"codex", "codex-exec"}
+_INVALID_RESPONSE_LOG = (
+    Path(__file__).resolve().parents[3]
+    / "data"
+    / "logs"
+    / "description_invalid_responses.jsonl"
+)
+_INVALID_RESPONSE_LOG_LOCK = threading.Lock()
+
+
+def _log_invalid_description_response(task_id: int, entity, exc: Exception, attempt: int) -> None:
+    raw_response = getattr(exc, "raw_response", "")
+    if not isinstance(raw_response, str):
+        raw_response = str(raw_response or "")
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "task_id": task_id,
+        "source_resource_id": str(getattr(entity, "source_resource_id", "") or ""),
+        "resource_type": str(getattr(entity, "resource_type", "") or ""),
+        "title": str(getattr(entity, "title", "") or ""),
+        "resource_path": str(getattr(entity, "resource_path", "") or ""),
+        "attempt": attempt,
+        "error_type": type(exc).__name__,
+        "error": str(exc),
+        "raw_response": raw_response[:16384],
+        "raw_response_length": len(raw_response),
+    }
+    _INVALID_RESPONSE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+    with _INVALID_RESPONSE_LOG_LOCK:
+        with _INVALID_RESPONSE_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
 
 
 def _is_codex_provider(provider: str) -> bool:
@@ -173,6 +209,8 @@ async def _generate_with_retry(
             return True
         except Exception as exc:
             last_exc = exc
+            if type(exc).__name__ == "InvalidDescriptionResponse":
+                _log_invalid_description_response(task_id, entity, exc, attempt)
             if attempt >= max_attempts or not _is_retryable_error(exc):
                 break
             delay = base_delay_seconds * (2 ** (attempt - 1)) + random.uniform(0.0, 1.0)
@@ -187,13 +225,17 @@ async def _generate_with_retry(
     raise RuntimeError("description generation failed without exception")
 
 
-def _get_retry_candidates(cache, max_retries: int) -> list[dict]:
-    """Return DESCRIPTION_FAILED tasks with retry_count < max_retries."""
+def _get_retry_candidates(cache) -> list[dict]:
+    """Return all DESCRIPTION_FAILED tasks for this command invocation.
+
+    ``retry_count`` is persisted for audit only. It must not prevent a later
+    command from trying a failed task again.
+    """
     from ResourceProcessor.preview_metadata import ProcessState
     rows = cache.get_failed_tasks()
     # Filter to DESCRIPTION_FAILED only
     desc_failed = [r for r in rows if r["process_state"] == ProcessState.DESCRIPTION_FAILED.value]
-    return [r for r in desc_failed if r["retry_count"] < max_retries]
+    return desc_failed
 
 
 def _has_existing_description(cache, task_id: int) -> bool:
@@ -252,17 +294,31 @@ def _run_async_cli(coro, report: Report) -> bool:
 
 async def _process_one(
     task_id, entity, desc_provider, desc_model,
-    cache, report, semaphore, counters,
+    cache, report, semaphore, counters, max_attempts=6,
 ):
     """Process a single task with concurrency control."""
     from ResourceProcessor.preview_metadata import ProcessState
 
     async with semaphore:
         success_state = ProcessState.DESCRIPTION_READY
+        get_task_by_id = getattr(cache, "get_task_by_id", None)
+        task_before = get_task_by_id(task_id) if callable(get_task_by_id) else {}
+        task_before = task_before or {}
+        state_before = str(task_before.get("process_state") or "")
         had_existing_description = _has_existing_description(cache, task_id)
+        can_fallback_to_existing = had_existing_description and state_ge(
+            state_before,
+            ProcessState.DESCRIPTION_READY.value,
+        )
         try:
             await _generate_with_retry(
-                cache, task_id, entity, desc_provider, report, llm_model=desc_model,
+                cache,
+                task_id,
+                entity,
+                desc_provider,
+                report,
+                max_attempts=max_attempts,
+                llm_model=desc_model,
             )
             cache.update_task_state(task_id, success_state)
             counters["desc_ok"] += 1
@@ -270,7 +326,7 @@ async def _process_one(
             from ResourceProcessor.description.pack_description_builder import PackChildDescriptionsNotReadyError
 
             label = entity.title or entity.resource_path or entity.content_md5[:12]
-            if had_existing_description and not isinstance(exc, PackChildDescriptionsNotReadyError):
+            if can_fallback_to_existing and not isinstance(exc, PackChildDescriptionsNotReadyError):
                 cache.update_task_state(task_id, ProcessState.DESCRIPTION_READY)
                 counters["fallback_existing"] = counters.get("fallback_existing", 0) + 1
                 report.ok(
@@ -457,7 +513,7 @@ def main() -> int:
             ("--audio-llm-provider", {"default": None, "help": "音频资源 LLM provider (默认 AUDIO_LLM_PROVIDER env，未设置则跳过音频)"}),
             ("--retry-failed", {"action": "store_true", "help": "重试描述生成失败的任务"}),
             ("--force", {"action": "store_true", "help": "强制刷新匹配资源的描述；必须配合 --resource-type 使用，旧描述不删除，新描述作为最新记录写入"}),
-            ("--max-retries", {"type": int, "default": 3, "help": "最大重试次数 (默认 3)"}),
+            ("--max-retries", {"type": int, "default": 3, "help": "本次命令内每个任务的最大生成尝试次数 (默认 3；历史 retry_count 不影响后续命令)"}),
             ("--concurrency", {"type": int, "default": None, "help": "并发请求数 (默认 API=5，Codex=1)"}),
         ],
     )
@@ -467,6 +523,8 @@ def main() -> int:
         parser.error("--force 必须配合 --resource-type 使用，避免误刷新所有资源类型")
     if args.force and args.retry_failed:
         parser.error("--force 不能和 --retry-failed 同时使用")
+    if args.max_retries < 1:
+        parser.error("--max-retries 必须大于等于 1")
 
     from ResourceProcessor.cache.local_cache import LocalCacheStore
     from ResourceProcessor.preview_metadata import ProcessState
@@ -514,7 +572,7 @@ def main() -> int:
     try:
         # --retry-failed mode: re-process failed tasks from DB
         if args.retry_failed:
-            candidates = _get_retry_candidates(cache, args.max_retries)
+            candidates = _get_retry_candidates(cache)
             report.ok("重试模式", f"找到 {len(candidates)} 个可重试的失败任务")
 
             tasks_to_run = []
@@ -555,7 +613,17 @@ def main() -> int:
             async def _run_retry():
                 semaphore = asyncio.Semaphore(args.concurrency)
                 await asyncio.gather(*[
-                    _process_one(tid, ent, prov, mdl, cache, report, semaphore, counters)
+                    _process_one(
+                        tid,
+                        ent,
+                        prov,
+                        mdl,
+                        cache,
+                        report,
+                        semaphore,
+                        counters,
+                        max_attempts=args.max_retries,
+                    )
                     for tid, ent, prov, mdl in tasks_to_run
                 ])
 

@@ -685,6 +685,54 @@ def test_generate_descriptions_reads_only_pipeline_db(monkeypatch, tmp_path, cap
         store.close()
 
 
+def test_generate_descriptions_does_not_keep_existing_description_below_description_ready(monkeypatch, tmp_path, capsys):
+    from ResourceProcessor import generate_descriptions
+
+    db_path = tmp_path / "pipeline.db"
+    store = LocalCacheStore(str(db_path))
+    try:
+        task_id = store.insert_task(_make_entity(tmp_path))
+        store.insert_description(
+            task_id,
+            main_content="old main",
+            detail_content="old detail",
+            full_description="主体：old main\n细节：old detail",
+            prompt_version="old",
+        )
+        store.update_task_state(task_id, ProcessState.PREVIEW_READY)
+    finally:
+        store.close()
+
+    async def fail_generate(*args, **kwargs):
+        raise RuntimeError("invalid generated description")
+
+    monkeypatch.setattr(generate_descriptions, "_generate_with_retry", fail_generate)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_descriptions",
+            "--db-path",
+            str(db_path),
+            "--llm-provider",
+            "mock",
+            "--concurrency",
+            "1",
+        ],
+    )
+
+    assert generate_descriptions.main() == 1
+    out = capsys.readouterr().out
+    assert "描述保留 [Asset]" not in out
+
+    store = LocalCacheStore(str(db_path))
+    try:
+        task = store.get_task_by_id(task_id)
+        assert task["process_state"] == ProcessState.DESCRIPTION_FAILED.value
+        assert task["last_error_code"] == "desc_error"
+    finally:
+        store.close()
+
 def test_generate_descriptions_resume_skips_existing_description(monkeypatch, tmp_path, capsys):
     from ResourceProcessor import generate_descriptions
 
@@ -749,7 +797,7 @@ def test_generate_descriptions_keeps_existing_description_on_regeneration_failur
             full_description="主体：old main\n细节：old detail",
             prompt_version="old",
         )
-        store.update_task_state(task_id, ProcessState.PREVIEW_READY)
+        store.update_task_state(task_id, ProcessState.DESCRIPTION_READY)
     finally:
         store.close()
 
@@ -768,6 +816,9 @@ def test_generate_descriptions_keeps_existing_description_on_regeneration_failur
             "mock",
             "--concurrency",
             "1",
+            "--resource-type",
+            "single_image",
+            "--force",
         ],
     )
 
@@ -942,6 +993,21 @@ def test_description_retry_classifies_transient_errors():
     assert not _is_retryable_error(
         RuntimeError("Ksyun chat.completions 调用失败: code=400, body={\"error\":\"Bad Request\"}")
     )
+
+
+def test_description_retry_candidates_ignore_persisted_retry_count():
+    from ResourceProcessor.generate_descriptions import _get_retry_candidates
+
+    class FakeCache:
+        def get_failed_tasks(self):
+            return [
+                {"id": 1, "process_state": ProcessState.DESCRIPTION_FAILED.value, "retry_count": 99},
+                {"id": 2, "process_state": ProcessState.PREVIEW_FAILED.value, "retry_count": 0},
+            ]
+
+    candidates = _get_retry_candidates(FakeCache())
+
+    assert [item["id"] for item in candidates] == [1]
 
 
 def test_description_progress_label_uses_streaming_counts():

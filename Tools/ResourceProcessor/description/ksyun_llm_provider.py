@@ -96,6 +96,16 @@ def _normalize_base_url(base_url: str) -> str:
     return base_url.rstrip("/")
 
 
+_IMAGE_MIME_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+}
+
+
 def _encode_image_data_uri(path: str) -> str | None:
     if not path:
         return None
@@ -103,7 +113,7 @@ def _encode_image_data_uri(path: str) -> str | None:
     if not p.is_file():
         return None
     data = p.read_bytes()
-    mime = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+    mime = _IMAGE_MIME_TYPES.get(p.suffix.lower(), "application/octet-stream")
     encoded = base64.b64encode(data).decode("utf-8")
     return f"data:{mime};base64,{encoded}"
 
@@ -263,50 +273,91 @@ def _description_response_schema() -> dict[str, Any]:
                 "maximum": 1,
             },
         },
-        "required": ["main_content", "detail_content", "description_quality_score"],
+        "required": ["main_content", "detail_content"],
     }
 
 
 class InvalidDescriptionResponse(ValueError):
     """The model response does not match the required description contract."""
 
+    def __init__(self, message: str, *, raw_response: str = ""):
+        super().__init__(message)
+        self.raw_response = str(raw_response or "")
+
+
+_DESCRIPTION_REFUSAL_MARKERS = (
+    "request was rejected",
+    "considered high risk",
+    "content policy",
+    "safety policy",
+    "cannot assist",
+    "unable to process this request",
+    "请求被拒绝",
+    "内容存在风险",
+    "无法处理此请求",
+)
+
 
 def _parse_description_response_strict(text: str) -> tuple[str, str, float | None]:
     """Validate the description JSON locally before it can enter the pipeline."""
+    raw_text = str(text or "")
+    parse_text = raw_text
+    if "</think>" in parse_text:
+        parse_text = parse_text.rsplit("</think>", 1)[-1].strip()
     try:
-        data = json.loads(str(text or ""))
+        data = json.loads(parse_text)
     except (TypeError, json.JSONDecodeError) as exc:
-        raise InvalidDescriptionResponse("description response is not valid JSON") from exc
+        raise InvalidDescriptionResponse(
+            "description response is not valid JSON",
+            raw_response=raw_text,
+        ) from exc
 
     if not isinstance(data, dict):
-        raise InvalidDescriptionResponse("description response must be a JSON object")
+        raise InvalidDescriptionResponse(
+            "description response must be a JSON object",
+            raw_response=raw_text,
+        )
 
-    required = {"main_content", "detail_content", "description_quality_score"}
+    required = {"main_content", "detail_content"}
+    allowed = required | {"description_quality_score"}
     missing = required - set(data)
-    extra = set(data) - required
+    extra = set(data) - allowed
     if missing:
         raise InvalidDescriptionResponse(
-            f"description response is missing required fields: {', '.join(sorted(missing))}"
+            f"description response is missing required fields: {', '.join(sorted(missing))}",
+            raw_response=raw_text,
         )
     if extra:
         raise InvalidDescriptionResponse(
-            f"description response contains unexpected fields: {', '.join(sorted(extra))}"
+            f"description response contains unexpected fields: {', '.join(sorted(extra))}",
+            raw_response=raw_text,
         )
 
     main = data["main_content"]
     detail = data["detail_content"]
-    score = data["description_quality_score"]
+    score = data.get("description_quality_score")
     if not isinstance(main, str) or not main.strip():
-        raise InvalidDescriptionResponse("main_content must be a non-empty string")
+        raise InvalidDescriptionResponse(
+            "main_content must be a non-empty string", raw_response=raw_text
+        )
     if not isinstance(detail, str) or not detail.strip():
-        raise InvalidDescriptionResponse("detail_content must be a non-empty string")
+        raise InvalidDescriptionResponse(
+            "detail_content must be a non-empty string", raw_response=raw_text
+        )
+    description_text = f"{main}\n{detail}".lower()
+    if any(marker in description_text for marker in _DESCRIPTION_REFUSAL_MARKERS):
+        raise InvalidDescriptionResponse(
+            "description response contains a refusal instead of a resource description",
+            raw_response=raw_text,
+        )
     if score is not None and (
         isinstance(score, bool)
         or not isinstance(score, (int, float))
         or not 0 <= score <= 1
     ):
         raise InvalidDescriptionResponse(
-            "description_quality_score must be null or a number between 0 and 1"
+            "description_quality_score must be null or a number between 0 and 1",
+            raw_response=raw_text,
         )
     return main.strip(), detail.strip(), float(score) if score is not None else None
 
