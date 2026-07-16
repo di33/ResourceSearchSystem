@@ -67,6 +67,8 @@ DASHSCOPE_API_KEY=你的DashScopeKey
 
 SearchServer 只部署搜索 API、单实例后台 worker、Postgres、Milvus、reranker 等搜索侧依赖。API 的 Gunicorn 进程不再重复启动向量同步和 FTS worker；`background-worker` 独立消费持久队列，避免多进程将数据库连接和后台并发成倍放大。docker compose 里的 MinIO 仅供 Milvus standalone 内部使用，不作为资源文件桶。资源加工服务器单独部署，通过 HTTP 调用 SearchServer 的 `/resources/upsert`、`/resources/delete` 等接口，不要求和 SearchServer 在同一台物理机。搜索结果中的包下载入口是 `package_download_url`；父子资源字段已从搜索响应和资源详情响应中移除。
 
+reranker 会读取挂载的 Hugging Face 缓存中 `hub/models--BAAI--bge-reranker-v2-m3/refs/main`，自动解析当前 `snapshots/<hash>` 目录，无需在 `.env` 写死 `RERANKER_MODEL_PATH`。缓存不存在或不完整时才回退到 Hugging Face 模型名和 ModelScope 路径。
+
 ### Windows
 
 启动或重启，保留现有数据：

@@ -222,7 +222,6 @@ services:
     # Do not publish this internal port; resource_processing_server uses host port 9000.
     environment:
       RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
-      RERANKER_MODEL_PATH: ${RERANKER_MODEL_PATH:-}
       MODELSCOPE_MODEL_PATH: ${MODELSCOPE_MODEL_PATH:-/root/.cache/huggingface/modelscope/models/BAAI--bge-reranker-v2-m3/snapshots/master}
       MODELSCOPE_CACHE: /root/.cache/huggingface/modelscope
       HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}

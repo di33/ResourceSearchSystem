@@ -8,7 +8,7 @@ RUN if [ "$DOWNLOAD_MODEL" = "true" ]; then \
         RERANKER_MODEL="${RERANKER_MODEL}" python download_model.py; \
     fi
 
-COPY app.py download_model.py .
+COPY app.py download_model.py model_paths.py .
 
 EXPOSE 8100
 

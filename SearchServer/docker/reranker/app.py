@@ -19,6 +19,7 @@ import numpy as np
 import torch
 from fastapi import FastAPI
 from pydantic import BaseModel
+from model_paths import resolve_huggingface_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ _device: str = "cpu"
 _use_fp16: bool = False
 _model_name: str = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
 _explicit_model_path: str = os.getenv("RERANKER_MODEL_PATH", "")
+_hf_home: str = os.getenv("HF_HOME", "/root/.cache/huggingface")
 _modelscope_cache: str = os.getenv("MODELSCOPE_CACHE", "/root/.cache/huggingface/modelscope")
 
 
@@ -87,6 +89,9 @@ def _candidate_sources() -> list[tuple[str, str]]:
     sources: list[tuple[str, str]] = []
     if _explicit_model_path:
         sources.append(("local", _explicit_model_path))
+    cached_snapshot = resolve_huggingface_snapshot(_hf_home, _model_name)
+    if cached_snapshot and cached_snapshot != _explicit_model_path:
+        sources.append(("huggingface-cache", cached_snapshot))
     sources.append(("huggingface", _model_name))
     if Path(_modelscope_model_path).is_dir():
         sources.append(("modelscope", _modelscope_model_path))
@@ -196,10 +201,11 @@ app = FastAPI(title="BGE-Reranker Service", lifespan=lifespan)
 async def health():
     loaded = _reranker is not None
     status = "ok" if loaded else ("degraded" if _load_error else "loading")
+    detected_model_path = resolve_huggingface_snapshot(_hf_home, _model_name)
     return HealthResponse(
         status=status,
         model=_model_name,
-        model_path=_explicit_model_path or _modelscope_model_path,
+        model_path=_explicit_model_path or detected_model_path or _modelscope_model_path,
         model_source=_model_source,
         model_source_type=_model_source_type,
         device=_device,
