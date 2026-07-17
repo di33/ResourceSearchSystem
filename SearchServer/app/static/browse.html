@@ -1531,16 +1531,22 @@ window.addEventListener('keydown', e => {
 window.addEventListener('popstate', async () => {
   closePreviewLightbox();
   const id = applyFiltersFromUrl();
+  if (id) {
+    await selectResource(id, false);
+    return;
+  }
   await loadResources({ reset: true, sync: false });
-  if (id) selectResource(id, false);
-  else showGrid(false);
+  showGrid(false);
 });
 
 async function init() {
   const initialId = applyFiltersFromUrl();
   loadStats();
-  await loadResources({ reset: true, sync: !initialId });
-  if (initialId) selectResource(initialId, false);
+  if (initialId) {
+    await selectResource(initialId, false);
+    return;
+  }
+  await loadResources({ reset: true, sync: true });
 }
 
 init();
