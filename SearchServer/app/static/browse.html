@@ -8,17 +8,18 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg: #0e0e10;
-  --panel: #18181b;
-  --panel2: #121214;
-  --border: #27272a;
-  --text: #e4e4e7;
-  --text2: #a1a1aa;
-  --accent: #6366f1;
-  --accent2: #818cf8;
-  --green: #22c55e;
-  --red: #ef4444;
-  --orange: #f59e0b;
+  color-scheme: light;
+  --bg: #ffffff;
+  --panel: #ffffff;
+  --panel2: #f8fafc;
+  --border: #e2e8f0;
+  --text: #18181b;
+  --text2: #64748b;
+  --accent: #4f46e5;
+  --accent2: #4338ca;
+  --green: #15803d;
+  --red: #dc2626;
+  --orange: #b45309;
   --radius: 8px;
 }
 
@@ -223,12 +224,12 @@ button:disabled { opacity: .55; cursor: default; }
 }
 .resource-card:hover {
   border-color: var(--accent2);
-  background: #1b1b20;
+  background: #f8fafc;
   transform: translateY(-1px);
 }
 .thumb {
   aspect-ratio: 1 / 1;
-  background: repeating-conic-gradient(#17171a 0% 25%, #202024 0% 50%) 0 0 / 18px 18px;
+  background: repeating-conic-gradient(#f1f5f9 0% 25%, #ffffff 0% 50%) 0 0 / 18px 18px;
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
@@ -340,7 +341,7 @@ button:disabled { opacity: .55; cursor: default; }
   border-color: var(--accent2);
   color: var(--text);
 }
-.download-button.package-download:hover { background: #1b1b20; }
+.download-button.package-download:hover { background: #eef2ff; }
 .download-meta {
   display: inline-flex;
   align-items: center;
@@ -727,6 +728,7 @@ const state = {
   formatFilter: '',
   loading: false,
   activeId: null,
+  loadedBrowseKey: '',
 };
 
 const lightbox = {
@@ -1040,6 +1042,19 @@ function searchTypeCountsKey() {
   });
 }
 
+function browseViewKey() {
+  return JSON.stringify({
+    query: state.query,
+    resourceType: state.resourceType,
+    topK: state.topK,
+    similarityThreshold: state.similarityThreshold,
+    searchMode: state.searchMode,
+    bm25Weight: state.bm25Weight,
+    enableReranker: state.enableReranker,
+    formatFilter: formatFilterValues(),
+  });
+}
+
 async function loadSearchTypeCounts(key) {
   const body = searchBody();
   body.resource_type = null;
@@ -1128,6 +1143,7 @@ async function loadResources({ reset = false, sync = true } = {}) {
       }
       if (sync) syncBrowseUrl(false);
     }
+    state.loadedBrowseKey = browseViewKey();
     state.loading = false;
     setLoading('');
     updateGridChrome();
@@ -1227,6 +1243,7 @@ function showGrid(push = true) {
 
 async function selectResource(id, push) {
   if (!id) return;
+  if (push) rememberGridHistoryState();
   state.activeId = id;
   document.getElementById('gridView').classList.add('hidden');
   document.getElementById('detailView').classList.remove('hidden');
@@ -1383,7 +1400,20 @@ function syncBrowseUrl(push) {
     if (state.formatFilter) params.set('format_filter', state.formatFilter);
   }
   const url = `${location.pathname}${params.toString() ? '?' + params.toString() : ''}`;
-  history[push ? 'pushState' : 'replaceState']({ view: 'grid' }, '', url);
+  history[push ? 'pushState' : 'replaceState']({
+    view: 'grid',
+    browseKey: browseViewKey(),
+    scrollY: window.scrollY,
+  }, '', url);
+}
+
+function rememberGridHistoryState() {
+  history.replaceState({
+    ...(history.state || {}),
+    view: 'grid',
+    browseKey: browseViewKey(),
+    scrollY: window.scrollY,
+  }, '', location.href);
 }
 
 function syncDetailUrl(id) {
@@ -1528,11 +1558,18 @@ window.addEventListener('keydown', e => {
     fitPreviewZoom();
   }
 });
-window.addEventListener('popstate', async () => {
+window.addEventListener('popstate', async event => {
   closePreviewLightbox();
   const id = applyFiltersFromUrl();
   if (id) {
     await selectResource(id, false);
+    return;
+  }
+  const browseKey = browseViewKey();
+  if (state.loadedBrowseKey === browseKey) {
+    showGrid(false);
+    const scrollY = Number(event.state && event.state.scrollY) || 0;
+    requestAnimationFrame(() => window.scrollTo(0, scrollY));
     return;
   }
   await loadResources({ reset: true, sync: false });

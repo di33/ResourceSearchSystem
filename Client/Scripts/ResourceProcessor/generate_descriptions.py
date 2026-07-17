@@ -402,7 +402,9 @@ async def _run_normal_mode(
         total_seen = 0
         try:
             task_ids = (
-                cache.iter_tasks(
+                iter(args.task_id)
+                if args.task_id
+                else cache.iter_tasks(
                     limit=args.limit,
                     resource_type=args.resource_type,
                     source=args.source_filter,
@@ -513,6 +515,7 @@ def main() -> int:
             ("--audio-llm-provider", {"default": None, "help": "音频资源 LLM provider (默认 AUDIO_LLM_PROVIDER env，未设置则跳过音频)"}),
             ("--retry-failed", {"action": "store_true", "help": "重试描述生成失败的任务"}),
             ("--force", {"action": "store_true", "help": "强制刷新匹配资源的描述；必须配合 --resource-type 使用，旧描述不删除，新描述作为最新记录写入"}),
+            ("--task-id", {"action": "append", "type": int, "help": "只处理指定 task id；可重复传入"}),
             ("--max-retries", {"type": int, "default": 3, "help": "本次命令内每个任务的最大生成尝试次数 (默认 3；历史 retry_count 不影响后续命令)"}),
             ("--concurrency", {"type": int, "default": None, "help": "并发请求数 (默认 API=5，Codex=1)"}),
         ],

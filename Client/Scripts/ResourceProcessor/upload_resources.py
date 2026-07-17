@@ -694,6 +694,7 @@ def main() -> int:
             ("--wait-timeout", {"type": float, "default": float(env("RP_PROCESSING_JOB_TIMEOUT", "3600")), "help": "等待加工完成的超时秒数；0 表示不超时"}),
             ("--concurrency", {"type": int, "default": int(env("RP_UPLOAD_RESOURCES_CONCURRENCY", "32")), "help": "并发提交 worker 数，默认 32；传 1 使用串行"}),
             ("--force", {"action": "store_true", "help": "强制重新提交匹配资源；不重新上传对象"}),
+            ("--task-id", {"action": "append", "type": int, "help": "只提交指定 task id；可重复传入"}),
             ("--resource-types", {"action": "append", "default": [], "help": "只提交指定资源类型；支持逗号分隔或重复传入，例如 atlas,tileset"}),
         ],
     )
@@ -761,12 +762,12 @@ def main() -> int:
         session_context = nullcontext(None) if args.dry_run else requests.Session()
         use_concurrency = not args.dry_run and not args.manifest_out and int(args.concurrency or 1) >= 1
         with session_context as session:
-            task_ids = cache.iter_tasks(
+            task_ids = iter(args.task_id) if args.task_id else cache.iter_tasks(
                 limit=args.limit,
                 resource_types=resource_types,
                 source=args.source_filter,
             )
-            if hasattr(cache, "iter_submit_candidate_task_ids"):
+            if not args.task_id and hasattr(cache, "iter_submit_candidate_task_ids"):
                 task_ids = cache.iter_submit_candidate_task_ids(
                     limit=args.limit,
                     resource_types=resource_types,
