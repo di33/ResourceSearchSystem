@@ -27,7 +27,7 @@ from app.models.tables import (
     ResourceTask,
 )
 from app.services.display_titles import display_title_for_task
-from app.services.object_urls import ObjectUrlGenerator
+from app.services.object_urls import ObjectUrlGenerator, append_url_version
 
 router = APIRouter(prefix="/resources", tags=["resources"])
 
@@ -164,11 +164,19 @@ def _loads_json_any(raw: Optional[str]) -> Any | None:
         return None
 
 
-def _object_url(urls: ObjectUrlGenerator, key: str, storage_profile_id: str = "") -> str:
+def _object_url(
+    urls: ObjectUrlGenerator,
+    key: str,
+    storage_profile_id: str = "",
+    version: int | str | None = None,
+) -> str:
     if not key:
         return ""
     try:
-        return urls.generate_download_url(key, storage_profile_id=storage_profile_id)
+        return append_url_version(
+            urls.generate_download_url(key, storage_profile_id=storage_profile_id),
+            version,
+        )
     except Exception:
         return ""
 
@@ -435,7 +443,7 @@ async def get_resource_detail(resource_id: str, session: AsyncSession = Depends(
             height=p.height,
             storage_profile_id=p.storage_profile_id,
             object_key=key,
-            preview_url=_object_url(urls, key, p.storage_profile_id),
+            preview_url=_object_url(urls, key, p.storage_profile_id, p.id),
         ))
 
     desc = None

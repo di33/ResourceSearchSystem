@@ -101,7 +101,7 @@ class TestMilvusSearchClient(unittest.IsolatedAsyncioTestCase):
 
     async def test_search_builds_results_from_milvus_and_database(self):
         session = self.session_factory()
-        await self._seed_search_task(session)
+        task = await self._seed_search_task(session)
 
         fake_milvus = _FakeMilvus(
             [[{"distance": 0.91, "entity": {"resource_id": "res-search-001", "resource_type": "single_image"}}]]
@@ -130,7 +130,10 @@ class TestMilvusSearchClient(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item.file_count, 1)
         self.assertEqual(item.file_download_url, "https://storage.local/downloads/res-search-001/stone-floor.zip")
         self.assertEqual(item.package_download_url, "https://storage.local/packages/source-pack.zip")
-        self.assertEqual(item.primary_preview_url, "https://storage.local/previews/res-search-001/stone-floor.webp")
+        self.assertEqual(
+            item.primary_preview_url,
+            f"https://storage.local/previews/res-search-001/stone-floor.webp?v={task.previews[0].id}",
+        )
 
         self.assertEqual(fake_milvus.search_calls[0]["filter"], 'resource_type == "single_image"')
         self.assertEqual(fake_milvus.search_calls[0]["limit"], 30)

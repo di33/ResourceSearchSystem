@@ -6,6 +6,14 @@ from app.services.storage_profiles import StorageProfile, load_storage_profiles
 from resource_contracts.object_urls import generate_cdn_download_url
 
 
+def append_url_version(url: str, version: int | str | None) -> str:
+    """Append a stable cache-busting version without changing URL signing."""
+    if not url or version is None or str(version).strip() == "":
+        return url
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}v={version}"
+
+
 class ObjectUrlGenerator:
     """Generate object download URLs from storage profiles."""
 

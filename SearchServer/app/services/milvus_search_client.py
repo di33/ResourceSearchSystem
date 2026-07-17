@@ -26,7 +26,7 @@ from app.deps import get_reranker
 from app.models.tables import ResourceDescription, ResourceFile, ResourcePreview, ResourceTask
 from app.services.display_titles import display_title_for_task
 from app.services.embedding_client import generate_embedding
-from app.services.object_urls import ObjectUrlGenerator
+from app.services.object_urls import ObjectUrlGenerator, append_url_version
 from resource_contracts.resource_types import PACK_RESOURCE_TYPE, normalize_resource_type
 
 logger = logging.getLogger(__name__)
@@ -586,7 +586,10 @@ class MilvusSearchClient(BaseSearchClient):
             for pr in previews_by_task.get(task.id, []):
                 preview_key = self._preview_object_key(rid, pr)
                 if preview_key:
-                    preview_urls.append(self._download_url(preview_key, pr.storage_profile_id))
+                    preview_urls.append(append_url_version(
+                        self._download_url(preview_key, pr.storage_profile_id),
+                        pr.id,
+                    ))
             preview_urls = list(dict.fromkeys(preview_urls))
 
             file_download_url = ""

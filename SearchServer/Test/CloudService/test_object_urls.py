@@ -2,7 +2,20 @@ import json
 import time
 from unittest.mock import patch
 
-from app.services.object_urls import ObjectUrlGenerator
+from app.services.object_urls import ObjectUrlGenerator, append_url_version
+
+
+def test_append_url_version_handles_signed_and_unsigned_urls():
+    assert append_url_version("https://cdn.example.com/a.webp", 42) == (
+        "https://cdn.example.com/a.webp?v=42"
+    )
+    assert append_url_version("https://cdn.example.com/a.webp?sign=abc", 42) == (
+        "https://cdn.example.com/a.webp?sign=abc&v=42"
+    )
+    assert append_url_version("", 42) == ""
+    assert append_url_version("https://cdn.example.com/a.webp", None) == (
+        "https://cdn.example.com/a.webp"
+    )
 
 
 def test_generate_download_url_adds_tencent_cdn_type_a_auth(monkeypatch):

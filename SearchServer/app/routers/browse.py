@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.deps import get_db
 from app.models.tables import ResourceDescription, ResourceEmbedding, ResourceFile, ResourcePreview, ResourceTask
 from app.services.display_titles import display_title_for_task
-from app.services.object_urls import ObjectUrlGenerator
+from app.services.object_urls import ObjectUrlGenerator, append_url_version
 from resource_contracts.resource_types import OTHER_RESOURCE_TYPE
 
 router = APIRouter(tags=["browse"])
@@ -79,11 +79,19 @@ def _preview_object_key(resource_id: str, object_key: str = "", path: str = "") 
     return f"previews/{resource_id}/{name}" if name else ""
 
 
-def _object_url(urls: ObjectUrlGenerator, key: str, storage_profile_id: str = "") -> str:
+def _object_url(
+    urls: ObjectUrlGenerator,
+    key: str,
+    storage_profile_id: str = "",
+    version: int | str | None = None,
+) -> str:
     if not key:
         return ""
     try:
-        return urls.generate_download_url(key, storage_profile_id=storage_profile_id)
+        return append_url_version(
+            urls.generate_download_url(key, storage_profile_id=storage_profile_id),
+            version,
+        )
     except Exception:
         return ""
 
@@ -233,6 +241,7 @@ async def browse_resources(
                 urls,
                 preview_key,
                 str(preview.get("storage_profile_id") or ""),
+                preview.get("id"),
             )
         resources.append(BrowseResourceOut(
             resource_id=rid,
