@@ -426,6 +426,12 @@ async def _update_task_vector_state(
         "vector_error": error[:2000],
         "updated_at": _utcnow(),
     }
+    # A successful vector sync supersedes any earlier transient failure. Keep
+    # all task-level error fields consistent so the resource detail page does
+    # not continue to display a stale VECTOR_SYNC_FAILED message.
+    if state == "synced":
+        values["last_error_code"] = ""
+        values["last_error_message"] = ""
     if last_error_code is not None:
         values["last_error_code"] = last_error_code
     if last_error_message is not None:

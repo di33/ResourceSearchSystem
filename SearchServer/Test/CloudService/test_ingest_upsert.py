@@ -27,6 +27,7 @@ from app.routers.ingest import (
     _backfill_fts_once,
     _run_vector_sync_jobs_batch,
     _run_vector_sync_job,
+    _update_task_vector_state,
     delete_processed_resource,
     start_vector_sync_worker,
     stop_vector_sync_worker,
@@ -384,6 +385,37 @@ class TestIngestUpsert(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task.vector_state, "failed")
         self.assertEqual(job.state, "failed")
         self.assertIn("milvus down", job.last_error)
+        await session.close()
+
+    async def test_successful_vector_sync_clears_stale_task_errors(self):
+        session = self.session_factory()
+        task = ResourceTask(
+            resource_id="res-recovered-vector",
+            content_md5="recovered-vector",
+            resource_type="single_image",
+            process_state="committed",
+            vector_state="failed",
+            vector_error="vector insert failed: unavailable",
+            last_error_code="VECTOR_SYNC_FAILED",
+            last_error_message="vector insert failed: unavailable",
+        )
+        session.add(task)
+        await session.commit()
+
+        await _update_task_vector_state(
+            session,
+            task.resource_id,
+            "synced",
+            "",
+            task_id=task.id,
+        )
+        await session.commit()
+        await session.refresh(task)
+
+        self.assertEqual(task.vector_state, "synced")
+        self.assertEqual(task.vector_error, "")
+        self.assertEqual(task.last_error_code, "")
+        self.assertEqual(task.last_error_message, "")
         await session.close()
 
     async def test_upsert_processed_resource_accepts_long_prompt_version(self):
