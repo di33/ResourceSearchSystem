@@ -128,6 +128,12 @@ class TestMilvusSearchClient(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item.description_summary, "stone floor material")
         self.assertEqual(item.file_format, "png")
         self.assertEqual(item.file_count, 1)
+        self.assertEqual(item.file_structure.entry_count, 1)
+        self.assertEqual(item.file_structure.total_size, 1024)
+        self.assertEqual(item.file_structure.entries[0].path, "floor.png")
+        self.assertEqual(item.file_structure.entries[0].name, "floor.png")
+        self.assertEqual(item.file_structure.entries[0].checksum, "file-md5")
+        self.assertTrue(item.file_structure.entries[0].is_primary)
         self.assertEqual(item.file_download_url, "https://storage.local/downloads/res-search-001/stone-floor.zip")
         self.assertEqual(item.package_download_url, "https://storage.local/packages/source-pack.zip")
         self.assertEqual(

@@ -6,18 +6,18 @@ from typing import Any
 
 from resource_processing_server.app.config import settings
 from resource_processing_server.app.legacy import ensure_resource_processor_imports
-from resource_processing_server.app.models import Description, PreviewRef, SourceFileRef
+from resource_processing_server.app.models import Description, FileStructureEntry, PreviewRef
 from resource_processing_server.app.storage import local_file_md5
 from resource_contracts.resource_types import SPINE_SKELETON_RESOURCE_TYPE
 
 
-def _file_name(ref: SourceFileRef) -> str:
-    return ref.file_name or Path(ref.path_in_package).name or "resource"
+def _file_name(ref: FileStructureEntry) -> str:
+    return ref.name or Path(ref.path).name or "resource"
 
 
-def _file_format(ref: SourceFileRef, local_path: str = "") -> str:
-    if ref.file_format:
-        return ref.file_format.lower().lstrip(".")
+def _file_format(ref: FileStructureEntry, local_path: str = "") -> str:
+    if ref.format:
+        return ref.format.lower().lstrip(".")
     name = _file_name(ref)
     if "." in name:
         return name.rsplit(".", 1)[-1].lower()
@@ -36,7 +36,7 @@ def build_processing_entity(
     client_id: str,
     client_resource_id: str,
     resource_type: str,
-    source_files: list[SourceFileRef],
+    file_entries: list[FileStructureEntry],
     local_source_paths: list[Path],
     description_context: Any | None,
 ):
@@ -44,13 +44,13 @@ def build_processing_entity(
     from ResourceProcessor.preview_metadata import FileInfo, ResourceProcessingEntity
 
     files = []
-    for index, ref in enumerate(source_files):
+    for index, ref in enumerate(file_entries):
         path = local_source_paths[index] if index < len(local_source_paths) else None
         checksum = ref.checksum or (local_file_md5(str(path)) if path is not None else "")
         files.append(FileInfo(
             file_path=str(path) if path is not None else "",
             file_name=_file_name(ref),
-            file_size=ref.file_size or (path.stat().st_size if path is not None else 0),
+            file_size=ref.size or (path.stat().st_size if path is not None else 0),
             file_format=_file_format(ref, str(path) if path is not None else ""),
             content_md5=checksum,
             file_role="main",
@@ -137,7 +137,7 @@ async def generate_description(
         "resource_type": entity.resource_type,
         "client_id": entity.source,
         "client_resource_id": entity.source_resource_id,
-        "source_files": [
+        "file_structure_entries": [
             {
                 "file_name": file.file_name,
                 "file_format": file.file_format,

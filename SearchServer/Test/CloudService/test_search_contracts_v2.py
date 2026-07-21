@@ -89,6 +89,7 @@ class TestSearchResultItemV2(unittest.TestCase):
         self.assertIn("bm25_score", d)
         self.assertIn("rrf_score", d)
         self.assertIn("package_download_url", d)
+        self.assertIn("file_structure", d)
 
 
 class TestSearchPydanticSchemas(unittest.TestCase):

@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 from pydantic import field_validator
+from resource_contracts.file_structure import validate_file_structure
 from resource_contracts.resource_types import normalize_resource_type
 
 
@@ -18,13 +19,28 @@ class ObjectRef(BaseModel):
     is_primary: bool = False
 
 
-class SourceFileRef(BaseModel):
-    file_name: str
-    file_format: str = ""
-    file_size: int = 0
+class FileStructureEntry(BaseModel):
+    path: str
+    name: str
+    type: str = "file"
+    size: int = 0
+    format: str = ""
     checksum: str = ""
-    path_in_package: str = ""
     is_primary: bool = False
+
+
+class FileStructure(BaseModel):
+    source: str = "client"
+    state: str = "complete"
+    source_object_checksum: str = ""
+    entry_count: int = 0
+    total_size: int = 0
+    entries: list[FileStructureEntry] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize(cls, value):
+        return validate_file_structure(value)
 
 
 class PreviewRenderRequest(BaseModel):
@@ -32,13 +48,24 @@ class PreviewRenderRequest(BaseModel):
     resource_type: str
     source_object: ObjectRef
     source_object_url: str
-    source_files: list[SourceFileRef]
+    file_structure: FileStructure
     client_metadata: Any | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_legacy_source_files(cls, value):
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        legacy = data.pop("source_files", None)
+        if data.get("file_structure") is None and legacy:
+            data["file_structure"] = {"source": "processor", "entries": legacy}
+        return data
+
     @model_validator(mode="after")
-    def _has_source_files(self):
-        if not self.source_files:
-            raise ValueError("source_files must not be empty")
+    def _has_file_structure(self):
+        if not self.file_structure.entries:
+            raise ValueError("file_structure.entries must not be empty")
         if not self.source_object_url.strip():
             raise ValueError("source_object_url must not be blank")
         return self

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Any
+from resource_contracts.file_structure import build_file_structure
 
 from ResourceProcessor.core.object_storage_upload import safe_object_part
 from ResourceProcessor.preview_metadata import ResourceProcessingEntity
@@ -199,7 +200,7 @@ def _public_preview_ref(ref: dict[str, Any]) -> dict[str, Any]:
 def _public_source_file_ref(ref: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(ref, dict):
         return {}
-    file_name = str(ref.get("file_name") or "").strip()
+    file_name = str(ref.get("name") or ref.get("file_name") or "").strip()
     if not file_name:
         return {}
     keys = (
@@ -214,10 +215,17 @@ def _public_source_file_ref(ref: dict[str, Any]) -> dict[str, Any]:
         "is_primary",
     )
     public_ref: dict[str, Any] = {}
+    aliases = {
+        "file_name": "name",
+        "file_format": "format",
+        "file_size": "size",
+        "path_in_package": "path",
+    }
     for key in keys:
-        if key not in ref:
+        input_key = aliases.get(key, key) if aliases.get(key, key) in ref else key
+        if input_key not in ref:
             continue
-        value = ref[key]
+        value = ref[input_key]
         if key == "path_in_package" or _clean_value(value):
             public_ref[key] = value
     return public_ref
@@ -250,7 +258,11 @@ def build_processing_manifest(
         "client_metadata": client_metadata_from_entity(entity),
     }
     if public_source_files:
-        manifest["source_files"] = public_source_files
+        manifest["file_structure"] = build_file_structure(
+            public_source_files,
+            source="client",
+            source_object_checksum=str(source_object.get("checksum") or ""),
+        )
     if public_previews:
         manifest["previews"] = public_previews
     if description is not None:

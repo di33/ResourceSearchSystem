@@ -100,7 +100,8 @@ def _source_object_for_renderer(manifest: dict[str, Any]) -> dict[str, Any]:
     if isinstance(source_object, dict) and source_object.get("object_key"):
         return source_object
 
-    source_files = [item for item in manifest.get("source_files") or [] if isinstance(item, dict)]
+    structure = manifest.get("file_structure") or {}
+    source_files = [item for item in (structure.get("entries") or manifest.get("source_files") or []) if isinstance(item, dict)]
     file_refs = [item for item in source_files if item.get("object_key")]
     if file_refs:
         primary = next((item for item in file_refs if item.get("is_primary")), file_refs[0])
@@ -219,7 +220,10 @@ def render_preview_manifest(
         "resource_type": manifest.get("resource_type", ""),
         "source_object": source_object,
         "source_object_url": _source_object_url_for_renderer(source_object),
-        "source_files": manifest.get("source_files") or [],
+        "file_structure": manifest.get("file_structure") or {
+            "source": "client",
+            "entries": manifest.get("source_files") or [],
+        },
     }
     output_dir = _resource_output_dir(output_root, manifest)
     file_prefix = _resource_file_prefix(manifest)

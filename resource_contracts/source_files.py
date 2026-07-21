@@ -58,8 +58,8 @@ def resolve_local_source_files(
     if len(refs) == 1:
         if source_object.suffix.lower() != ".zip":
             return [source_object]
-        path_in_package = str(_attr(refs[0], "path_in_package") or "").strip()
-        file_name = str(_attr(refs[0], "file_name") or "").strip()
+        path_in_package = str(_attr(refs[0], "path") or _attr(refs[0], "path_in_package") or "").strip()
+        file_name = str(_attr(refs[0], "name") or _attr(refs[0], "file_name") or "").strip()
         if not path_in_package and file_name.casefold() == source_object.name.casefold():
             return [source_object]
     if len(refs) > max_zip_members:
@@ -72,7 +72,7 @@ def resolve_local_source_files(
     local_paths: list[Path] = []
     total_size = 0
     requested_names = [
-        safe_zip_member_name(_attr(ref, "path_in_package") or _attr(ref, "file_name"))
+        safe_zip_member_name(_attr(ref, "path") or _attr(ref, "path_in_package") or _attr(ref, "name") or _attr(ref, "file_name"))
         for ref in refs
     ]
     requested_set = set(requested_names)

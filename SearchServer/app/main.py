@@ -66,6 +66,12 @@ def _split_sql(raw: str) -> list[str]:
 
 
 def _ensure_column(sync_conn, table_name: str, column_name: str, ddl: str) -> None:
+    if sync_conn.dialect.name == "postgresql":
+        # Multiple API/worker processes may initialize the schema concurrently.
+        # Keep the DDL atomic so two starters cannot both pass an inspect check.
+        sync_conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {ddl}"))
+        return
+
     inspector = inspect(sync_conn)
     columns = {column["name"] for column in inspector.get_columns(table_name)}
     if column_name in columns:
@@ -123,6 +129,8 @@ def _ensure_additive_schema(sync_conn) -> None:
     _ensure_column(sync_conn, "resource_task", "source_object_etag", f"source_object_etag {string_128} {not_null_empty}")
     _ensure_column(sync_conn, "resource_task", "package_storage_profile_id", f"package_storage_profile_id {text_type} {not_null_empty}")
     _ensure_column(sync_conn, "resource_task", "package_object_key", f"package_object_key {text_type} {not_null_empty}")
+    _ensure_column(sync_conn, "resource_task", "file_structure_source", "file_structure_source VARCHAR(32) NOT NULL DEFAULT 'processor'")
+    _ensure_column(sync_conn, "resource_task", "file_structure_state", "file_structure_state VARCHAR(32) NOT NULL DEFAULT 'complete'")
     _ensure_column(sync_conn, "resource_task", "vector_state", f"vector_state {string_32} {not_null_empty}")
     _ensure_column(sync_conn, "resource_task", "vector_error", f"vector_error {text_type} {not_null_empty}")
     _ensure_column(sync_conn, "vector_sync_job", "embedding_text", f"embedding_text {text_type} {not_null_empty}")

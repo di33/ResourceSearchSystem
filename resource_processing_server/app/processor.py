@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from resource_contracts.path_safety import safe_file_name, safe_join_under
+from resource_contracts.file_structure import scan_source_file_structure
 from resource_contracts.resource_types import is_search_indexable_resource_type
 from resource_processing_server.app.adapters import (
     build_processing_entity,
@@ -38,6 +39,7 @@ from resource_processing_server.app.models import (
     JobStatusOut,
     JobState,
     JobStep,
+    FileStructure,
     ProcessingJob,
     PreviewRef,
     ReplaySnapshotOut,
@@ -60,7 +62,7 @@ def _error_text(exc: BaseException) -> str:
 
 
 def _fingerprint(manifest: ResourceManifest) -> str:
-    return _fingerprint_from_object(manifest.source_object, manifest.source_files, manifest.package_object)
+    return _fingerprint_from_object(manifest.source_object, manifest.file_structure, manifest.package_object)
 
 
 def _manifest_fingerprint(manifest: ResourceManifest) -> str:
@@ -74,14 +76,14 @@ def _manifest_fingerprint(manifest: ResourceManifest) -> str:
 
 
 def _fingerprint_from_child(manifest: ChildResourceManifest) -> str:
-    return _fingerprint_from_object(manifest.source_object, manifest.source_files, manifest.package_object)
+    return _fingerprint_from_object(manifest.source_object, manifest.file_structure, manifest.package_object)
 
 
-def _fingerprint_from_object(source_object, source_files, package_object=None) -> str:
+def _fingerprint_from_object(source_object, file_structure, package_object=None) -> str:
     payload = [f"{source_object.storage_profile_id}/{source_object.object_key}:{source_object.checksum or source_object.size}"]
     payload.extend(
-        f"{item.path_in_package}:{item.checksum or item.file_size}"
-        for item in source_files
+        f"{item.path}:{item.checksum or item.size}"
+        for item in (file_structure.entries if file_structure else [])
     )
     if package_object is not None:
         payload.append(f"package:{package_object.storage_profile_id}/{package_object.object_key}")
@@ -130,7 +132,7 @@ def _as_child(manifest: ResourceManifest | ChildResourceManifest) -> ChildResour
         client_resource_id=manifest.client_resource_id,
         resource_type=manifest.resource_type,
         source_object=manifest.source_object,
-        source_files=manifest.source_files,
+        file_structure=manifest.file_structure,
         package_object=manifest.package_object,
         previews=manifest.previews,
         description=manifest.description,
@@ -172,16 +174,6 @@ def _object_refs_from_snapshot(payload: dict[str, Any]) -> list[dict[str, str]]:
             object_key=str(source_object.get("object_key") or ""),
             kind="source_object",
         )
-    for item in payload.get("source_files") or []:
-        if isinstance(item, dict):
-            _append_payload_object_ref(
-                refs,
-                storage_profile_id=str(item.get("storage_profile_id") or ""),
-                object_key=str(item.get("object_key") or ""),
-                kind="source_file",
-                origin=str(item.get("origin") or ""),
-                renderer=str(item.get("renderer") or ""),
-            )
     for item in payload.get("previews") or []:
         if isinstance(item, dict):
             _append_payload_object_ref(
@@ -242,9 +234,10 @@ def _first_non_empty(*values: str) -> str:
 
 
 def _manifest_title(manifest: ChildResourceManifest) -> str:
-    first_source = manifest.source_files[0] if manifest.source_files else None
+    entries = manifest.file_structure.entries if manifest.file_structure else []
+    first_source = entries[0] if entries else None
     return _first_non_empty(
-        getattr(first_source, "file_name", "") if first_source is not None else "",
+        getattr(first_source, "name", "") if first_source is not None else "",
         manifest.source_object.file_name,
         Path(manifest.source_object.object_key).name,
         manifest.client_resource_id,
@@ -1244,27 +1237,45 @@ class ProcessingService:
             await self.store.update(job_id, state=JobState.VALIDATING)
             start = time.perf_counter()
             local_sources: list[Path] = []
-            if manifest.previews:
-                await self.store.append_step(job_id, _step("validate_objects_skipped", "completed", start))
+            local_source_object: Path | None = None
+            source_object_name = safe_file_name(
+                manifest.source_object.file_name or Path(manifest.source_object.object_key).name,
+                "source",
+            )
+            if manifest.file_structure is None:
+                local_source_object = await asyncio.to_thread(
+                    self.storage.download_ref, manifest.source_object, source_dir, source_object_name,
+                )
+                structure = await asyncio.to_thread(
+                    scan_source_file_structure,
+                    local_source_object,
+                    checksum=manifest.source_object.checksum,
+                )
+                manifest.file_structure = FileStructure.model_validate(structure)
+                await self.store.append_step(job_id, _step("file_structure_generated", "completed", start))
             else:
-                source_object_name = safe_file_name(
-                    manifest.source_object.file_name or Path(manifest.source_object.object_key).name,
-                    "source",
-                )
+                await self.store.append_step(job_id, _step("file_structure_provided", "completed", start))
+            if not manifest.previews:
+                if local_source_object is None:
+                    local_source_object = await asyncio.to_thread(
+                        self.storage.download_ref, manifest.source_object, source_dir, source_object_name,
+                    )
                 local_sources = await asyncio.to_thread(
-                    self._download_source_files,
-                    manifest,
+                    resolve_local_source_files,
+                    local_source_object,
+                    manifest.file_structure.entries,
                     source_dir,
-                    source_object_name,
                 )
-                await self.store.append_step(job_id, _step("validate_objects", "completed", start))
+                await self.store.append_step(job_id, _step("source_content_extracted", "completed", start))
+            else:
+                await self.store.append_step(job_id, _step("source_content_skipped", "completed", start))
             await self._abort_if_deleted_or_cancelled(job_id, client_id, manifest.client_resource_id)
 
             entity = build_processing_entity(
                 client_id=client_id,
                 client_resource_id=manifest.client_resource_id,
                 resource_type=manifest.resource_type,
-                source_files=manifest.source_files,
+                file_entries=manifest.file_structure.entries,
                 local_source_paths=local_sources,
                 description_context=manifest.description_context,
             )
@@ -1555,7 +1566,8 @@ class ProcessingService:
             source_dir,
             source_object_name,
         )
-        return resolve_local_source_files(local_source_object, manifest.source_files, source_dir)
+        entries = manifest.file_structure.entries if manifest.file_structure else []
+        return resolve_local_source_files(local_source_object, entries, source_dir)
 
     def _download_and_validate_preview(
         self,
@@ -1606,12 +1618,13 @@ class ProcessingService:
             "source",
         )
         local_source_object = self.storage.download_ref(manifest.source_object, source_dir, source_object_name)
-        local_sources = resolve_local_source_files(local_source_object, manifest.source_files, source_dir)
+        entries = manifest.file_structure.entries if manifest.file_structure else []
+        local_sources = resolve_local_source_files(local_source_object, entries, source_dir)
         return build_processing_entity(
             client_id=client_id,
             client_resource_id=manifest.client_resource_id,
             resource_type=manifest.resource_type,
-            source_files=manifest.source_files,
+            file_entries=entries,
             local_source_paths=local_sources,
             description_context=manifest.description_context,
         )
@@ -1631,7 +1644,7 @@ class ProcessingService:
             "resource_type": manifest.resource_type,
             "title": _manifest_title(manifest),
             "source_object": _object_ref_payload(manifest.source_object),
-            "source_files": [item.model_dump() for item in manifest.source_files],
+            "file_structure": manifest.file_structure.model_dump() if manifest.file_structure else None,
             "package_object": _object_ref_payload(manifest.package_object) if manifest.package_object else None,
             "previews": [_preview_ref_payload(item) for item in preview_refs],
             "description": {

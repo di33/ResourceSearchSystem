@@ -68,6 +68,8 @@ class ResourceTask(Base):
     source_object_etag: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     package_storage_profile_id: Mapped[str] = mapped_column(Text, nullable=False, default="")
     package_object_key: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    file_structure_source: Mapped[str] = mapped_column(String(32), nullable=False, default="processor")
+    file_structure_state: Mapped[str] = mapped_column(String(32), nullable=False, default="complete")
     process_state: Mapped[str] = mapped_column(String(32), nullable=False, default="discovered")
     resource_id: Mapped[str | None] = mapped_column(String(64), unique=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), unique=True)

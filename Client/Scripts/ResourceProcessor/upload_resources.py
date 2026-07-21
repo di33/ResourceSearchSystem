@@ -131,7 +131,8 @@ def _source_object_from_uploaded_manifest(uploaded_manifest: dict) -> dict:
     if isinstance(source_object, dict) and source_object.get("object_key"):
         return source_object
 
-    source_files = [item for item in uploaded_manifest.get("source_files") or [] if isinstance(item, dict)]
+    structure = uploaded_manifest.get("file_structure") or {}
+    source_files = [item for item in (structure.get("entries") or uploaded_manifest.get("source_files") or []) if isinstance(item, dict)]
     file_refs = [item for item in source_files if item.get("object_key")]
     if file_refs:
         primary = next((item for item in file_refs if item.get("is_primary")), file_refs[0])
@@ -180,7 +181,7 @@ def _build_manifest_from_uploaded_record(
         entity,
         client_id=client_id,
         source_object=source_object,
-        source_files=uploaded_manifest.get("source_files") or [],
+        source_files=(uploaded_manifest.get("file_structure") or {}).get("entries") or uploaded_manifest.get("source_files") or [],
         previews=previews,
         description=description,
         classification=classification_from_entity(entity),

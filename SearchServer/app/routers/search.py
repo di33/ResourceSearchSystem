@@ -32,6 +32,23 @@ class SearchBody(BaseModel):
     # --- Reranker ---
     enable_reranker: Optional[bool] = None
 
+class FileStructureEntryOut(BaseModel):
+    path: str
+    name: str
+    type: str = "file"
+    size: int = 0
+    format: str = ""
+    checksum: str = ""
+    is_primary: bool = False
+
+class FileStructureOut(BaseModel):
+    source: str = "processor"
+    state: str = "complete"
+    source_object_checksum: str = ""
+    entry_count: int = 0
+    total_size: int = 0
+    entries: List[FileStructureEntryOut] = Field(default_factory=list)
+
 class SearchResultOut(BaseModel):
     resource_id: str
     resource_type: str
@@ -48,6 +65,7 @@ class SearchResultOut(BaseModel):
     title: str = ""
     source_resource_id: str = ""
     package_download_url: str = ""
+    file_structure: FileStructureOut = Field(default_factory=FileStructureOut)
     # --- BM25 / Hybrid scores ---
     vector_score: float = 0.0
     bm25_score: float = 0.0
@@ -135,6 +153,14 @@ async def search_resources(body: SearchBody, session: AsyncSession = Depends(get
                 title=r.title,
                 source_resource_id=r.source_resource_id,
                 package_download_url=r.package_download_url,
+                file_structure=FileStructureOut(
+                    source=r.file_structure.source,
+                    state=r.file_structure.state,
+                    source_object_checksum=r.file_structure.source_object_checksum,
+                    entry_count=r.file_structure.entry_count,
+                    total_size=r.file_structure.total_size,
+                    entries=[FileStructureEntryOut(**entry.__dict__) for entry in r.file_structure.entries],
+                ),
                 vector_score=r.vector_score,
                 bm25_score=r.bm25_score,
                 rrf_score=r.rrf_score,

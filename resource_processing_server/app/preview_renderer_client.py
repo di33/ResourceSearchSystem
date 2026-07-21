@@ -44,7 +44,7 @@ def _payload(client_id: str, manifest: ChildResourceManifest, *, source_object_u
         "resource_type": manifest.resource_type,
         "source_object": manifest.source_object.model_dump(),
         "source_object_url": source_object_url,
-        "source_files": [item.model_dump() for item in manifest.source_files],
+        "file_structure": manifest.file_structure.model_dump() if manifest.file_structure else None,
     }
 
 

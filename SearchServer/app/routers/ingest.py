@@ -12,7 +12,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+from resource_contracts.file_structure import validate_file_structure
 from sqlalchemy import delete, func, insert, literal_column, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,13 +56,28 @@ class ObjectRefIn(BaseModel):
     checksum: str = ""
 
 
-class SourceFileIn(BaseModel):
-    file_name: str
-    file_format: str = ""
-    file_size: int = 0
+class FileStructureEntryIn(BaseModel):
+    path: str
+    name: str
+    type: str = "file"
+    size: int = 0
+    format: str = ""
     checksum: str = ""
-    path_in_package: str = ""
     is_primary: bool = False
+
+
+class FileStructureIn(BaseModel):
+    source: str = "processor"
+    state: str = "complete"
+    source_object_checksum: str = ""
+    entry_count: int = 0
+    total_size: int = 0
+    entries: list[FileStructureEntryIn] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize(cls, value):
+        return validate_file_structure(value)
 
 
 class PreviewRefIn(BaseModel):
@@ -112,12 +128,23 @@ class UpsertResourceIn(BaseModel):
     title: str = ""
     client_metadata: dict[str, Any] = Field(default_factory=dict)
     source_object: ObjectRefIn
-    source_files: list[SourceFileIn]
+    file_structure: FileStructureIn
     package_object: ObjectRefIn | None = None
     previews: list[PreviewRefIn] = Field(default_factory=list)
     description: DescriptionIn = Field(default_factory=DescriptionIn)
     classification: ClassificationIn = Field(default_factory=ClassificationIn)
     processing: ProcessingIn = Field(default_factory=ProcessingIn)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_legacy_source_files(cls, value):
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        legacy = data.pop("source_files", None)
+        if data.get("file_structure") is None and legacy:
+            data["file_structure"] = {"source": "processor", "entries": legacy}
+        return data
 
     @field_validator("resource_type")
     @classmethod
@@ -195,18 +222,18 @@ def _file_format(ref: ObjectRefIn) -> str:
     return ""
 
 
-def _source_file_name(ref: SourceFileIn) -> str:
-    return ref.file_name or "resource"
+def _source_file_name(ref: FileStructureEntryIn) -> str:
+    return ref.name or "resource"
 
 
-def _source_file_format(ref: SourceFileIn) -> str:
-    if ref.file_format:
-        return ref.file_format.lower().lstrip(".")
+def _source_file_format(ref: FileStructureEntryIn) -> str:
+    if ref.format:
+        return ref.format.lower().lstrip(".")
     name = _source_file_name(ref)
     return name.rsplit(".", 1)[-1].lower() if "." in name else ""
 
 
-def _content_fingerprint(source_object: ObjectRefIn, source_files: list[SourceFileIn]) -> str:
+def _content_fingerprint(source_object: ObjectRefIn, file_structure: FileStructureIn) -> str:
     payload = {
         "source_object": {
             "storage_profile_id": source_object.storage_profile_id,
@@ -214,14 +241,14 @@ def _content_fingerprint(source_object: ObjectRefIn, source_files: list[SourceFi
             "checksum": source_object.checksum,
             "size": source_object.size,
         },
-        "source_files": [
+        "file_structure": [
             {
-                "file_name": item.file_name,
-                "path_in_package": item.path_in_package,
+                "file_name": item.name,
+                "path": item.path,
                 "checksum": item.checksum,
-                "file_size": item.file_size,
+                "file_size": item.size,
             }
-            for item in source_files
+            for item in file_structure.entries
         ],
     }
     return hashlib.sha256(_json(payload).encode("utf-8")).hexdigest()
@@ -1069,8 +1096,8 @@ async def upsert_processed_resource(
 
     if not is_search_indexable_resource_type(body.resource_type):
         raise HTTPException(status_code=400, detail=f"resource_type {body.resource_type!r} is not search-indexable")
-    if not body.source_files:
-        raise HTTPException(status_code=400, detail="source_files must not be empty")
+    if not body.file_structure.entries:
+        raise HTTPException(status_code=400, detail="file_structure.entries must not be empty")
 
     embedding_text = _embedding_text(body)
     if not embedding_text:
@@ -1084,7 +1111,7 @@ async def upsert_processed_resource(
             resource_id=f"res-{uuid.uuid4().hex[:16]}",
             process_state="committed",
             idempotency_key=body.idempotency_key or f"upsert-{uuid.uuid4().hex[:12]}",
-            content_md5=_content_fingerprint(body.source_object, body.source_files),
+            content_md5=_content_fingerprint(body.source_object, body.file_structure),
             resource_type=body.resource_type,
             source=body.client_id,
             source_resource_id=body.client_resource_id,
@@ -1100,7 +1127,7 @@ async def upsert_processed_resource(
             created = False
     mark("ensure_task")
 
-    task.content_md5 = _content_fingerprint(body.source_object, body.source_files)
+    task.content_md5 = _content_fingerprint(body.source_object, body.file_structure)
     task.resource_type = body.resource_type
     task.source = body.client_id
     task.source_resource_id = body.client_resource_id
@@ -1116,6 +1143,8 @@ async def upsert_processed_resource(
     task.source_object_file_size = int(body.source_object.size or 0)
     task.source_object_checksum = body.source_object.checksum
     task.source_object_etag = ""
+    task.file_structure_source = body.file_structure.source
+    task.file_structure_state = body.file_structure.state
     if body.package_object is not None:
         task.package_storage_profile_id = body.package_object.storage_profile_id
         task.package_object_key = body.package_object.object_key
@@ -1133,19 +1162,19 @@ async def upsert_processed_resource(
     mark("delete_relations")
 
     file_rows = []
-    for index, item in enumerate(body.source_files):
+    for index, item in enumerate(body.file_structure.entries):
         name = _source_file_name(item)
         file_rows.append({
             "task_id": task.id,
-            "file_path": item.path_in_package or name,
+            "file_path": item.path or name,
             "file_name": name,
-            "file_size": int(item.file_size or 0),
+            "file_size": int(item.size or 0),
             "file_format": _source_file_format(item),
             "content_md5": item.checksum or "",
             "file_role": "main",
             "storage_profile_id": "",
             "object_key": "",
-            "path_in_package": item.path_in_package,
+            "path_in_package": item.path,
             "content_type": "",
             "etag": "",
             "is_primary": item.is_primary or index == 0,

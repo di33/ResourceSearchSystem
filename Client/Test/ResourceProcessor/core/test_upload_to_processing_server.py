@@ -331,13 +331,15 @@ def test_upload_entity_objects_builds_bucket_key_manifest(tmp_path):
     assert manifest["source_object"]["object_key"] == "crawler_A/files/asset:001/hero model.glb"
     assert "etag" not in manifest["source_object"]
     assert "is_primary" not in manifest["source_object"]
-    assert manifest["source_files"] == [
+    assert "source_files" not in manifest
+    assert manifest["file_structure"]["entries"] == [
         {
-            "file_name": "hero model.glb",
-            "file_format": "glb",
-            "file_size": 3,
+            "path": "hero model.glb",
+            "name": "hero model.glb",
+            "type": "file",
+            "size": 3,
+            "format": "glb",
             "checksum": "abc",
-            "path_in_package": "",
             "is_primary": True,
         }
     ]
@@ -417,13 +419,15 @@ def test_upload_entity_objects_can_skip_previews(tmp_path):
     )
 
     assert manifest["source_object"]["object_key"] == "client/files/asset-1/asset.obj"
-    assert manifest["source_files"] == [
+    assert "source_files" not in manifest
+    assert manifest["file_structure"]["entries"] == [
         {
-            "file_name": "asset.obj",
-            "file_format": "obj",
-            "file_size": 3,
+            "path": "asset.obj",
+            "name": "asset.obj",
+            "type": "file",
+            "size": 3,
+            "format": "obj",
             "checksum": "abc",
-            "path_in_package": "",
             "is_primary": True,
         }
     ]
@@ -1205,21 +1209,24 @@ def test_build_manifests_force_reuploads_existing_for_selected_resource_types(tm
         atlas_saved = cache.get_object_manifest(atlas_task)
         image_saved = cache.get_object_manifest(image_task)
         assert atlas_saved["manifest"]["source_object"]["object_key"] == "client/files/atlas-1/source.zip"
-        assert atlas_saved["manifest"]["source_files"] == [
+        assert "source_files" not in atlas_saved["manifest"]
+        assert atlas_saved["manifest"]["file_structure"]["entries"] == [
             {
-                "file_name": "a.png",
-                "file_format": "png",
-                "file_size": 7,
+                "path": "a.png",
+                "name": "a.png",
+                "type": "file",
+                "size": 7,
+                "format": "png",
                 "checksum": "atlas-a-md5",
-                "path_in_package": "a.png",
                 "is_primary": True,
             },
             {
-                "file_name": "b.json",
-                "file_format": "json",
-                "file_size": 7,
+                "path": "b.json",
+                "name": "b.json",
+                "type": "file",
+                "size": 7,
+                "format": "json",
                 "checksum": "atlas-b-md5",
-                "path_in_package": "b.json",
                 "is_primary": False,
             },
         ]
@@ -1558,21 +1565,24 @@ def test_upload_entity_objects_uploads_pack_as_single_zip(tmp_path):
         include_previews=False,
     )
 
-    assert manifest["source_files"] == [
+    assert "source_files" not in manifest
+    assert manifest["file_structure"]["entries"] == [
         {
-            "file_name": "orig.png",
-            "file_format": "png",
-            "file_size": 3,
+            "path": "background 1/orig.png",
+            "name": "orig.png",
+            "type": "file",
+            "size": 3,
+            "format": "png",
             "checksum": "one",
-            "path_in_package": "background 1/orig.png",
             "is_primary": True,
         },
         {
-            "file_name": "orig.png",
-            "file_format": "png",
-            "file_size": 3,
+            "path": "background 2/orig.png",
+            "name": "orig.png",
+            "type": "file",
+            "size": 3,
+            "format": "png",
             "checksum": "two",
-            "path_in_package": "background 2/orig.png",
             "is_primary": False,
         },
     ]

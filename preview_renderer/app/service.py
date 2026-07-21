@@ -58,12 +58,12 @@ def _strategy_value(info) -> str:
 
 
 def _file_name(ref) -> str:
-    return ref.file_name or Path(ref.path_in_package).name or "resource"
+    return ref.name or Path(ref.path).name or "resource"
 
 
 def _file_format(ref, local_path: str = "") -> str:
-    if ref.file_format:
-        return ref.file_format.lower().lstrip(".")
+    if ref.format:
+        return ref.format.lower().lstrip(".")
     name = _file_name(ref)
     if "." in name:
         return name.rsplit(".", 1)[-1].lower()
@@ -99,7 +99,7 @@ def build_processing_entity(
     client_id: str,
     client_resource_id: str,
     resource_type: str,
-    source_files,
+    file_entries,
     local_source_paths: list[Path],
     client_metadata: Any | None,
 ):
@@ -107,12 +107,12 @@ def build_processing_entity(
     from ResourceProcessor.preview_metadata import FileInfo, ResourceProcessingEntity
 
     files = []
-    for index, (ref, path) in enumerate(zip(source_files, local_source_paths)):
+    for index, (ref, path) in enumerate(zip(file_entries, local_source_paths)):
         checksum = ref.checksum or local_file_md5(str(path))
         files.append(FileInfo(
             file_path=str(path),
             file_name=_file_name(ref),
-            file_size=ref.file_size or path.stat().st_size,
+            file_size=ref.size or path.stat().st_size,
             file_format=_file_format(ref, str(path)),
             content_md5=checksum,
             file_role="main",
@@ -245,7 +245,7 @@ class PreviewRendererService:
             )
             local_sources = resolve_local_source_files(
                 local_source_object,
-                request.source_files,
+                request.file_structure.entries,
                 source_dir,
                 max_zip_members=settings.max_zip_members,
                 max_zip_member_bytes=settings.max_zip_member_bytes,
@@ -256,7 +256,7 @@ class PreviewRendererService:
                 client_id=client_id,
                 client_resource_id=request.client_resource_id,
                 resource_type=request.resource_type,
-                source_files=request.source_files,
+                file_entries=request.file_structure.entries,
                 local_source_paths=local_sources,
                 client_metadata=request.client_metadata,
             )

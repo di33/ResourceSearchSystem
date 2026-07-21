@@ -70,6 +70,16 @@ def _stable_hash(value: Any) -> str:
     return hashlib.sha256(_stable_json(value).encode("utf-8")).hexdigest()
 
 
+def _manifest_file_entries(manifest: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(manifest, dict):
+        return []
+    structure = manifest.get("file_structure")
+    if isinstance(structure, dict) and isinstance(structure.get("entries"), list):
+        return [item for item in structure["entries"] if isinstance(item, dict)]
+    legacy = manifest.get("source_files")
+    return [item for item in legacy if isinstance(item, dict)] if isinstance(legacy, list) else []
+
+
 def _object_key_prefix_parts(prefix: str) -> list[str]:
     normalized = str(prefix or "").replace("\\", "/").strip("/")
     return [safe_object_path_part(part) for part in normalized.split("/") if part not in {"", ".", ".."}]
@@ -392,7 +402,7 @@ def _manifest_reusing_objects(
         entity,
         client_id=client_id,
         source_object=old_manifest.get("source_object") or {},
-        source_files=old_manifest.get("source_files") or [],
+        source_files=_manifest_file_entries(old_manifest),
         previews=old_manifest.get("previews") or [],
         description=description_from_entity(entity) if include_descriptions else None,
         classification=classification_from_entity(entity),
@@ -422,7 +432,7 @@ def upload_entity_objects(
     source_files: list[dict[str, Any]] = []
     if reuse_source_manifest:
         source_object = dict(reuse_source_manifest.get("source_object") or {})
-        source_files = list(reuse_source_manifest.get("source_files") or [])
+        source_files = list(_manifest_file_entries(reuse_source_manifest))
     else:
         members = _package_members(entity)
         if len(members) == 1:
@@ -547,7 +557,7 @@ def source_object_keys_from_manifest(manifest: dict[str, Any]) -> list[str]:
     source_object = manifest.get("source_object")
     if isinstance(source_object, dict) and source_object.get("object_key"):
         keys.append(str(source_object["object_key"]))
-    for item in manifest.get("source_files") or []:
+    for item in _manifest_file_entries(manifest):
         if isinstance(item, dict) and item.get("object_key"):
             keys.append(str(item["object_key"]))
     for item in manifest.get("previews") or []:
@@ -570,7 +580,7 @@ def manifest_has_source_object(manifest: dict[str, Any]) -> bool:
         return True
     return any(
         isinstance(item, dict) and item.get("object_key")
-        for item in (manifest.get("source_files") if isinstance(manifest, dict) else []) or []
+        for item in _manifest_file_entries(manifest)
     )
 
 
@@ -888,16 +898,14 @@ def build_manifests_from_cache(
             return True
         return any(
             isinstance(item, dict) and item.get("object_key")
-            for item in (manifest.get("source_files") if isinstance(manifest, dict) else []) or []
+            for item in _manifest_file_entries(manifest)
         )
 
     def source_signature(manifest: dict[str, Any]) -> dict[str, Any]:
         source_object = manifest.get("source_object") if isinstance(manifest, dict) else None
-        source_files = manifest.get("source_files") if isinstance(manifest, dict) else None
+        source_files = _manifest_file_entries(manifest)
         if not isinstance(source_object, dict):
             source_object = {}
-        if not isinstance(source_files, list):
-            source_files = []
         return {
             "source_object": {
                 "storage_profile_id": str(source_object.get("storage_profile_id") or ""),
@@ -907,11 +915,11 @@ def build_manifests_from_cache(
             },
             "source_files": [
                 {
-                    "file_name": str(item.get("file_name") or ""),
-                    "file_format": str(item.get("file_format") or ""),
-                    "file_size": int(item.get("file_size") or 0),
+                    "file_name": str(item.get("name") or item.get("file_name") or ""),
+                    "file_format": str(item.get("format") or item.get("file_format") or ""),
+                    "file_size": int(item.get("size") or item.get("file_size") or 0),
                     "checksum": str(item.get("checksum") or ""),
-                    "path_in_package": str(item.get("path_in_package") or ""),
+                    "path_in_package": str(item.get("path") or item.get("path_in_package") or ""),
                     "is_primary": bool(item.get("is_primary")),
                 }
                 for item in source_files

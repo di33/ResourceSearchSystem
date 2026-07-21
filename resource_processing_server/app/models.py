@@ -4,6 +4,7 @@ from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from resource_contracts.file_structure import validate_file_structure
 from resource_contracts.resource_types import normalize_resource_type
 
 
@@ -44,7 +45,27 @@ def _object_file_format(ref: ObjectRef) -> str:
     return name.rsplit(".", 1)[-1].lower() if "." in name else ""
 
 
+class FileStructureEntry(BaseModel):
+    path: str
+    name: str
+    type: str = "file"
+    size: int = 0
+    format: str = ""
+    checksum: str = ""
+    is_primary: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, value: str) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+
 class SourceFileRef(BaseModel):
+    """Deprecated input-only compatibility DTO for legacy Python callers."""
+
     file_name: str
     file_format: str = ""
     file_size: int = 0
@@ -52,26 +73,19 @@ class SourceFileRef(BaseModel):
     path_in_package: str = ""
     is_primary: bool = False
 
-    @field_validator("file_name")
+
+class FileStructure(BaseModel):
+    source: str = "client"
+    state: str = "complete"
+    source_object_checksum: str = ""
+    entry_count: int = 0
+    total_size: int = 0
+    entries: list[FileStructureEntry] = Field(default_factory=list)
+
+    @model_validator(mode="before")
     @classmethod
-    def _file_name_not_blank(cls, value: str) -> str:
-        value = str(value or "").strip()
-        if not value:
-            raise ValueError("must not be blank")
-        return value
-
-
-def _source_files_from_source_object(source_object: ObjectRef) -> list[SourceFileRef]:
-    return [
-        SourceFileRef(
-            file_name=_object_file_name(source_object),
-            file_format=_object_file_format(source_object),
-            file_size=int(source_object.size or 0),
-            checksum=source_object.checksum or "",
-            path_in_package="",
-            is_primary=True,
-        )
-    ]
+    def _normalize(cls, value):
+        return validate_file_structure(value)
 
 
 class PreviewRef(BaseModel):
@@ -133,7 +147,7 @@ class _ManifestFields(BaseModel):
     client_resource_id: str
     resource_type: str
     source_object: ObjectRef
-    source_files: list[SourceFileRef] = Field(default_factory=list)
+    file_structure: FileStructure | None = None
     package_object: ObjectRef | None = None
     previews: list[PreviewRef] = Field(default_factory=list)
     description: Description | None = None
@@ -141,10 +155,34 @@ class _ManifestFields(BaseModel):
     client_metadata: dict[str, Any] = Field(default_factory=dict)
     classification: Classification | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_legacy_source_files(cls, value):
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        legacy = data.pop("source_files", None)
+        if data.get("file_structure") is None and legacy:
+            source_object = data.get("source_object")
+            source_checksum = (
+                source_object.get("checksum")
+                if isinstance(source_object, dict)
+                else getattr(source_object, "checksum", "")
+            )
+            data["file_structure"] = {
+                "source": "client",
+                "source_object_checksum": str(source_checksum or ""),
+                "entries": legacy,
+            }
+        return data
+
     @model_validator(mode="after")
-    def _derive_source_files(self):
-        if not self.source_files:
-            self.source_files = _source_files_from_source_object(self.source_object)
+    def _structure_matches_source_object(self):
+        if self.file_structure is not None:
+            declared = self.file_structure.source_object_checksum.strip()
+            actual = self.source_object.checksum.strip()
+            if declared and actual and declared != actual:
+                raise ValueError("file_structure.source_object_checksum does not match source_object.checksum")
         return self
 
     @field_validator("client_resource_id")

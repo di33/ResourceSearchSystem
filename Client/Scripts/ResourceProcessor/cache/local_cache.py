@@ -158,7 +158,8 @@ def _object_manifest_fingerprint_parts(conn: sqlite3.Connection, task_id: int) -
         return {}
     return {
         "source_object": _stable_manifest_dict(manifest.get("source_object")),
-        "source_files": _stable_manifest_list(manifest.get("source_files")),
+        "file_structure": _stable_manifest_dict(manifest.get("file_structure")),
+        "legacy_source_files": _stable_manifest_list(manifest.get("source_files")),
         "previews": _stable_manifest_list(manifest.get("previews")),
         "package_object": _stable_manifest_dict(manifest.get("package_object")),
     }
