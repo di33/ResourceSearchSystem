@@ -59,6 +59,7 @@ _INVALID_RESPONSE_LOG = (
     / "description_invalid_responses.jsonl"
 )
 _INVALID_RESPONSE_LOG_LOCK = threading.Lock()
+_DESCRIPTION_REFUSAL_MAX_ATTEMPTS = 2
 
 
 def _log_invalid_description_response(task_id: int, entity, exc: Exception, attempt: int) -> None:
@@ -163,11 +164,17 @@ def _is_retryable_error(exc: Exception) -> bool:
     return _is_rate_limit_error(exc) or _is_transient_error(exc)
 
 
+def _is_description_refusal(exc: Exception) -> bool:
+    return type(exc).__name__ == "DescriptionRefusalResponse"
+
+
 def _should_generate_description(resource_type: str, *, force_resource_type: str = "") -> bool:
     return is_search_indexable_resource_type(resource_type)
 
 
 def _retry_reason(exc: Exception) -> str:
+    if _is_description_refusal(exc):
+        return "安全拒绝"
     if _is_rate_limit_error(exc):
         return "限流"
     return "临时网络错误"
@@ -209,9 +216,13 @@ async def _generate_with_retry(
             return True
         except Exception as exc:
             last_exc = exc
-            if type(exc).__name__ == "InvalidDescriptionResponse":
+            if isinstance(exc, ValueError) and hasattr(exc, "raw_response"):
                 _log_invalid_description_response(task_id, entity, exc, attempt)
-            if attempt >= max_attempts or not _is_retryable_error(exc):
+            refusal_retry = (
+                _is_description_refusal(exc)
+                and attempt < min(max_attempts, _DESCRIPTION_REFUSAL_MAX_ATTEMPTS)
+            )
+            if attempt >= max_attempts or not (refusal_retry or _is_retryable_error(exc)):
                 break
             delay = base_delay_seconds * (2 ** (attempt - 1)) + random.uniform(0.0, 1.0)
             report.ok(
@@ -334,10 +345,15 @@ async def _process_one(
                     f"新生成失败，沿用已有描述: {str(exc)[:120]}",
                 )
             else:
+                error_code = (
+                    "description_refusal"
+                    if _is_description_refusal(exc)
+                    else "desc_error"
+                )
                 cache.update_task_state(
                     task_id,
                     ProcessState.DESCRIPTION_FAILED,
-                    error_code="desc_error",
+                    error_code=error_code,
                     error_message=str(exc)[:500],
                 )
                 counters["failed"] += 1

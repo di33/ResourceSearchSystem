@@ -16,6 +16,7 @@ from ResourceProcessor.description.description_generator import (  # noqa: E402
     generate_resource_description,
 )
 from ResourceProcessor.description.ksyun_llm_provider import (  # noqa: E402
+    DescriptionRefusalResponse,
     InvalidDescriptionResponse,
     KsyunLLMProvider,
     LLMFactory,
@@ -102,10 +103,6 @@ def test_parse_description_response_strict_rejects_invalid_json_after_think_clos
 @pytest.mark.parametrize(
     "response, message",
     [
-        ("The request was rejected because it was considered high risk", "not valid JSON"),
-        ('{"main_content":"The request was rejected because it was considered high risk",'
-         '"detail_content":"The request was rejected because it was considered high risk"}',
-         "contains a refusal"),
         ('{"main_content":"主体","description_quality_score":0.5}', "missing required fields"),
         ('{"main_content":"主体","detail_content":"细节","description_quality_score":2}', "between 0 and 1"),
         ('{"main_content":"","detail_content":"细节","description_quality_score":null}', "main_content"),
@@ -123,11 +120,27 @@ def test_generate_description_text_rejects_plain_text_response():
         provider,
         "_call_sync",
         return_value="The request was rejected because it was considered high risk",
-    ), pytest.raises(InvalidDescriptionResponse, match="not valid JSON") as caught:
+    ), pytest.raises(DescriptionRefusalResponse, match="safety policy") as caught:
         _run(provider.generate_description_text(_make_input()))
     assert caught.value.raw_response == (
         "The request was rejected because it was considered high risk"
     )
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "The request was rejected because it was considered high risk",
+        "当前输入图片内容存在敏感信息，请更换图片",
+        ('{"main_content":"The request was rejected because it was considered high risk",'
+         '"detail_content":"The request was rejected because it was considered high risk"}'),
+    ],
+)
+def test_parse_description_response_strict_classifies_safety_refusal(response):
+    with pytest.raises(DescriptionRefusalResponse, match="safety policy") as caught:
+        _parse_description_response_strict(response)
+
+    assert caught.value.raw_response == response
 
 
 def test_build_user_content_without_image():

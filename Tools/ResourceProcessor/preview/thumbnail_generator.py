@@ -23,8 +23,9 @@ def validate_preview(
     Validate a generated preview image.
 
     Returns ``(passed: bool, reason: str)``.  Size-limit violations are treated
-    as warnings (still passes). All-black / all-white images hard-fail by
-    default, unless the caller has verified that the source asset is also solid.
+    as warnings (still passes). Fully transparent images are empty. An RGBA
+    image with visible alpha is allowed to contain pure-black pixels because
+    black artwork/layers on transparency are valid preview content.
     """
     p = Path(preview_path)
 
@@ -50,12 +51,19 @@ def validate_preview(
     elif not is_gif and file_kb > max_static_size_kb:
         logging.warning("Preview %s exceeds static size limit (%.1f KB)", p, file_kb)
 
+    alpha = img.getchannel("A") if "A" in img.getbands() else None
+    has_visible_alpha = False
+    if alpha is not None:
+        has_visible_alpha = alpha.getextrema()[1] > 0
+        if not has_visible_alpha:
+            return False, "Image is fully transparent / blank"
+
     rgb = img.convert("RGB")
     extrema = rgb.getextrema()
     max_val = max(ch[1] for ch in extrema)
     min_val = min(ch[0] for ch in extrema)
 
-    if max_val == 0 and not allow_solid_color:
+    if max_val == 0 and not has_visible_alpha and not allow_solid_color:
         return False, "Image is all black"
     if min_val == 255 and not allow_solid_color:
         return False, "Image is all white / blank"

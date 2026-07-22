@@ -1,5 +1,6 @@
 """DB-only contract tests for split pipeline CLI entry points."""
 
+import asyncio
 import json
 from pathlib import Path
 import sys
@@ -993,6 +994,93 @@ def test_description_retry_classifies_transient_errors():
     assert not _is_retryable_error(
         RuntimeError("Ksyun chat.completions 调用失败: code=400, body={\"error\":\"Bad Request\"}")
     )
+
+
+def test_description_refusal_retries_twice_and_uses_specific_error_code(monkeypatch):
+    from types import SimpleNamespace
+
+    from ResourceProcessor.description.ksyun_llm_provider import DescriptionRefusalResponse
+    from ResourceProcessor.generate_descriptions import _generate_with_retry, _process_one
+
+    calls = 0
+
+    async def refuse(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise DescriptionRefusalResponse(
+            "description response was refused by the model safety policy",
+            raw_response="The request was rejected because it was considered high risk",
+        )
+
+    monkeypatch.setattr(
+        "ResourceProcessor.description.description_generator.generate_resource_description_text",
+        refuse,
+    )
+    monkeypatch.setattr(
+        "ResourceProcessor.description.pack_description_builder.build_description_input_for_generation",
+        lambda *args, **kwargs: asyncio.sleep(0, result=SimpleNamespace()),
+    )
+    monkeypatch.setattr("ResourceProcessor.generate_descriptions.random.uniform", lambda *_: 0.0)
+    monkeypatch.setattr("ResourceProcessor.generate_descriptions._log_invalid_description_response", lambda *args: None)
+
+    class FakeCache:
+        state = None
+        error_code = ""
+
+        def get_task_by_id(self, task_id):
+            return {"process_state": ProcessState.PREVIEW_READY.value}
+
+        def get_description_by_task(self, task_id):
+            return None
+
+        def update_task_state(self, task_id, state, error_code="", error_message=""):
+            self.state = state
+            self.error_code = error_code
+
+    class FakeReport:
+        def ok(self, *args, **kwargs):
+            pass
+
+        def fail(self, *args, **kwargs):
+            pass
+
+    cache = FakeCache()
+    entity = SimpleNamespace(
+        title="safe.png",
+        resource_path="safe.png",
+        content_md5="abc",
+        resource_type="single_image",
+    )
+
+    async def run_scenario():
+        async def generate(*args, **kwargs):
+            return await _generate_with_retry(
+                cache,
+                1,
+                entity,
+                "ksyun",
+                FakeReport(),
+                max_attempts=6,
+                base_delay_seconds=0,
+            )
+
+        monkeypatch.setattr("ResourceProcessor.generate_descriptions._generate_with_retry", generate)
+        await _process_one(
+            1,
+            entity,
+            "ksyun",
+            "",
+            cache,
+            FakeReport(),
+            asyncio.Semaphore(1),
+            {"processed": 0, "desc_ok": 0, "failed": 0},
+        )
+
+    asyncio.run(run_scenario())
+
+    assert calls == 2
+    assert cache.state == ProcessState.DESCRIPTION_FAILED
+    assert cache.error_code == "description_refusal"
 
 
 def test_description_retry_candidates_ignore_persisted_retry_count():

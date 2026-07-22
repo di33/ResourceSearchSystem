@@ -288,6 +288,22 @@ def refresh_resource_fingerprint_for_connection(
             task_id,
         ),
     )
+    # A completed submission represents committed_fingerprint. If a later
+    # description, classification, preview, or task metadata change produces a
+    # different resource fingerprint, make the existing uploaded object
+    # manifest eligible for submission again. Never disturb an active job;
+    # reconciliation will finish it before a subsequent change is submitted.
+    conn.execute(
+        """UPDATE resource_object_manifest
+           SET submit_state = 'pending',
+               error_message = '',
+               updated_at = COALESCE(?, updated_at)
+           WHERE task_id = ?
+             AND upload_state = 'uploaded'
+             AND submit_state = 'submitted'
+             AND committed_fingerprint <> ?""",
+        (now, task_id, fingerprint),
+    )
     return fingerprint
 
 
@@ -455,6 +471,22 @@ class LocalCacheStore:
         """)
 
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS resource_server_delete_job (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_resource_id TEXT NOT NULL,
+                source_resource_id TEXT NOT NULL DEFAULT '',
+                task_id_snapshot INTEGER,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
+            )
+        """)
+
+        cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_resource_task_md5
             ON resource_task(content_md5)
         """)
@@ -511,6 +543,14 @@ class LocalCacheStore:
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_resource_object_delete_job_client_resource
             ON resource_object_delete_job(client_resource_id)
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_resource_server_delete_job_status
+            ON resource_server_delete_job(status, updated_at)
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_resource_server_delete_job_client_resource
+            ON resource_server_delete_job(client_resource_id)
         """)
 
         try:

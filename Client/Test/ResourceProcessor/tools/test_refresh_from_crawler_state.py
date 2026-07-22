@@ -25,6 +25,7 @@ def test_refresh_builds_default_step_order_without_second_object_upload():
         "sync_pipeline_from_crawler_state",
         "upload_objects_to_storage",
         "flush_object_delete_jobs",
+        "flush_server_delete_jobs",
         "generate_previews",
         "generate_descriptions",
         "upload_resources",
@@ -55,6 +56,7 @@ def test_refresh_forwards_optional_filters_and_preview_delete_flush():
     steps = refresh.build_steps(args)
 
     assert [step.name for step in steps].count("flush_object_delete_jobs") == 1
+    assert [step.name for step in steps].count("flush_server_delete_jobs") == 1
     assert [step.name for step in steps].count("flush_object_delete_jobs_after_previews") == 1
     upload_step = next(step for step in steps if step.name == "upload_objects_to_storage")
     assert "--missing-manifest-only" in upload_step.args

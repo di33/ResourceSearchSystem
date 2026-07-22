@@ -219,6 +219,60 @@ async def test_single_image_preview_generation(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_single_image_without_source_fails_instead_of_generating_metadata_fallback(tmp_path):
+    entity = ResourceProcessingEntity(
+        resource_id="res-missing-image",
+        resource_type="single_image",
+        source_directory=str(tmp_path),
+        pack_name="Pack",
+        title="Missing Image",
+        resource_path="missing.svg",
+        content_md5="missing-image-md5",
+        files=[],
+    )
+
+    policy = CrawlerThumbnailPolicy(str(tmp_path / "previews"))
+
+    with pytest.raises(RuntimeError, match="no source image file"):
+        await policy.generate_previews(entity)
+
+
+@pytest.mark.asyncio
+async def test_single_image_svg_rasterization_failure_does_not_generate_fallback(tmp_path, monkeypatch):
+    image_path = tmp_path / "broken.svg"
+    image_path.write_text("<svg><broken>", encoding="utf-8")
+    entity = ResourceProcessingEntity(
+        resource_id="res-broken-svg",
+        resource_type="single_image",
+        source_directory=str(tmp_path),
+        pack_name="Pack",
+        title="Broken SVG",
+        resource_path=image_path.name,
+        content_md5="broken-svg-md5",
+        files=[
+            FileInfo(
+                file_path=str(image_path),
+                file_name=image_path.name,
+                file_size=image_path.stat().st_size,
+                file_format="svg",
+                content_md5="broken-svg-file-md5",
+                is_primary=True,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "ResourceProcessor.preview.crawler_thumbnail_policy._try_rasterize_svg",
+        lambda *_args: False,
+    )
+    policy = CrawlerThumbnailPolicy(str(tmp_path / "previews"))
+
+    with pytest.raises(RuntimeError, match="could not rasterize SVG 'broken.svg'"):
+        await policy.generate_previews(entity)
+
+    assert not list((tmp_path / "previews").rglob("*_metadata.webp"))
+
+
+@pytest.mark.asyncio
 async def test_spriter_preview_uses_scml_runtime_renderer(tmp_path):
     image_path = tmp_path / "body.png"
     _make_image(image_path, "red", size=(48, 64))
@@ -393,7 +447,7 @@ async def test_single_image_all_black_source_preview_is_allowed(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_single_image_all_transparent_source_preview_is_allowed(tmp_path):
+async def test_single_image_all_transparent_source_preview_is_rejected(tmp_path):
     image_path = tmp_path / "pixel-transparent.png"
     Image.new("RGBA", (1, 1), (0, 0, 0, 0)).save(image_path)
     entity = ResourceProcessingEntity(
@@ -417,9 +471,9 @@ async def test_single_image_all_transparent_source_preview_is_allowed(tmp_path):
     policy = CrawlerThumbnailPolicy(str(tmp_path / "previews"))
     previews = await policy.generate_previews(entity)
 
-    assert previews[0].path
-    assert previews[0].fail_reason is None
-    assert Path(previews[0].path).is_file()
+    assert not previews[0].path
+    assert previews[0].fail_reason
+    assert "transparent" in previews[0].fail_reason.lower()
 
 
 @pytest.mark.asyncio

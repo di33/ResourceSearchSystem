@@ -168,6 +168,31 @@ def test_validate_preview_fails_all_black(tmp_path):
     assert "black" in reason.lower()
 
 
+def test_validate_preview_allows_black_rgba_with_visible_alpha(tmp_path):
+    """Visible black RGBA artwork is content, not an empty black preview."""
+    p = tmp_path / "black-layer.png"
+    image = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+    for y in range(32, 96):
+        for x in range(48, 80):
+            image.putpixel((x, y), (0, 0, 0, 255))
+    image.save(p)
+
+    passed, reason = validate_preview(str(p))
+
+    assert passed, reason
+
+
+def test_validate_preview_fails_fully_transparent_rgba(tmp_path):
+    """An RGBA canvas with no visible alpha is empty."""
+    p = tmp_path / "transparent.png"
+    Image.new("RGBA", (128, 128), (0, 0, 0, 0)).save(p)
+
+    passed, reason = validate_preview(str(p))
+
+    assert not passed
+    assert "transparent" in reason.lower()
+
+
 def test_validate_preview_fails_all_white(tmp_path):
     """An all-white image must fail validation."""
     p = tmp_path / "white.png"

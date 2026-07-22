@@ -285,6 +285,10 @@ class InvalidDescriptionResponse(ValueError):
         self.raw_response = str(raw_response or "")
 
 
+class DescriptionRefusalResponse(InvalidDescriptionResponse):
+    """The upstream model or safety gateway refused to describe the input."""
+
+
 _DESCRIPTION_REFUSAL_MARKERS = (
     "request was rejected",
     "considered high risk",
@@ -295,12 +299,24 @@ _DESCRIPTION_REFUSAL_MARKERS = (
     "请求被拒绝",
     "内容存在风险",
     "无法处理此请求",
+    "当前输入图片内容存在敏感信息",
+    "请更换图片",
 )
+
+
+def _contains_description_refusal(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in _DESCRIPTION_REFUSAL_MARKERS)
 
 
 def _parse_description_response_strict(text: str) -> tuple[str, str, float | None]:
     """Validate the description JSON locally before it can enter the pipeline."""
     raw_text = str(text or "")
+    if _contains_description_refusal(raw_text):
+        raise DescriptionRefusalResponse(
+            "description response was refused by the model safety policy",
+            raw_response=raw_text,
+        )
     parse_text = raw_text
     if "</think>" in parse_text:
         parse_text = parse_text.rsplit("</think>", 1)[-1].strip()
@@ -344,10 +360,10 @@ def _parse_description_response_strict(text: str) -> tuple[str, str, float | Non
         raise InvalidDescriptionResponse(
             "detail_content must be a non-empty string", raw_response=raw_text
         )
-    description_text = f"{main}\n{detail}".lower()
-    if any(marker in description_text for marker in _DESCRIPTION_REFUSAL_MARKERS):
-        raise InvalidDescriptionResponse(
-            "description response contains a refusal instead of a resource description",
+    description_text = f"{main}\n{detail}"
+    if _contains_description_refusal(description_text):
+        raise DescriptionRefusalResponse(
+            "description response was refused by the model safety policy",
             raw_response=raw_text,
         )
     if score is not None and (

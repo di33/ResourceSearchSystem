@@ -78,6 +78,7 @@ RESOURCE_CHILD_TABLES = (
 )
 
 OBJECT_DELETE_JOB_TABLE = "resource_object_delete_job"
+SERVER_DELETE_JOB_TABLE = "resource_server_delete_job"
 
 
 @dataclass
@@ -99,6 +100,8 @@ class SyncStats:
     object_delete_jobs_planned: int = 0
     object_delete_jobs_inserted: int = 0
     object_delete_keys_planned: int = 0
+    server_delete_jobs_planned: int = 0
+    server_delete_jobs_inserted: int = 0
     failures: int = 0
     failure_examples: list[str] = field(default_factory=list)
 
@@ -737,6 +740,51 @@ def _enqueue_object_delete_jobs(
         stats.object_delete_jobs_inserted += 1
 
 
+def _enqueue_server_delete_jobs(
+    conn: sqlite3.Connection,
+    tasks: list[dict[str, Any]],
+    stats: SyncStats,
+    *,
+    reason: str,
+    dry_run: bool,
+) -> None:
+    """Persist remote-delete intent before local task rows disappear."""
+    if not tasks or not _table_exists(conn, SERVER_DELETE_JOB_TABLE):
+        return
+    now = _now()
+    for task in tasks:
+        client_resource_id = _norm_text(task.get("source_resource_id"))
+        if not client_resource_id:
+            continue
+        stats.server_delete_jobs_planned += 1
+        if dry_run:
+            continue
+        existing = conn.execute(
+            f"""SELECT 1 FROM {SERVER_DELETE_JOB_TABLE}
+                WHERE client_resource_id = ? AND status IN ('pending', 'failed')
+                LIMIT 1""",
+            (client_resource_id,),
+        ).fetchone()
+        if existing:
+            continue
+        conn.execute(
+            f"""INSERT INTO {SERVER_DELETE_JOB_TABLE}
+                (client_resource_id, source_resource_id, task_id_snapshot,
+                 status, attempt_count, last_error, reason,
+                 created_at, updated_at, deleted_at)
+                VALUES (?, ?, ?, 'pending', 0, '', ?, ?, ?, NULL)""",
+            (
+                client_resource_id,
+                client_resource_id,
+                int(task["id"]),
+                reason,
+                now,
+                now,
+            ),
+        )
+        stats.server_delete_jobs_inserted += 1
+
+
 def _clear_downstream(
     conn: sqlite3.Connection,
     task_ids: list[int],
@@ -1008,6 +1056,13 @@ def _sync_resources(
             impacted_parent_ids.add(parent_id)
     if removed_tasks:
         removed_task_ids = [int(task["id"]) for task in removed_tasks]
+        _enqueue_server_delete_jobs(
+            conn,
+            removed_tasks,
+            stats,
+            reason="crawler_removed",
+            dry_run=dry_run,
+        )
         if record_object_delete_jobs:
             _enqueue_object_delete_jobs(
                 conn,
@@ -1199,6 +1254,10 @@ def sync(args: argparse.Namespace) -> int:
         f"任务计划 {stats.object_delete_jobs_planned:,}, 写入 {stats.object_delete_jobs_inserted:,}, "
         f"对象 key {stats.object_delete_keys_planned:,}"
         + (" (disabled)" if not record_object_delete_jobs else ""),
+    )
+    report.ok(
+        "服务端删除队列",
+        f"任务计划 {stats.server_delete_jobs_planned:,}, 写入 {stats.server_delete_jobs_inserted:,}",
     )
     if not args.dry_run:
         check_conn = sqlite3.connect(db_path, timeout=300)

@@ -110,6 +110,9 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
     if not args.skip_object_delete_flush:
         steps.append(_flush_step(args, name="flush_object_delete_jobs"))
 
+    if not args.skip_server_delete_flush:
+        steps.append(_server_delete_flush_step(args))
+
     if not args.skip_previews:
         preview_args = [
             "--db-path",
@@ -197,6 +200,23 @@ def _flush_step(args: argparse.Namespace, *, name: str) -> Step:
     )
 
 
+def _server_delete_flush_step(args: argparse.Namespace) -> Step:
+    flush_args = [
+        "--db-path", args.db_path,
+        "--client-id", args.client_id,
+        "--processing-server", args.processing_server,
+    ]
+    _append_value(flush_args, "--api-key", args.processing_api_key)
+    _append_value(flush_args, "--limit", args.server_delete_limit)
+    _append_value(flush_args, "--max-attempts", args.server_delete_max_attempts)
+    _append_value(flush_args, "--progress-every", args.server_delete_progress_every)
+    return Step(
+        name="flush_server_delete_jobs",
+        module="ResourceProcessor.tools.flush_server_delete_jobs",
+        args=flush_args,
+    )
+
+
 def _command_text(command: list[str]) -> str:
     redacted = list(command)
     secret_flags = {"--api-key", "--preview-api-key", "--processing-api-key"}
@@ -242,7 +262,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "一键刷新 ResourceCrawler 数据：sync -> upload objects -> flush old objects "
-            "-> generate previews -> generate descriptions -> upload resources"
+            "-> delete removed server resources -> generate previews -> generate descriptions -> upload resources"
         )
     )
     parser.add_argument("--crawler-state-db", default=DEFAULT_CRAWLER_STATE_DB, help="ResourceCrawler crawler_state.db 路径")
@@ -259,6 +279,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-sync", action="store_true", help="跳过 crawler_state 同步")
     parser.add_argument("--skip-object-upload", action="store_true", help="跳过对象存储上传")
     parser.add_argument("--skip-object-delete-flush", action="store_true", help="跳过对象删除队列清理")
+    parser.add_argument("--skip-server-delete-flush", action="store_true", help="跳过加工服务器删除队列清理")
     parser.add_argument("--skip-previews", action="store_true", help="跳过预览生成")
     parser.add_argument("--skip-descriptions", action="store_true", help="跳过描述生成")
     parser.add_argument("--skip-upload-resources", action="store_true", help="跳过提交加工服务器")
@@ -279,6 +300,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--object-delete-max-attempts", type=int, default=10, help="对象删除队列最大重试次数")
     parser.add_argument("--object-delete-batch-size", type=int, default=1000, help="对象删除队列每批最多对象 key 数")
     parser.add_argument("--object-delete-progress-every", type=int, default=1000, help="对象删除队列进度打印间隔")
+    parser.add_argument("--server-delete-limit", type=int, default=None, help="服务端删除队列最多处理多少个任务")
+    parser.add_argument("--server-delete-max-attempts", type=int, default=10, help="服务端删除队列最大重试次数")
+    parser.add_argument("--server-delete-progress-every", type=int, default=100, help="服务端删除队列进度打印间隔")
     parser.add_argument(
         "--flush-object-deletes-after-previews",
         action="store_true",

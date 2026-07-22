@@ -23,7 +23,7 @@ cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts;G:\Res
 
 默认执行顺序：
 
-`sync_pipeline_from_crawler_state -> upload_objects_to_storage -> flush_object_delete_jobs -> generate_previews -> generate_descriptions -> upload_resources`
+`sync_pipeline_from_crawler_state -> upload_objects_to_storage -> flush_object_delete_jobs -> flush_server_delete_jobs -> generate_previews -> generate_descriptions -> upload_resources`
 
 其中 `generate_previews` 默认走 renderer 模式，会生成新预览并上传到对象存储、写回 `pipeline.db`。因此一键流程不会在预览后再额外执行一次 `upload_objects_to_storage`。
 
@@ -72,12 +72,14 @@ cd G:\ResourceUpload; $env:PYTHONPATH = "G:\ResourceUpload\client\Scripts;G:\Res
 - `--skip-sync`：跳过 `sync_pipeline_from_crawler_state`。默认关闭。
 - `--skip-object-upload`：跳过 `upload_objects_to_storage`。默认关闭。
 - `--skip-object-delete-flush`：跳过旧对象删除队列清理。默认关闭。
+- `--skip-server-delete-flush`：跳过加工服务器删除队列清理。默认关闭。
 - `--skip-previews`：跳过 `generate_previews`。默认关闭。
 - `--skip-descriptions`：跳过 `generate_descriptions`。默认关闭。
 - `--skip-upload-resources`：跳过 `upload_resources`。默认关闭。
 - `--no-backup`、`--keep-preview-files`、`--no-object-delete-jobs`、`--preview-dir`、`--sync-commit-every`、`--asset-batch-size`：传给同步阶段。
 - `--storage-profile-id`、`--key-prefix`、`--object-upload-workers`、`--missing-manifest-only`：传给对象上传阶段。
 - `--object-delete-limit`、`--object-delete-max-attempts`、`--object-delete-batch-size`、`--object-delete-progress-every`：传给旧对象删除队列清理阶段。
+- `--server-delete-limit`、`--server-delete-max-attempts`、`--server-delete-progress-every`：传给加工服务器删除队列清理阶段。该阶段只删除服务端快照、SearchServer 数据和向量，不删除文件桶对象。
 - `--flush-object-deletes-after-previews`：预览生成可能入队旧预览对象清理；开启后在预览后再清一次队列。默认关闭。
 - `--preview-mode`、`--preview-renderer`、`--preview-api-key`、`--preview-progress-every`、`--preview-status-file`：传给预览生成阶段。
 - `--llm-provider`、`--audio-llm-provider`、`--description-concurrency`、`--retry-failed-descriptions`：传给描述生成阶段。

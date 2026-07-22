@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from ResourceProcessor.cache.local_cache import LocalCacheStore
 from ResourceProcessor.preview_metadata import PreviewInfo, PreviewStrategy, ProcessState
 from ResourceProcessor.tools import flush_object_delete_jobs as flush_jobs
+from ResourceProcessor.tools import flush_server_delete_jobs as flush_server_jobs
 from ResourceProcessor.tools import sync_pipeline_from_crawler_state as sync_tool
 
 
@@ -272,6 +273,10 @@ def test_sync_preserves_invalidates_and_deletes_downstream_outputs(tmp_path):
             "resource-crawler/client/previews/src-1/primary.webp",
         ]
         assert "shared-pack/source.zip" not in "\n".join(object_keys)
+        server_job = conn.execute("SELECT * FROM resource_server_delete_job").fetchone()
+        assert server_job["client_resource_id"] == "src-1"
+        assert server_job["status"] == "pending"
+        assert server_job["reason"] == "crawler_removed"
     finally:
         conn.close()
     assert not preview_path.exists()
@@ -347,5 +352,61 @@ def test_flush_object_delete_jobs_retries_failed_jobs(tmp_path, monkeypatch):
         done = conn.execute("SELECT * FROM resource_object_delete_job").fetchone()
         assert done["status"] == "deleted"
         assert deleted_keys == ["resource-crawler/client/files/asset-1/source.png"]
+    finally:
+        conn.close()
+
+
+def test_flush_server_delete_jobs_retries_without_deleting_objects(tmp_path, monkeypatch):
+    db_path = tmp_path / "pipeline.db"
+    LocalCacheStore(str(db_path)).close()
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            """INSERT INTO resource_server_delete_job
+               (client_resource_id, source_resource_id, task_id_snapshot,
+                status, attempt_count, last_error, reason, created_at, updated_at)
+               VALUES ('src-1', 'src-1', 1, 'pending', 0, '',
+                       'crawler_removed', 'now', 'now')"""
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    calls = []
+
+    def fail_once(**kwargs):
+        calls.append(kwargs)
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(flush_server_jobs, "delete_processed_resource", fail_once)
+    args = SimpleNamespace(
+        db_path=str(db_path), limit=None, max_attempts=10,
+        processing_server="http://processor", client_id="resource-crawler",
+        api_key="secret", progress_every=0,
+    )
+    assert flush_server_jobs.flush(args) == 1
+
+    conn = sqlite3.connect(str(db_path)); conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute("SELECT * FROM resource_server_delete_job").fetchone()
+        assert row["status"] == "failed"
+        assert row["attempt_count"] == 1
+    finally:
+        conn.close()
+
+    def succeed(**kwargs):
+        calls.append(kwargs)
+        return {"state": "deleted"}
+
+    monkeypatch.setattr(flush_server_jobs, "delete_processed_resource", succeed)
+    assert flush_server_jobs.flush(args) == 0
+    assert calls[-1]["delete_objects"] is False
+    assert calls[-1]["client_resource_id"] == "src-1"
+
+    conn = sqlite3.connect(str(db_path)); conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute("SELECT * FROM resource_server_delete_job").fetchone()
+        assert row["status"] == "deleted"
+        assert row["attempt_count"] == 1
     finally:
         conn.close()

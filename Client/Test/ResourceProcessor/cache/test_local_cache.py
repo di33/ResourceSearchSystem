@@ -55,6 +55,7 @@ def test_create_tables(tmp_path):
             "process_log",
             "resource_object_manifest",
             "resource_object_delete_job",
+            "resource_server_delete_job",
         ])
         assert tables == expected
     finally:
@@ -325,6 +326,67 @@ def test_object_manifest_refreshes_resource_fingerprint(tmp_path):
         assert refreshed and refreshed != uploaded
         assert refreshed_record["resource_fingerprint"] == refreshed
         assert refreshed_record["committed_fingerprint"] == uploaded
+    finally:
+        store.close()
+
+
+def test_resource_change_marks_submitted_manifest_pending(tmp_path):
+    store = LocalCacheStore(str(tmp_path / "test.db"))
+    try:
+        task_id = store.insert_task(_make_entity())
+        store.upsert_object_manifest(
+            task_id,
+            {"source_object": {"storage_profile_id": "default", "object_key": "asset.png"}},
+            object_fingerprint="object-fingerprint",
+        )
+        submitted_fingerprint = store.get_task_by_id(task_id)["resource_fingerprint"]
+        store.mark_object_manifest_submitted(
+            task_id,
+            {"job_id": "job-1"},
+            resource_fingerprint=submitted_fingerprint,
+        )
+        assert store.get_object_manifest(task_id)["submit_state"] == "submitted"
+
+        store.insert_description(
+            task_id,
+            main_content="new main",
+            detail_content="new detail",
+            full_description="主体：new main\n细节：new detail",
+            prompt_version="v2",
+        )
+
+        record = store.get_object_manifest(task_id)
+        current_fingerprint = store.get_task_by_id(task_id)["resource_fingerprint"]
+        assert current_fingerprint != submitted_fingerprint
+        assert record["committed_fingerprint"] == submitted_fingerprint
+        assert record["submit_state"] == "pending"
+    finally:
+        store.close()
+
+
+def test_resource_change_does_not_interrupt_active_submission(tmp_path):
+    store = LocalCacheStore(str(tmp_path / "test.db"))
+    try:
+        task_id = store.insert_task(_make_entity())
+        store.upsert_object_manifest(
+            task_id,
+            {"source_object": {"storage_profile_id": "default", "object_key": "asset.png"}},
+            object_fingerprint="object-fingerprint",
+        )
+        store._write(
+            "UPDATE resource_object_manifest SET submit_state = 'submitting' WHERE task_id = ?",
+            (task_id,),
+        )
+
+        store.insert_description(
+            task_id,
+            main_content="new main",
+            detail_content="new detail",
+            full_description="主体：new main\n细节：new detail",
+            prompt_version="v2",
+        )
+
+        assert store.get_object_manifest(task_id)["submit_state"] == "submitting"
     finally:
         store.close()
 

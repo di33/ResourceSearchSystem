@@ -5139,7 +5139,7 @@ class CrawlerThumbnailPolicy:
     async def _generate_single_image_preview(self, entity: ResourceProcessingEntity) -> PreviewInfo:
         primary = entity.primary_file or (entity.files[0] if entity.files else None)
         if primary is None:
-            return await self._generate_metadata_preview(entity, mode="metadata_only")
+            raise RuntimeError("single image preview generation failed: no source image file")
 
         output_dir = self._output_dir_for(entity)
         ext = Path(primary.file_path).suffix.lower()
@@ -5181,7 +5181,12 @@ class CrawlerThumbnailPolicy:
                     )
             finally:
                 Path(temp_path).unlink(missing_ok=True)
-        return await self._generate_metadata_preview(entity, mode="fallback")
+            raise RuntimeError(
+                f"single image preview generation failed: could not rasterize SVG {primary.file_name!r}"
+            )
+        raise RuntimeError(
+            f"single image preview generation failed: unsupported image format {ext or '<none>'!r}"
+        )
 
     async def _generate_tileset_previews(self, entity: ResourceProcessingEntity) -> list[PreviewInfo]:
         image_paths = [f.file_path for f in entity.files if Path(f.file_path).suffix.lower() in RASTER_EXTS]
