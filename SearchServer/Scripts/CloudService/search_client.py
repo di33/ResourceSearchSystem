@@ -31,23 +31,12 @@ class SearchRequest:
     enable_reranker: Optional[bool] = None  # None = use server default
 
 @dataclass
-class FileStructureEntry:
-    path: str
-    name: str
-    type: str = "file"
-    size: int = 0
-    format: str = ""
-    checksum: str = ""
-    is_primary: bool = False
-
-@dataclass
 class FileStructure:
     source: str = "processor"
     state: str = "complete"
     source_object_checksum: str = ""
     entry_count: int = 0
     total_size: int = 0
-    entries: List[FileStructureEntry] = field(default_factory=list)
 
 @dataclass
 class SearchResultItem:

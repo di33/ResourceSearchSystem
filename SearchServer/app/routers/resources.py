@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
@@ -34,6 +34,7 @@ router = APIRouter(prefix="/resources", tags=["resources"])
 
 class ResourceFileOut(BaseModel):
     file_id: int = 0
+    path: str = ""
     file_name: str
     file_format: str
     file_size: int
@@ -42,6 +43,26 @@ class ResourceFileOut(BaseModel):
     storage_profile_id: str = ""
     object_key: str = ""
     download_url: str = ""
+    is_primary: bool = False
+
+
+class FileStructureEntryOut(BaseModel):
+    path: str
+    name: str
+    type: str = "file"
+    size: int = 0
+    format: str = ""
+    checksum: str = ""
+    is_primary: bool = False
+
+
+class FileStructureOut(BaseModel):
+    source: str = "processor"
+    state: str = "complete"
+    source_object_checksum: str = ""
+    entry_count: int = 0
+    total_size: int = 0
+    entries: List[FileStructureEntryOut] = Field(default_factory=list)
 
 
 class ResourcePreviewOut(BaseModel):
@@ -122,6 +143,7 @@ class ResourceDetailOut(BaseModel):
     package_download_url: str = ""
     created_at: str = ""
     updated_at: str = ""
+    file_structure: FileStructureOut = Field(default_factory=FileStructureOut)
     files: List[ResourceFileOut] = []
     previews: List[ResourcePreviewOut] = []
     description: Optional[ResourceDescriptionOut] = None
@@ -422,6 +444,7 @@ async def get_resource_detail(resource_id: str, session: AsyncSession = Depends(
         key = f.object_key or ""
         files.append(ResourceFileOut(
             file_id=f.id,
+            path=f.path_in_package or f.file_path or f.file_name,
             file_name=f.file_name,
             file_format=f.file_format,
             file_size=f.file_size,
@@ -430,6 +453,7 @@ async def get_resource_detail(resource_id: str, session: AsyncSession = Depends(
             storage_profile_id=f.storage_profile_id,
             object_key=key,
             download_url=_object_url(urls, key, f.storage_profile_id),
+            is_primary=bool(f.is_primary),
         ))
 
     previews = []
@@ -496,6 +520,24 @@ async def get_resource_detail(resource_id: str, session: AsyncSession = Depends(
         package_download_url=_object_url(urls, task.package_object_key, task.package_storage_profile_id),
         created_at=_ts(task.created_at),
         updated_at=_ts(task.updated_at),
+        file_structure=FileStructureOut(
+            source=task.file_structure_source or "processor",
+            state=task.file_structure_state or "complete",
+            source_object_checksum=task.source_object_checksum or "",
+            entry_count=len(files),
+            total_size=sum(item.file_size for item in files),
+            entries=[
+                FileStructureEntryOut(
+                    path=item.path,
+                    name=item.file_name,
+                    size=item.file_size,
+                    format=item.file_format,
+                    checksum=item.content_md5,
+                    is_primary=item.is_primary,
+                )
+                for item in files
+            ],
+        ),
         files=files,
         previews=previews,
         description=desc,

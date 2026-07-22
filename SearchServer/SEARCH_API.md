@@ -91,6 +91,13 @@ Content-Type: application/json
       "status": "completed",
       "preview_available": true,
       "file_count": 12,
+      "file_structure": {
+        "source": "client",
+        "state": "complete",
+        "source_object_checksum": "f8c1...",
+        "entry_count": 12,
+        "total_size": 245760
+      },
       "title": "像素森林瓦片集",
       "source_resource_id": "source-123",
       "vector_score": 0.86,
@@ -129,6 +136,7 @@ Content-Type: application/json
 | `file_format` | `string` | 主文件格式，不含前导点；未知时为空字符串。 |
 | `file_size` | `integer` | 资源内文件大小合计，单位为字节。 |
 | `file_count` | `integer` | 资源内文件数量。 |
+| `file_structure` | `object` | 文件结构摘要，包含 `source`、`state`、`source_object_checksum`、`entry_count` 和 `total_size`；搜索响应不返回完整 `entries`，完整目录通过 `GET /resources/{resource_id}` 获取。 |
 | `status` | `string` | 服务端资源处理状态。前端应按普通字符串兼容未知新状态。 |
 | `source_resource_id` | `string` | 上游数据源中的资源 ID，可能为空。 |
 | `vector_score` | `number` | 向量相似度分数；未参与或无分数时为 `0`。 |

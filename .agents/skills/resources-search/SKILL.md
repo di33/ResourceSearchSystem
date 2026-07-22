@@ -71,7 +71,7 @@ TOKEN 为 JWT（HS256），由服务端生成，默认有效期 60 分钟。调�
 - **`description_summary`**：素材描述摘要
 - **`file_format`** 和 **`file_size`**：格式和大小
 - **`file_download_url`**：S3 预签名下载链接，默认有效期 1 小时，最长 24 小时，无需携带 TOKEN 即可直接访问
-- **`file_structure`**：资源的完整文件结构。`entries` 为扁平文件清单，目录由 `path` 中的 `/` 推导；包含来源、条目数、总大小、格式、校验和及主文件标记
+- **`file_structure`**：搜索结果中的文件结构摘要，只包含来源、状态、条目数和总大小；完整目录请通过 `GET /resources/{resource_id}` 的 `file_structure.entries` 获取
 - **`parent_*` 字段**：如果素材属于某个资源包，会包含父资源信息
 
 ### 3. 无结果时的处理

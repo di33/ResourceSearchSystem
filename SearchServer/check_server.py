@@ -7,6 +7,7 @@
   python check_server.py --stats                  # 总览统计（DB + Milvus）
   python check_server.py --resources              # 资源列表（分页）
   python check_server.py --detail <resource_id>   # 查看某个资源的完整详情
+  python check_server.py --file-structure <resource_id>  # 仅查看资源目录结构
   python check_server.py --search "角色模型"      # 语义搜索测试
 """
 from __future__ import annotations
@@ -31,6 +32,62 @@ def _human_size(size) -> str:
             return f"{size:.1f} {unit}"
         size /= 1024
     return f"{size:.1f} TB"
+
+
+def _print_file_structure(entries: list[dict]):
+    """Print flat file-structure entries as a compact directory tree."""
+    tree: dict = {}
+    for entry in entries:
+        raw_path = str(entry.get("path") or entry.get("file_name") or "").replace("\\", "/").strip("/")
+        if not raw_path:
+            continue
+        parts = [part for part in raw_path.split("/") if part]
+        node = tree
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node.setdefault("__files__", []).append((parts[-1], entry))
+
+    def walk(node: dict, prefix: str = ""):
+        directories = sorted(key for key in node if key != "__files__")
+        files = sorted(node.get("__files__", []), key=lambda item: item[0].casefold())
+        items = [("directory", name, node[name]) for name in directories] + [
+            ("file", name, entry) for name, entry in files
+        ]
+        for index, (kind, name, value) in enumerate(items):
+            last = index == len(items) - 1
+            branch = "└── " if last else "├── "
+            child_prefix = prefix + ("    " if last else "│   ")
+            if kind == "directory":
+                print(f"  {prefix}{branch}{name}/")
+                walk(value, child_prefix)
+            else:
+                marker = " [primary]" if value.get("is_primary") else ""
+                fmt = value.get("file_format") or value.get("format") or "-"
+                size = _human_size(value.get("file_size", value.get("size", 0)))
+                print(f"  {prefix}{branch}{name}{marker}  ({fmt}, {size})")
+
+    walk(tree)
+
+
+def check_file_structure(server: str, resource_id: str):
+    _hr(f"资源目录结构: {resource_id}")
+    try:
+        r = requests.get(f"{server}/resources/{resource_id}", timeout=30)
+        r.raise_for_status()
+        detail = r.json()
+        structure = detail.get("file_structure") or {}
+        entries = structure.get("entries") or detail.get("files") or []
+        print(
+            f"  条目: {structure.get('entry_count', len(entries))}  "
+            f"总大小: {_human_size(structure.get('total_size', sum(int(item.get('file_size', 0) or 0) for item in entries)))}  "
+            f"来源: {structure.get('source', '-')}  状态: {structure.get('state', '-')}"
+        )
+        if entries:
+            _print_file_structure(entries)
+        else:
+            print("  (无目录结构)")
+    except Exception as e:
+        print(f"  {R}查询失败: {e}{W}")
 
 
 G = "\033[92m"
@@ -172,6 +229,12 @@ def check_detail(server: str, resource_id: str):
                     f"{_human_size(f['file_size']):>10}  object_key={object_key}"
                 )
 
+        structure = d.get("file_structure") or {}
+        structure_entries = structure.get("entries") or files
+        if structure_entries:
+            print(f"\n  目录结构 ({structure.get('entry_count', len(structure_entries))}):")
+            _print_file_structure(structure_entries)
+
         previews = d.get("previews", [])
         if previews:
             print(f"\n  预览 ({len(previews)}):")
@@ -260,6 +323,8 @@ def main():
     parser.add_argument("--resources", action="store_true", help="资源列表")
     parser.add_argument("--detail", type=str, default=None, metavar="RESOURCE_ID",
                         help="查看某个资源的完整详情")
+    parser.add_argument("--file-structure", type=str, default=None, metavar="RESOURCE_ID",
+                        help="仅查看某个资源的目录结构")
     parser.add_argument("--search", type=str, default=None, help="语义搜索测试")
     parser.add_argument("--search-threshold", type=float, default=0.5, help="语义搜索最低分阈值")
     parser.add_argument("--search-top-k", type=int, default=5, help="语义搜索返回条数")
@@ -267,7 +332,7 @@ def main():
     parser.add_argument("--page-size", type=int, default=50)
     args = parser.parse_args()
 
-    any_flag = args.health or args.stats or args.resources or args.search or args.detail
+    any_flag = args.health or args.stats or args.resources or args.search or args.detail or args.file_structure
     show_all = not any_flag
 
     print("=" * 60)
@@ -286,6 +351,9 @@ def main():
 
     if args.detail:
         check_detail(args.server, args.detail)
+
+    if args.file_structure:
+        check_file_structure(args.server, args.file_structure)
 
     if args.search:
         check_search(args.server, args.search, args.search_threshold, args.search_top_k)

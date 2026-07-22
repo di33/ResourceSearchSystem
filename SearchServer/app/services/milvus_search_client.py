@@ -20,7 +20,6 @@ from CloudService.search_client import (
     SearchResponse,
     SearchResultItem,
     FileStructure,
-    FileStructureEntry,
     SearchSuggestion,
 )
 from app.config import settings
@@ -629,17 +628,6 @@ class MilvusSearchClient(BaseSearchClient):
                     source_object_checksum=task.source_object_checksum,
                     entry_count=len(files),
                     total_size=file_size_total,
-                    entries=[
-                        FileStructureEntry(
-                            path=str(f.path_in_package or f.file_name),
-                            name=str(f.file_name),
-                            size=int(f.file_size or 0),
-                            format=str(f.file_format or "").lower().lstrip("."),
-                            checksum=str(f.content_md5 or ""),
-                            is_primary=bool(f.is_primary),
-                        )
-                        for f in sorted(files, key=lambda item: (str(item.path_in_package or item.file_name), item.id))
-                    ],
                 ),
                 vector_score=v_score,
                 bm25_score=b_score,

@@ -513,26 +513,36 @@ button:disabled { opacity: .55; cursor: default; }
   text-align: center;
 }
 
-.file-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.file-table th {
-  text-align: left;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text2);
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--border);
+.file-tree {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  max-height: 520px;
+  overflow: auto;
+  font-size: 13px;
 }
-.file-table td {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
+.file-tree details { margin-left: 18px; }
+.file-tree > details { margin-left: 0; }
+.file-tree summary {
+  cursor: pointer;
+  padding: 4px 0;
+  color: var(--text);
+  user-select: none;
 }
-.file-table tr:hover td { background: rgba(99,102,241,.05); }
-.file-table .dl-link {
-  color: var(--accent2);
-  text-decoration: none;
-  font-size: 12px;
+.file-tree-file {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  gap: 14px;
+  align-items: center;
+  padding: 5px 4px 5px 22px;
+  border-radius: 6px;
 }
-.file-table .dl-link:hover { text-decoration: underline; }
+.file-tree-file:hover { background: rgba(99,102,241,.05); }
+.file-tree-name { min-width: 0; overflow-wrap: anywhere; }
+.file-tree-meta { color: var(--text2); font-size: 11px; white-space: nowrap; }
+.file-tree-primary { color: var(--accent2); font-size: 10px; font-weight: 700; }
+.file-structure-meta { color: var(--text2); font-size: 12px; margin-bottom: 10px; }
 
 .desc-block {
   background: var(--panel2);
@@ -786,8 +796,44 @@ function resourceDownloadUrl(resourceId, kind) {
   return `${API}/resources/${encodeURIComponent(resourceId)}/download?kind=${encodeURIComponent(kind)}`;
 }
 
-function resourceFileDownloadUrl(resourceId, fileId) {
-  return `${API}/resources/${encodeURIComponent(resourceId)}/files/${encodeURIComponent(fileId)}/download`;
+function buildFileTree(entries) {
+  const root = { directories: new Map(), files: [] };
+  for (const entry of entries || []) {
+    const rawPath = String(entry.path || entry.name || entry.file_name || '').replace(/\\/g, '/');
+    const parts = rawPath.split('/').filter(Boolean);
+    if (!parts.length) continue;
+    let node = root;
+    for (const directory of parts.slice(0, -1)) {
+      if (!node.directories.has(directory)) {
+        node.directories.set(directory, { directories: new Map(), files: [] });
+      }
+      node = node.directories.get(directory);
+    }
+    node.files.push({ ...entry, display_name: parts[parts.length - 1] });
+  }
+  return root;
+}
+
+function renderFileTreeNode(node, depth = 0) {
+  let html = '';
+  const countFiles = item => item.files.length
+    + [...item.directories.values()].reduce((total, child) => total + countFiles(child), 0);
+  const directories = [...node.directories.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  for (const [name, child] of directories) {
+    const childCount = countFiles(child);
+    html += `<details${depth < 1 ? ' open' : ''}><summary>📁 ${escapeHtml(name)} <span class="file-tree-meta">${childCount || ''}</span></summary>`;
+    html += renderFileTreeNode(child, depth + 1);
+    html += '</details>';
+  }
+  const files = [...node.files].sort((a, b) => a.display_name.localeCompare(b.display_name));
+  for (const file of files) {
+    html += '<div class="file-tree-file">';
+    html += `<span class="file-tree-name">📄 ${escapeHtml(file.display_name)} ${file.is_primary ? '<span class="file-tree-primary">PRIMARY</span>' : ''}</span>`;
+    html += `<span class="file-tree-meta">${escapeHtml(file.format || file.file_format || '-')}</span>`;
+    html += `<span class="file-tree-meta">${humanSize(file.size ?? file.file_size ?? 0)}</span>`;
+    html += '</div>';
+  }
+  return html;
 }
 
 function bindPreviewZoom(scope) {
@@ -1263,7 +1309,6 @@ async function selectResource(id, push) {
 function renderDetail(d) {
   const panel = document.getElementById('detail');
   const rid = d.resource_id;
-  const isPack = d.resource_type === RESOURCE_TYPES.PACK;
   let html = '<div class="detail-header">';
   html += `<h2>${escapeHtml(d.display_title || d.title || d.resource_id || d.content_md5)}</h2>`;
   html += '<div class="meta">';
@@ -1357,30 +1402,14 @@ function renderDetail(d) {
     html += `<div style="color:var(--red);font-size:13px;background:var(--panel2);padding:12px;border-radius:var(--radius)">${escapeHtml(d.last_error)}</div></div>`;
   }
 
-  html += `<div class="section"><div class="section-title">${isPack ? 'Pack File List' : 'Files'}</div>`;
-  if (d.files && d.files.length) {
-    if (isPack) {
-      html += '<table class="file-table"><thead><tr><th>Name</th><th>Format</th><th>Size</th><th>Role</th></tr></thead><tbody>';
-    } else {
-      html += '<table class="file-table"><thead><tr><th>Name</th><th>Format</th><th>Size</th><th>Role</th><th>Object Key</th><th></th></tr></thead><tbody>';
-    }
-    for (const f of d.files) {
-      const objectKey = f.object_key || '-';
-      const fileDownloadUrl = rid && f.file_id && f.object_key ? resourceFileDownloadUrl(rid, f.file_id) : '';
-      html += '<tr>';
-      html += `<td><b>${escapeHtml(f.file_name)}</b></td>`;
-      html += `<td>${escapeHtml(f.file_format)}</td>`;
-      html += `<td>${humanSize(f.file_size)}</td>`;
-      html += `<td>${escapeHtml(f.file_role)}</td>`;
-      if (!isPack) {
-        html += `<td><code style="font-size:11px;color:var(--text2)">${escapeHtml(objectKey.length > 50 ? '...' + objectKey.slice(-47) : objectKey)}</code></td>`;
-        html += `<td>${fileDownloadUrl ? '<a class="dl-link" href="' + escapeAttr(fileDownloadUrl) + '">Download</a>' : ''}</td>`;
-      }
-      html += '</tr>';
-    }
-    html += '</tbody></table>';
+  const structure = d.file_structure || {};
+  const structureEntries = structure.entries || d.files || [];
+  html += '<div class="section"><div class="section-title">File Structure</div>';
+  if (structureEntries.length) {
+    html += `<div class="file-structure-meta">${Number(structure.entry_count ?? structureEntries.length)} files · ${humanSize(structure.total_size || 0)} · source: ${escapeHtml(structure.source || '-')} · state: ${escapeHtml(structure.state || '-')}</div>`;
+    html += `<div class="file-tree">${renderFileTreeNode(buildFileTree(structureEntries))}</div>`;
   } else {
-    html += '<div style="color:var(--text2);font-size:13px">No files</div>';
+    html += '<div style="color:var(--text2);font-size:13px">No file structure</div>';
   }
   html += '</div>';
   panel.innerHTML = html;
