@@ -197,7 +197,7 @@ cd G:\ResourceUpload
 - 多预览命名：`primary.{ext}`、`gallery-001.{ext}`、`gallery-002.{ext}`
 - 包文件上传为 `{client_id}/files/{package_id}/source.zip`，zip 内保留成员文件相对路径。包本身不提交加工服务器；需要下载包的资源在 manifest 里带 `package_object`。
 
-`RP_GENERATED_PREVIEW_PREFIX` 只是可选根前缀；默认空时，加工服务器生成的预览也写入同一套 `{client_id}/previews/...` 结构，来源由 `origin=generated` 元数据区分。
+`RP_GENERATED_PREVIEW_PREFIX` 只是可选根前缀；默认空时，加工服务器优先使用目标 storage profile 的第一个 `allowed_prefixes`，再写入 `{client_id}/previews/...`。没有 profile 前缀时才直接使用 `{client_id}/previews/...`。来源由 `origin=generated` 元数据区分。
 
 单资源提交示例：
 

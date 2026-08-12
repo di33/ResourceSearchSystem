@@ -1506,6 +1506,7 @@ class ProcessingService:
                     str(rendered.path),
                     client_id=client_id,
                     client_resource_id=manifest.client_resource_id,
+                    storage_profile_id=manifest.source_object.storage_profile_id,
                     preview_name=rendered.file_name or f"preview_{index}.webp",
                     role=rendered.role or "primary",
                 )
@@ -1546,6 +1547,7 @@ class ProcessingService:
                 path,
                 client_id=client_id,
                 client_resource_id=manifest.client_resource_id,
+                storage_profile_id=manifest.source_object.storage_profile_id,
                 preview_name=name,
                 role="primary" if use_primary else "gallery",
             )

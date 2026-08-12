@@ -32,6 +32,7 @@ class FakeStorage:
         self.objects = objects
         self.upload_dir = upload_dir
         self.uploaded: list[Path] = []
+        self.uploaded_profile_ids: list[str] = []
         self.deleted_refs = []
         self.downloaded_keys: list[str] = []
 
@@ -49,6 +50,7 @@ class FakeStorage:
         *,
         client_id: str,
         client_resource_id: str,
+        storage_profile_id: str = "",
         preview_name: str = "",
         role: str = "primary",
     ) -> PreviewRef:
@@ -57,10 +59,15 @@ class FakeStorage:
         target = self.upload_dir / (preview_name or source.name)
         shutil.copy2(source, target)
         self.uploaded.append(target)
+        self.uploaded_profile_ids.append(storage_profile_id)
         return PreviewRef(
             role=role,
-            storage_profile_id="default",
-            object_key=f"{client_id}/previews/{client_resource_id}/{preview_name or source.name}",
+            storage_profile_id=storage_profile_id or "default",
+            object_key=(
+                f"resource-3d/{client_id}/previews/{client_resource_id}/{preview_name or source.name}"
+                if storage_profile_id
+                else f"{client_id}/previews/{client_resource_id}/{preview_name or source.name}"
+            ),
             size=target.stat().st_size,
             origin="generated",
             renderer="fake-storage",
@@ -290,7 +297,8 @@ async def test_processing_service_uploads_remote_renderer_files(tmp_path, monkey
     source_path = tmp_path / "source.png"
     _write_test_image(source_path)
 
-    storage = FakeStorage({("default", "raw/source.png"): source_path}, tmp_path / "uploaded")
+    storage_profile_id = "game-ai-studio-resource3d-1252100362"
+    storage = FakeStorage({(storage_profile_id, "resource-3d/source.png"): source_path}, tmp_path / "uploaded")
     search = FakeSearchClient()
     service = ProcessingService(
         storage=storage,
@@ -305,7 +313,8 @@ async def test_processing_service_uploads_remote_renderer_files(tmp_path, monkey
         client_resource_id="asset-renderer",
         resource_type="single_image",
         source_object=ObjectRef(
-            object_key="raw/source.png",
+            storage_profile_id=storage_profile_id,
+            object_key="resource-3d/source.png",
             file_name="source.png",
             file_format="png",
             size=source_path.stat().st_size,
@@ -318,16 +327,19 @@ async def test_processing_service_uploads_remote_renderer_files(tmp_path, monkey
                 is_primary=True,
             )
         ],
+        description=Description(summary="test resource"),
     )
 
     created = await service.create_job(client_id="client-a", manifest=manifest)
     await service.run_job(created.job_id)
 
     assert storage.uploaded
+    assert storage.uploaded_profile_ids == [storage_profile_id]
     payload = search.payloads[0]
+    assert payload["previews"][0]["storage_profile_id"] == storage_profile_id
     assert payload["previews"][0]["origin"] == "generated"
     assert payload["previews"][0]["renderer"] == "preview-renderer"
-    assert payload["previews"][0]["object_key"] == "client-a/previews/asset-renderer/primary.png"
+    assert payload["previews"][0]["object_key"] == "resource-3d/client-a/previews/asset-renderer/primary.png"
     assert payload["previews"][0]["width"] == 128
 
 

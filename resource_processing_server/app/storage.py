@@ -134,15 +134,18 @@ class ObjectStorage:
         *,
         client_id: str,
         client_resource_id: str,
+        storage_profile_id: str = "",
         preview_name: str = "",
         role: str = "primary",
         renderer: str = "resource-processing-server",
     ) -> PreviewRef:
         source = Path(local_path)
-        profile = self._profile(settings.generated_preview_profile_id)
+        profile = self._profile(settings.generated_preview_profile_id or storage_profile_id)
         if not profile.bucket:
             raise ObjectValidationError("generated preview profile bucket is not configured")
         prefix = settings.generated_preview_prefix.strip("/")
+        if not prefix and profile.allowed_prefixes:
+            prefix = profile.allowed_prefixes[0].strip("/")
         name = _safe_key_part(preview_name or source.name)
         key = "/".join(
             part for part in (

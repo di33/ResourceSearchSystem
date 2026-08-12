@@ -39,5 +39,26 @@
       //文件对象 key 的安全白名单
       "allowed_prefixes": ["resource-crawler/"],
     },
+    "game-ai-studio-resource3d-1252100362": {
+      // 3D 资源独立存储桶；SearchServer 只生成 CDN 下载 URL。
+      "bucket": "game-ai-studio-resource3d-1252100362",
+      "region": "ap-guangzhou",
+
+      "cdn_endpoint": "https://gameai-studio-3d.seasungame.com",
+      "url_mode": "cdn_type_a",
+      "cdn_auth_type": "A",
+      "cdn_auth_algorithm": "md5",
+      "cdn_auth_sign_param": "sign",
+      "cdn_auth_expires": 86400,
+      "cdn_auth_time_format": "unix_decimal",
+      "cdn_auth_scope": "file_suffix",
+      "cdn_auth_file_suffixes": ["*"],
+      "cdn_auth_key_env": [
+        "OBJECT_STORAGE_3D_CDN_AUTH_KEY_PRIMARY",
+        "OBJECT_STORAGE_3D_CDN_AUTH_KEY_SECONDARY",
+      ],
+
+      "allowed_prefixes": ["resource-3d/"],
+    },
   },
 }
